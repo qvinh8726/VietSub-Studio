@@ -59,7 +59,9 @@ MAX_PROJECT_NAME_LENGTH = 100
 PREVIEW_TTL_SECONDS = 6 * 60 * 60
 MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
-APP_VERSION = "1.3.1"
+ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
+APP_VERSION = "1.3.2"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -84,6 +86,7 @@ progress_status = {
         "project_dir": "",
         "video": "",
         "source_video": "",
+        "thumbnail": "",
         "raw_srt": "",
         "translated_srt": ""
     }
@@ -228,6 +231,7 @@ def reset_progress(job_id=""):
                 "project_dir": "",
                 "video": "",
                 "source_video": "",
+                "thumbnail": "",
                 "raw_srt": "",
                 "translated_srt": "",
             }
@@ -1139,6 +1143,130 @@ def get_video_title(video_id):
         return ""
 
 
+def find_douzy_thumbnail_file(video_path):
+    if not isinstance(video_path, str) or not video_path:
+        return ""
+    video_path = os.path.abspath(video_path)
+    video_dir = os.path.dirname(video_path)
+    video_stem = os.path.splitext(os.path.basename(video_path))[0]
+    if not os.path.isdir(video_dir):
+        return ""
+
+    for suffix in ("_cover", "_thumbnail", "_thumb"):
+        for extension in ALLOWED_THUMBNAIL_EXTENSIONS:
+            candidate = os.path.join(video_dir, video_stem + suffix + extension)
+            if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                return candidate
+    return ""
+
+
+def validate_douzy_thumbnail_url(value):
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    parsed = urlparse(value.strip())
+    host = (parsed.hostname or "").lower()
+    allowed_host = any(
+        host == domain or host.endswith("." + domain)
+        for domain in ("douyinpic.com", "douyincdn.com")
+    )
+    if parsed.scheme != "https" or not allowed_host:
+        return ""
+    return value.strip()
+
+
+def get_douzy_thumbnail_url(video_id):
+    if not os.path.exists(DOUZY_DB):
+        return ""
+    try:
+        conn = sqlite3.connect(DOUZY_DB, timeout=2)
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM aweme WHERE aweme_id = ? ORDER BY download_time DESC LIMIT 1",
+                (video_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        metadata = json.loads(row[0]) if row and row[0] else {}
+        video = metadata.get("video") if isinstance(metadata, dict) else {}
+        if not isinstance(video, dict):
+            return ""
+        for key in ("cover_original_scale", "origin_cover", "cover"):
+            cover = video.get(key)
+            urls = cover.get("url_list") if isinstance(cover, dict) else []
+            if not isinstance(urls, list):
+                continue
+            for url in urls:
+                validated = validate_douzy_thumbnail_url(url)
+                if validated:
+                    return validated
+    except (OSError, sqlite3.Error, UnicodeError, json.JSONDecodeError):
+        pass
+    return ""
+
+
+def thumbnail_extension(data):
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
+def download_thumbnail(url, destination_without_extension):
+    url = validate_douzy_thumbnail_url(url)
+    if not url:
+        raise ValueError("URL thumbnail không thuộc máy chủ ảnh Douyin hợp lệ.")
+    request_headers = {"User-Agent": "Mozilla/5.0 VietSub-Studio"}
+    request_object = urllib.request.Request(url, headers=request_headers)
+    with urllib.request.urlopen(request_object, timeout=20) as response:
+        final_url = response.geturl() if hasattr(response, "geturl") else url
+        if not validate_douzy_thumbnail_url(final_url):
+            raise ValueError("Thumbnail chuyển hướng ra ngoài máy chủ ảnh Douyin.")
+        declared_size = response.headers.get("Content-Length")
+        if declared_size and int(declared_size) > MAX_THUMBNAIL_BYTES:
+            raise ValueError("Thumbnail vượt quá giới hạn 20 MB.")
+        data = response.read(MAX_THUMBNAIL_BYTES + 1)
+        if len(data) > MAX_THUMBNAIL_BYTES:
+            raise ValueError("Thumbnail vượt quá giới hạn 20 MB.")
+        extension = thumbnail_extension(data)
+    if not data or not extension:
+        raise ValueError("Dữ liệu thumbnail không phải ảnh JPG, PNG hoặc WebP hợp lệ.")
+
+    destination = destination_without_extension + extension
+    temporary_path = f"{destination}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(temporary_path, "wb") as handle:
+            handle.write(data)
+        os.replace(temporary_path, destination)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+    return destination
+
+
+def prepare_project_thumbnail(source_video, video_id, project_dir, project_name):
+    source_thumbnail = find_douzy_thumbnail_file(source_video)
+    destination_base = os.path.join(project_dir, project_name + ".thumbnail")
+    try:
+        if source_thumbnail:
+            extension = os.path.splitext(source_thumbnail)[1].lower()
+            destination = destination_base + (".jpg" if extension == ".jpeg" else extension)
+            shutil.copy2(source_thumbnail, destination)
+            log_to_app(f"Đã thêm thumbnail vào bộ kết quả: {destination}")
+            return destination
+
+        thumbnail_url = get_douzy_thumbnail_url(video_id)
+        if thumbnail_url:
+            destination = download_thumbnail(thumbnail_url, destination_base)
+            log_to_app(f"Đã tải thumbnail vào bộ kết quả: {destination}")
+            return destination
+    except (OSError, ValueError, urllib.error.URLError, TimeoutError) as error:
+        log_to_app(f"Không thể lấy thumbnail, tiếp tục xử lý video: {error}", "error")
+    return ""
+
+
 def wait_for_downloaded_video_file(start_time_epoch, video_id, allow_existing=False, timeout=20):
     deadline = time.monotonic() + timeout
     last_error = None
@@ -1196,22 +1324,39 @@ def copy_file_atomic(source_path, destination_path):
             os.remove(temporary_path)
 
 
-def prepare_project_files(source_video, requested_name, video_id, video_title="", output_dir=""):
+def prepare_project_files(
+    source_video,
+    requested_name,
+    video_id,
+    video_title="",
+    output_dir="",
+    reuse_source_video=False,
+    include_thumbnail=False,
+):
     check_cancel_requested()
+    if not os.path.isfile(source_video) or os.path.getsize(source_video) <= 0:
+        raise FileNotFoundError(f"Không tìm thấy file video hoàn chỉnh: {source_video}")
     fallback_name = video_title or f"Douyin {video_id}"
     sanitized_name = sanitize_project_name(requested_name, fallback=fallback_name)
     default_root = os.path.join(os.path.dirname(source_video), "VietSub Studio")
     output_root = validate_output_dir(output_dir) or default_root
     project_name, project_dir = allocate_project_directory(output_root, sanitized_name)
-    video_path = os.path.join(project_dir, project_name + ".mp4")
+    video_path = os.path.abspath(source_video) if reuse_source_video else os.path.join(project_dir, project_name + ".mp4")
     raw_srt_path = os.path.join(project_dir, project_name + ".raw.srt")
     translated_srt_path = os.path.join(project_dir, project_name + ".vi.srt")
 
     log_to_app(f"Tạo bộ file đồng bộ với tên: {project_name}")
-    log_to_app("Đang sao chép video vào thư mục kết quả, cache Douzy vẫn được giữ nguyên...")
     try:
         check_cancel_requested()
-        copy_file_atomic(source_video, video_path)
+        if reuse_source_video:
+            log_to_app("Dùng trực tiếp video Douzy đã tải, không tạo thêm bản sao MP4.")
+        else:
+            log_to_app("Đang sao chép video vào thư mục kết quả...")
+            copy_file_atomic(source_video, video_path)
+        thumbnail_path = (
+            prepare_project_thumbnail(source_video, video_id, project_dir, project_name)
+            if include_thumbnail else ""
+        )
     except Exception:
         try:
             os.rmdir(project_dir)
@@ -1224,6 +1369,7 @@ def prepare_project_files(source_video, requested_name, video_id, video_title=""
         "project_dir": project_dir,
         "video": video_path,
         "source_video": source_video,
+        "thumbnail": thumbnail_path,
         "raw_srt": raw_srt_path,
         "translated_srt": translated_srt_path,
     }
@@ -1239,6 +1385,7 @@ def write_project_manifest(project, *, video_id, source_url, status, error=""):
         "error": error,
         "video": project["video"],
         "source_video": project["source_video"],
+        "thumbnail": project.get("thumbnail", ""),
         "raw_srt": project["raw_srt"],
         "translated_srt": project["translated_srt"],
         "updated_at": int(time.time()),
@@ -2310,6 +2457,7 @@ def run_workflow_thread(
     project = None
     video_id = ""
     source_url = video_url
+    source_type = prepared_video.get("source_type", "douyin") if prepared_video else "douyin"
     try:
         check_cancel_requested()
         config = load_app_config()
@@ -2327,6 +2475,7 @@ def run_workflow_thread(
                 raise FileNotFoundError("Bộ file cũ không còn đầy đủ để chạy tiếp.")
             project = {key: resume_project[key] for key in required_keys}
             project["source_video"] = resume_project.get("source_video", "")
+            project["thumbnail"] = resume_project.get("thumbnail", "")
             if not os.path.isdir(project["project_dir"]) or not os.path.isfile(project["video"]):
                 raise FileNotFoundError("Video dự án không còn tồn tại để chạy tiếp.")
             source_url = prepared_video.get("source_url", video_url) if prepared_video else video_url
@@ -2360,6 +2509,8 @@ def run_workflow_thread(
                 video_id,
                 video_title=video_title,
                 output_dir=output_dir,
+                reuse_source_video=source_type == "douyin",
+                include_thumbnail=source_type == "douyin",
             )
             update_progress(result=project)
         write_project_manifest(
@@ -2812,7 +2963,7 @@ def open_folder():
         value
         for result in results
         for key, value in result.items()
-        if key in {"project_dir", "video", "raw_srt", "translated_srt"} and value
+        if key in {"project_dir", "video", "thumbnail", "raw_srt", "translated_srt"} and value
     }
     if path not in allowed_paths:
         return jsonify({"error": "Chỉ có thể mở kết quả của quy trình hiện tại."}), 403

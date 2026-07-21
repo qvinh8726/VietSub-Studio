@@ -100,13 +100,15 @@ If the project name is `Product Review`, VietSub Studio creates:
 
 ```text
 Product Review/
-├── Product Review.mp4
+├── Product Review.mp4 (local MP4 sources only)
+├── Product Review.thumbnail.jpg (when available)
 ├── Product Review.raw.srt
 ├── Product Review.vi.srt
 └── project.json
 ```
 
-- `Product Review.mp4`: a safe copy of the downloaded video. The Douzy cache remains untouched.
+- Douyin videos are processed directly from the file downloaded by Douzy, avoiding a second full-size MP4 copy. Local MP4 uploads are still copied into the project folder.
+- `Product Review.thumbnail.jpg`: the Douyin thumbnail copied from Douzy or downloaded from its saved metadata when available; PNG and WebP are also supported.
 - `Product Review.raw.srt`: OCR output in the selected source language.
 - `Product Review.vi.srt`: translated Vietnamese subtitle with source timestamps preserved.
 - `project.json`: project name, source URL, Douyin video ID, paths, status, error information, and update timestamp.
@@ -549,13 +551,15 @@ Nếu đặt tên dự án là `Review sản phẩm`, ứng dụng tạo:
 
 ```text
 Review sản phẩm/
-├── Review sản phẩm.mp4
+├── Review sản phẩm.mp4 (chỉ nguồn MP4 local)
+├── Review sản phẩm.thumbnail.jpg (nếu có)
 ├── Review sản phẩm.raw.srt
 ├── Review sản phẩm.vi.srt
 └── project.json
 ```
 
-- `Review sản phẩm.mp4`: bản sao an toàn của video; cache Douzy không bị thay đổi.
+- Video Douyin được xử lý trực tiếp từ file Douzy đã tải, không nhân đôi thêm một file MP4 dung lượng lớn. Video MP4 chọn từ máy vẫn được sao chép vào thư mục dự án.
+- `Review sản phẩm.thumbnail.jpg`: thumbnail Douyin lấy từ Douzy hoặc tải từ metadata đã lưu nếu có; app cũng hỗ trợ PNG và WebP.
 - `Review sản phẩm.raw.srt`: phụ đề OCR theo ngôn ngữ gốc đã chọn.
 - `Review sản phẩm.vi.srt`: phụ đề tiếng Việt, giữ mốc thời gian nguồn.
 - `project.json`: tên dự án, URL nguồn, ID video Douyin, đường dẫn file, trạng thái, lỗi và thời gian cập nhật.

@@ -32,7 +32,9 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 - Bam "Chay hang doi". App se tu xu ly tung video mot, khong chay song song.
 - Hang doi duoc luu khi dong app. Job loi/da huy co the chay lai tu video, OCR hoac dich neu file trung gian con ton tai.
 - Ket qua duoc dat ten dong bo:
-  Ten video.mp4
+  Video Douyin: dung truc tiep file MP4 Douzy da tai, khong tao them ban sao.
+  Video local: Ten video.mp4
+  Ten video.thumbnail.jpg/png/webp (neu nguon co thumbnail)
   Ten video.raw.srt
   Ten video.vi.srt
 - App chi bao "da san sang" khi ca ba file ton tai va sub Viet vuot qua kiem tra timestamp/so doan.
