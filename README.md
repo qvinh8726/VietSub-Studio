@@ -5,8 +5,8 @@
 <h1 align="center">VietSub Studio</h1>
 
 <p align="center">
-  A Windows workflow for downloading one Douyin video, extracting subtitles with OCR, translating them through Gemini Notebook, and exporting a synchronized project bundle.<br>
-  Công cụ Windows giúp tải một video Douyin, OCR phụ đề, dịch bằng Gemini Notebook và xuất bộ file đồng bộ.
+  A Windows workflow for previewing OCR regions, processing a sequential Douyin video queue, translating subtitles through Gemini Notebook, and exporting synchronized project bundles.<br>
+  Công cụ Windows cho phép xem trước vùng OCR, chạy hàng đợi video Douyin tuần tự, dịch phụ đề bằng Gemini Notebook và xuất bộ file đồng bộ.
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 - [Requirements](#requirements)
 - [Quick start with the portable EXE](#quick-start-with-the-portable-exe)
 - [First-run setup](#first-run-setup)
-- [Processing a video](#processing-a-video)
+- [Processing videos](#processing-videos)
 - [Running from source](#running-from-source)
 - [Command-line usage](#command-line-usage)
 - [Building the Windows app](#building-the-windows-app)
@@ -64,7 +64,7 @@ VietSub Studio coordinates several local tools into one guided workflow:
 6. Validate and normalize the translated SRT so the source timestamps remain unchanged.
 7. Export the video, raw subtitle, Vietnamese subtitle, and `project.json` manifest with one synchronized name.
 
-The application is a local Flask service presented as a desktop window through pywebview. It is intentionally focused on processing **one video at a time**, with visible progress, cancellation, dependency diagnostics, and recoverable project output.
+The application is a local Flask service presented as a desktop window through pywebview. Users can prepare multiple videos, preview and edit the OCR region for each item, then run a queue that deliberately processes **one video at a time**.
 
 ## Features
 
@@ -76,7 +76,11 @@ The application is a local Flask service presented as a desktop window through p
 - Automatic duplicate suffixes such as `(2)` and `(3)`.
 - Atomic video copies and atomic writes for configuration, SRT, and project manifests.
 - OCR languages: Chinese, English, Japanese, Korean, and Vietnamese.
-- Optional VideOCR crop conversion with FFprobe.
+- In-app video preview with a draggable and resizable OCR crop overlay.
+- Per-video crop coordinates plus a reusable default crop.
+- Multi-video queue with one sequential worker, per-job state, removal, cancellation, and results.
+- Automatic GitHub Release checks with an in-app notification and update button when a newer version is available.
+- Optional crop conversion with FFprobe.
 - Gemini Notebook translation through a dedicated local Edge profile.
 - SRT timestamp validation and restoration when Gemini changes timecodes.
 - Progress restoration after UI reloads.
@@ -130,7 +134,7 @@ Douzy and VideOCR are third-party applications and are not redistributed by this
 4. Open `VietSub Studio.exe`.
 5. The first launch may take 20-60 seconds while the one-file package is extracted and scanned by Windows security software.
 6. If SmartScreen appears because the community build is not code-signed, review the publisher/source and choose **More info → Run anyway** only if you trust the downloaded release.
-7. Open the **Settings** tab and complete every required item shown in red.
+7. Open **Settings** and complete every required item shown in red.
 
 You can verify the downloaded EXE with the `SHA256.txt` file included in the ZIP. The release page also publishes the ZIP checksum.
 
@@ -169,21 +173,22 @@ VietSub Studio does not ask for your Google password and does not store it. Auth
 
 The output directory is optional. When it is empty, projects are created inside a `VietSub Studio` folder under Douzy's configured download directory. You may enter another absolute Windows path in Settings.
 
-## Processing a video
+## Processing videos
 
 1. Paste one of the following into the main input:
    - `https://www.douyin.com/video/<id>`
    - `https://v.douyin.com/<code>/`
    - the complete share message containing either URL
 2. Enter an optional shared project name. Leave it empty to use the Douyin title.
-3. Check the live filename preview.
-4. Select the source OCR language.
-5. Click **Start processing**.
-6. Follow the five progress stages: resolve, download, OCR, translate, and complete.
-7. Use **Cancel** if you need to stop active work.
-8. When complete, open the project folder from the result panel.
+3. Click **Load preview** and wait for the local Douzy download/cache lookup.
+4. Drag and resize the yellow OCR box over the subtitle region.
+5. Select the source OCR language and click **Add to queue**.
+6. Repeat for every video, then click **Run queue**.
+7. Follow the active job through resolve, video preparation, OCR, translation, and completion.
+8. Use **Cancel job** to stop the current item; queued items remain available.
+9. Open completed project folders from their queue cards or the result panel.
 
-The application accepts one video only. Mix, user-profile, playlist, and bulk-processing links are intentionally rejected.
+Mix, user-profile, and playlist URLs are still rejected. The queue accepts separate video URLs and processes them sequentially rather than concurrently.
 
 ## Running from source
 
@@ -253,12 +258,12 @@ dist_portable\VietSub Studio.exe
 
 ```mermaid
 flowchart LR
-    A[Douyin URL or share text] --> B[Validate and resolve URL]
-    B --> C[Douzy sidecar download or cache reuse]
-    C --> D[Safe project copy]
-    D --> E[VideOCR raw SRT]
-    E --> F[Gemini Notebook translation in Edge]
-    F --> G[Validate and restore timestamps]
+    A[Douyin URL or share text] --> B[Douzy preview or cache reuse]
+    B --> C[Edit OCR crop]
+    C --> D[Add job to queue]
+    D --> E[Sequential worker]
+    E --> F[VideOCR raw SRT]
+    F --> G[Gemini Notebook translation in Edge]
     G --> H[MP4 + raw SRT + vi SRT + project.json]
 ```
 
@@ -277,7 +282,9 @@ Local API endpoints:
 | `/api/health` | GET | Check Douzy, VideOCR, FFprobe, Notebook, and Edge readiness. |
 | `/api/settings` | GET/POST | Read and save local settings. |
 | `/api/history` | GET | Read recent items from the local Douzy database. |
-| `/api/process` | POST | Queue one processing workflow. |
+| `/api/previews` | POST | Prepare a video and return its protected preview URL. |
+| `/api/queue` | GET/POST | List jobs or add a prepared video to the queue. |
+| `/api/queue/start` | POST | Start the single sequential worker. |
 | `/api/progress` | GET | Retrieve state and incremental logs. |
 | `/api/cancel` | POST | Cancel the active workflow and child processes. |
 | `/api/open-folder` | POST | Open only a path produced by the current workflow. |
@@ -313,7 +320,8 @@ See [SECURITY.md](SECURITY.md) before reporting a security issue.
 ## Known limitations
 
 - Windows only in the current release.
-- One video per workflow; no playlist, profile, mix, or bulk queue.
+- Queue items run sequentially; parallel OCR/translation is intentionally not supported.
+- Playlist, profile, and mix URLs are not expanded automatically.
 - Requires separately installed Douzy and VideOCR.
 - Requires an authenticated Gemini Notebook session in Edge.
 - Gemini UI changes may occasionally break browser selectors until the project is updated.
@@ -421,7 +429,7 @@ No. The current URL validator and download integration intentionally support Dou
 
 ### Can it process multiple videos automatically?
 
-No. The workflow lock allows one active job and rejects playlist/profile links. This reduces accidental bulk downloads and makes cancellation and output tracking reliable.
+Yes. Prepare each video preview, add it to the queue, then start the worker. The app processes one item at a time to avoid Douzy, VideOCR, and Edge/Gemini conflicts.
 
 ### Can I move the portable EXE after configuring it?
 
@@ -466,7 +474,7 @@ The repository includes a Windows GitHub Actions workflow that runs compilation 
 - [Yêu cầu hệ thống](#yêu-cầu-hệ-thống)
 - [Dùng nhanh bản EXE portable](#dùng-nhanh-bản-exe-portable)
 - [Thiết lập lần đầu](#thiết-lập-lần-đầu)
-- [Xử lý một video](#xử-lý-một-video)
+- [Xử lý nhiều video tuần tự](#xử-lý-nhiều-video-tuần-tự)
 - [Chạy từ mã nguồn](#chạy-từ-mã-nguồn)
 - [Dùng dòng lệnh](#dùng-dòng-lệnh)
 - [Tự build ứng dụng Windows](#tự-build-ứng-dụng-windows)
@@ -490,7 +498,7 @@ VietSub Studio nối nhiều công cụ cục bộ thành một quy trình có h
 6. Kiểm tra và chuẩn hoá SRT dịch để giữ nguyên toàn bộ mốc thời gian gốc.
 7. Xuất video, sub OCR, sub tiếng Việt và manifest `project.json` với cùng một tên.
 
-Ứng dụng chạy một Flask service cục bộ và hiển thị thành cửa sổ desktop qua pywebview. Công cụ chủ động tập trung vào **một video mỗi lần**, có tiến trình rõ ràng, nút huỷ, kiểm tra phụ thuộc và bộ file dự án dễ khôi phục.
+Ứng dụng chạy một Flask service cục bộ và hiển thị thành cửa sổ desktop qua pywebview. Người dùng có thể chuẩn bị nhiều video, xem/chỉnh vùng OCR riêng rồi chạy hàng đợi; worker vẫn chỉ xử lý **một video mỗi lần** để tránh xung đột công cụ.
 
 ## Tính năng
 
@@ -502,7 +510,11 @@ VietSub Studio nối nhiều công cụ cục bộ thành một quy trình có h
 - Tự thêm hậu tố `(2)`, `(3)` khi tên bị trùng.
 - Sao chép video và ghi config/SRT/manifest theo kiểu atomic để giảm file hỏng.
 - OCR tiếng Trung, Anh, Nhật, Hàn và Việt.
-- Có thể chuyển đổi vùng crop VideOCR bằng FFprobe.
+- Preview video ngay trong app với khung OCR kéo và đổi kích thước được.
+- Lưu crop riêng cho từng video hoặc lưu làm crop mặc định.
+- Hàng đợi nhiều video chạy tuần tự, có trạng thái từng job, xoá job chờ, huỷ job đang chạy và mở kết quả.
+- Tự kiểm tra GitHub Releases, hiện thông báo và nút cập nhật khi có phiên bản mới hơn.
+- Có thể chuyển đổi vùng crop bằng FFprobe.
 - Dịch qua Gemini Notebook trong profile Edge riêng trên máy.
 - Kiểm tra và khôi phục timestamp nếu Gemini tự thay đổi mốc thời gian.
 - Khôi phục tiến trình khi giao diện bị reload.
@@ -556,7 +568,7 @@ Douzy và VideOCR là ứng dụng bên thứ ba, không được phân phối l
 4. Mở `VietSub Studio.exe`.
 5. Lần mở đầu có thể mất 20-60 giây vì bản một file cần giải nén tạm và bị Windows quét bảo mật.
 6. Nếu SmartScreen cảnh báo do bản cộng đồng chưa có chữ ký số, hãy kiểm tra đúng nguồn/checksum rồi chỉ chọn **More info → Run anyway** khi bạn tin tưởng bản tải.
-7. Mở tab **Thiết lập** và xử lý hết các mục bắt buộc màu đỏ.
+7. Mở **Thiết lập** và xử lý hết các mục bắt buộc màu đỏ.
 
 Có thể kiểm tra EXE bằng `SHA256.txt` nằm trong ZIP. Trang Release cũng công bố checksum của file ZIP.
 
@@ -595,21 +607,22 @@ VietSub Studio không hỏi và không lưu mật khẩu Google. Việc đăng n
 
 Thư mục xuất là tuỳ chọn. Nếu để trống, dự án được tạo trong thư mục `VietSub Studio` bên dưới thư mục tải đã cấu hình của Douzy. Bạn có thể nhập một đường dẫn Windows tuyệt đối khác trong Thiết lập.
 
-## Xử lý một video
+## Xử lý nhiều video tuần tự
 
 1. Dán một trong các dạng sau vào ô chính:
    - `https://www.douyin.com/video/<id>`
    - `https://v.douyin.com/<mã>/`
    - nguyên đoạn chia sẻ có chứa một trong hai link trên
 2. Nhập tên dùng chung nếu muốn; để trống để lấy tiêu đề Douyin.
-3. Kiểm tra ba tên file xem trước.
-4. Chọn ngôn ngữ OCR gốc.
-5. Bấm **Bắt đầu xử lý**.
-6. Theo dõi năm bước: giải mã, tải, OCR, dịch và hoàn tất.
-7. Bấm **Huỷ** nếu cần dừng công việc đang chạy.
-8. Khi xong, mở thư mục dự án từ bảng kết quả.
+3. Bấm **Tải preview** và chờ Douzy tải hoặc lấy video từ cache.
+4. Kéo/đổi kích thước khung vàng cho khớp vùng phụ đề.
+5. Chọn ngôn ngữ OCR rồi bấm **Thêm vào hàng đợi**.
+6. Lặp lại cho các video khác, sau đó bấm **Chạy hàng đợi**.
+7. Theo dõi job hiện tại qua năm bước: giải mã, video, OCR, dịch và hoàn tất.
+8. Bấm **Huỷ job** nếu cần dừng video hiện tại; các video đang chờ vẫn được giữ.
+9. Mở thư mục dự án từ card hàng đợi hoặc bảng kết quả.
 
-Ứng dụng chỉ nhận một video. Link mix, hồ sơ người dùng, playlist và xử lý hàng loạt bị từ chối có chủ đích.
+Link mix, hồ sơ người dùng và playlist vẫn bị từ chối. Hàng đợi nhận từng link video riêng và xử lý tuần tự, không chạy đồng thời.
 
 ## Chạy từ mã nguồn
 
@@ -677,12 +690,12 @@ dist_portable\VietSub Studio.exe
 
 ```mermaid
 flowchart LR
-    A[Link hoặc đoạn share Douyin] --> B[Kiểm tra và giải mã URL]
-    B --> C[Douzy tải hoặc dùng cache]
-    C --> D[Sao chép dự án an toàn]
-    D --> E[VideOCR tạo SRT thô]
-    E --> F[Gemini Notebook dịch trong Edge]
-    F --> G[Kiểm tra và khôi phục timestamp]
+    A[Link hoặc đoạn share Douyin] --> B[Douzy tạo preview hoặc dùng cache]
+    B --> C[Chỉnh vùng OCR]
+    C --> D[Thêm job vào hàng đợi]
+    D --> E[Worker tuần tự]
+    E --> F[VideOCR tạo SRT thô]
+    F --> G[Gemini Notebook dịch trong Edge]
     G --> H[MP4 + raw SRT + vi SRT + project.json]
 ```
 
@@ -701,7 +714,9 @@ Các API cục bộ:
 | `/api/health` | GET | Kiểm tra Douzy, VideOCR, FFprobe, Notebook và Edge. |
 | `/api/settings` | GET/POST | Đọc và lưu thiết lập cục bộ. |
 | `/api/history` | GET | Đọc video gần đây từ database Douzy. |
-| `/api/process` | POST | Đưa một quy trình vào hàng chạy. |
+| `/api/previews` | POST | Chuẩn bị video và trả URL preview được bảo vệ. |
+| `/api/queue` | GET/POST | Xem hàng đợi hoặc thêm video đã chuẩn bị. |
+| `/api/queue/start` | POST | Chạy worker tuần tự duy nhất. |
 | `/api/progress` | GET | Lấy trạng thái và log tăng dần. |
 | `/api/cancel` | POST | Huỷ quy trình cùng tiến trình con đang hoạt động. |
 | `/api/open-folder` | POST | Chỉ mở đường dẫn do quy trình hiện tại tạo ra. |
@@ -737,7 +752,8 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng.
 ## Giới hạn hiện tại
 
 - Chỉ hỗ trợ Windows.
-- Mỗi lần một video; chưa có playlist, profile, mix hoặc hàng đợi hàng loạt.
+- Hàng đợi chạy tuần tự; không chạy OCR/dịch song song.
+- Không tự bung link playlist, profile hoặc mix thành nhiều video.
 - Bắt buộc cài Douzy và VideOCR riêng.
 - Bắt buộc có phiên Gemini Notebook đã đăng nhập trong Edge.
 - Gemini thay đổi giao diện có thể làm selector lỗi cho tới khi dự án được cập nhật.
@@ -845,7 +861,7 @@ Không. Validator URL và tích hợp tải hiện chỉ hỗ trợ Douyin.
 
 ### Có thể xử lý nhiều video tự động không?
 
-Không. Workflow lock chỉ cho một job hoạt động và từ chối playlist/profile. Thiết kế này tránh tải hàng loạt ngoài ý muốn, đồng thời giúp huỷ và theo dõi output đáng tin cậy.
+Có. Tạo preview cho từng video, thêm vào hàng đợi rồi bấm chạy. App chỉ xử lý một job tại một thời điểm để Douzy, VideOCR và Edge/Gemini không xung đột.
 
 ### Có thể di chuyển EXE sau khi cấu hình không?
 

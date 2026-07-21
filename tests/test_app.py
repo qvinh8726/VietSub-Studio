@@ -117,6 +117,13 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.validate_ocr_lang("shell")
 
+    def test_release_versions_compare_semantically(self):
+        self.assertEqual(app.parse_release_version("v1.2.3"), (1, 2, 3))
+        self.assertTrue(app.is_newer_release("1.2.0", "1.1.9"))
+        self.assertFalse(app.is_newer_release("1.1.0", "1.1.0"))
+        with self.assertRaises(ValueError):
+            app.parse_release_version("latest")
+
     def test_translation_must_preserve_all_timestamps(self):
         self.assertEqual(app.validate_translated_srt(SOURCE_SRT, TRANSLATED_SRT), TRANSLATED_SRT)
         invalid = TRANSLATED_SRT.replace("00:00:04,000", "00:00:05,000")
@@ -186,7 +193,25 @@ class DownloadLookupTests(unittest.TestCase):
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        app.app.config["TESTING"] = True
+        with app.queue_state_lock:
+            app.workflow_jobs.clear()
+            app.current_job_id = ""
+            app.queue_worker_thread = None
+        with app.preview_registry_lock:
+            app.preview_registry.clear()
+        app.cancel_event.clear()
         self.client = app.app.test_client()
+
+    def tearDown(self):
+        app.app.config["TESTING"] = False
+        with app.queue_state_lock:
+            app.workflow_jobs.clear()
+            app.current_job_id = ""
+            app.queue_worker_thread = None
+        with app.preview_registry_lock:
+            app.preview_registry.clear()
+        app.cancel_event.clear()
 
     def test_rejects_invalid_process_requests(self):
         response = self.client.post("/api/process", json={"url": "https://example.test/video/1"})
@@ -206,13 +231,55 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(app.load_app_config()["notebook_url"], "")
 
-    def test_only_one_workflow_can_be_queued(self):
-        self.assertTrue(app.workflow_lock.acquire(blocking=False))
-        try:
-            with self.assertRaises(RuntimeError):
-                app.queue_workflow("https://www.douyin.com/video/1", "ch")
-        finally:
+    def test_multiple_workflows_can_be_queued_in_order(self):
+        first = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        second = app.enqueue_workflow("https://www.douyin.com/video/2", "en")
+
+        self.assertEqual([job["id"] for job in app.queue_snapshot()], [first["id"], second["id"]])
+        self.assertTrue(all(job["status"] == "queued" for job in app.queue_snapshot()))
+
+    def test_preview_crop_is_attached_to_a_queued_job(self):
+        preview_id = "preview-test"
+        with app.preview_registry_lock:
+            app.preview_registry[preview_id] = {
+                "id": preview_id,
+                "created_at": app.time.time(),
+                "source_url": "https://www.douyin.com/video/1",
+                "video_id": "1",
+                "video_title": "Demo",
+                "source_video": "video.mp4",
+                "crop_coords": None,
+            }
+        crop = {"crop_x": 0.1, "crop_y": 0.7, "crop_width": 0.8, "crop_height": 0.2}
+        job = app.enqueue_workflow(
+            "https://www.douyin.com/video/1",
+            "ch",
+            preview_id=preview_id,
+            crop_coords=crop,
+            use_saved_crop=False,
+        )
+        self.assertEqual(job["crop_coords"], crop)
+        self.assertEqual(job["preview_id"], preview_id)
+
+    def test_queue_worker_runs_jobs_one_after_another(self):
+        app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        app.enqueue_workflow("https://www.douyin.com/video/2", "en")
+        call_order = []
+
+        def finish_immediately(video_url, *_args, **_kwargs):
+            self.assertTrue(app.workflow_lock.locked())
+            call_order.append(video_url)
+            app.update_progress(status="success", step="done")
             app.workflow_lock.release()
+
+        with patch.object(app, "run_workflow_thread", side_effect=finish_immediately):
+            app.run_queue_worker()
+
+        self.assertEqual(
+            call_order,
+            ["https://www.douyin.com/video/1", "https://www.douyin.com/video/2"],
+        )
+        self.assertTrue(all(job["status"] == "success" for job in app.queue_snapshot()))
 
     def test_process_passes_the_requested_project_name(self):
         with patch.object(app, "queue_workflow") as queue:
@@ -236,6 +303,31 @@ class ApiTests(unittest.TestCase):
         self.assertIn("ready", data)
         self.assertTrue(data["checks"]["videocr"]["required"])
         self.assertFalse(data["checks"]["edge"]["required"])
+
+    def test_update_endpoint_reports_a_new_release(self):
+        update = {
+            "current_version": "1.1.0",
+            "latest_version": "1.2.0",
+            "update_available": True,
+            "release_name": "VietSub Studio v1.2.0",
+            "release_url": "https://github.com/qvinh8726/VietSub-Studio/releases/tag/v1.2.0",
+        }
+        with patch.object(app, "get_update_status", return_value=update):
+            response = self.client.get("/api/update")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["update_available"])
+
+    def test_update_button_opens_the_official_release(self):
+        update = {
+            "release_url": "https://github.com/qvinh8726/VietSub-Studio/releases/tag/v1.2.0"
+        }
+        with (
+            patch.object(app, "get_update_status", return_value=update),
+            patch.object(app.webbrowser, "open", return_value=True) as open_browser,
+        ):
+            response = self.client.post("/api/update/open")
+        self.assertEqual(response.status_code, 200)
+        open_browser.assert_called_once_with(update["release_url"], new=2)
 
     def test_cancel_endpoint_reports_the_request(self):
         with patch.object(app, "request_workflow_cancel", return_value=True):
@@ -313,6 +405,9 @@ class ApiTests(unittest.TestCase):
                 "project/Test video.mp4",
                 ocr_lang="ch",
                 output_srt="project/Test video.raw.srt",
+                crop_coords=None,
+                use_saved_crop=True,
+                video_resolution=None,
             )
             translate.assert_called_once_with(
                 "raw.srt",

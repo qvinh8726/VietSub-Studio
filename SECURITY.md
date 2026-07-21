@@ -21,5 +21,5 @@ Báo cáo nên có phiên bản bị ảnh hưởng, các bước tái hiện, m
 - Video downloading is delegated to the locally installed Douzy application.
 - OCR is delegated to the locally installed VideOCR CLI.
 - Subtitle text is submitted to the user's Gemini Notebook through a local Edge browser session.
-- VietSub Studio does not require an API key and does not bundle user credentials.
+- VietSub Studio does not require a Gemini API key and does not bundle Google credentials.
 - Packaged settings are stored locally under `%APPDATA%\VietSub Studio`.

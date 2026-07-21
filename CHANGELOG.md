@@ -2,6 +2,21 @@
 
 All notable changes to VietSub Studio are documented here.
 
+## [Unreleased]
+
+## [1.1.0] - 2026-07-21
+
+### Added
+
+- Video preview with a draggable, resizable OCR crop overlay and reusable crop defaults.
+- Multi-video queue backed by a single sequential worker and per-job result tracking.
+- Automatic GitHub release checks with an in-app update banner and update button.
+
+### Changed
+
+- Prepared preview videos are reused by the worker instead of being downloaded twice.
+- The main interface now centers preview, crop editing, queue state, settings, and diagnostics.
+
 ## [1.0.0] - 2026-07-21
 
 ### Added
