@@ -21,7 +21,8 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
   https://gemini.google.com/notebook/ID-CUA-BAN
 - Kiem tra cac muc bat buoc. Khi tat ca muc mau do da het, app san sang.
 - De bat "Chay Edge an" neu muon. Edge van render binh thuong nhung duoc thu nho.
-- Khi app tu hien Edge, dang nhap tai khoan Google co quyen truy cap Notebook roi bam chay lai job.
+- App chi tu hien Edge khi thay man hinh dang nhap hoac khong tim thay khung chat sau khi cho Notebook tai xong.
+- Khi app tu hien Edge, kiem tra tai khoan Google va Notebook roi bam chay lai job.
 
 4. XU LY VIDEO
 - Dan link/video share Douyin hoac bam "Chon MP4" de nhan video tren may.
@@ -34,6 +35,8 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
   Ten video.mp4
   Ten video.raw.srt
   Ten video.vi.srt
+- App chi bao "da san sang" khi ca ba file ton tai va sub Viet vuot qua kiem tra timestamp/so doan.
+- Job loi van co nut mo thu muc lam do, nhung khong duoc gan nhan la ket qua hoan tat.
 
 5. LUU Y KHI GUI CHO NGUOI KHAC
 - File EXE chua VietSub Studio, nhung khong kem Douzy, VideOCR hay tai khoan Gemini.

@@ -31,6 +31,35 @@ The gioi
 
 
 class ValidationTests(unittest.TestCase):
+    class FakeElement:
+        def __init__(self, *, visible=True, enabled=True):
+            self.visible = visible
+            self.enabled = enabled
+
+        def is_visible(self):
+            return self.visible
+
+        def is_enabled(self):
+            return self.enabled
+
+    class FakeLocator:
+        def __init__(self, elements=None):
+            self.elements = list(elements or [])
+
+        def count(self):
+            return len(self.elements)
+
+        def nth(self, index):
+            return self.elements[index]
+
+    class FakePage:
+        def __init__(self, url, selectors=None):
+            self.url = url
+            self.selectors = selectors or {}
+
+        def locator(self, selector):
+            return ValidationTests.FakeLocator(self.selectors.get(selector))
+
     def test_project_names_are_safe_and_keep_a_shared_base(self):
         self.assertEqual(app.sanitize_project_name("  CON.  "), "Video CON")
         self.assertEqual(app.sanitize_project_name("CON.txt"), "Video CON.txt")
@@ -152,6 +181,75 @@ class ValidationTests(unittest.TestCase):
             app.SRT_TIMECODE_PATTERN.findall(normalized),
             app.SRT_TIMECODE_PATTERN.findall(SOURCE_SRT),
         )
+
+    def test_edge_login_detection_ignores_hidden_or_generic_google_links(self):
+        hidden_sign_in = self.FakeElement(visible=False)
+        generic_account_link = self.FakeElement(visible=True)
+        page = self.FakePage(
+            "https://gemini.google.com/notebook/test-id",
+            {
+                "button:has-text('Sign in')": [hidden_sign_in],
+                "a[href*='accounts.google.com']": [generic_account_link],
+            },
+        )
+
+        self.assertFalse(app.edge_page_needs_login(page))
+
+    def test_edge_login_detection_requires_a_visible_control_or_login_url(self):
+        visible_sign_in = self.FakeElement(visible=True)
+        page = self.FakePage(
+            "https://gemini.google.com/notebook/test-id",
+            {"button:has-text('Sign in')": [visible_sign_in]},
+        )
+
+        self.assertTrue(app.edge_page_needs_login(page))
+        self.assertTrue(
+            app.edge_page_needs_login(self.FakePage("https://accounts.google.com/signin"))
+        )
+
+    def test_result_is_ready_only_when_every_output_file_is_valid(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            translated_srt.write_text(TRANSLATED_SRT, encoding="utf-8")
+            result = {
+                "project_name": "Project",
+                "project_dir": str(directory),
+                "video": str(video),
+                "raw_srt": str(raw_srt),
+                "translated_srt": str(translated_srt),
+            }
+
+            self.assertTrue(app.project_result_ready(result))
+            translated_srt.unlink()
+            self.assertFalse(app.project_result_ready(result))
+
+    def test_error_job_never_exposes_a_ready_result(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            translated_srt.write_text(TRANSLATED_SRT, encoding="utf-8")
+            job = {
+                "id": "job-error",
+                "status": "error",
+                "step": "translate",
+                "result": {
+                    "project_dir": str(directory),
+                    "video": str(video),
+                    "raw_srt": str(raw_srt),
+                    "translated_srt": str(translated_srt),
+                },
+            }
+
+            self.assertFalse(app.serialize_job(job)["result_ready"])
 
 
 class DownloadLookupTests(unittest.TestCase):
@@ -611,6 +709,55 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(job["needs_edge_login"])
         self.assertEqual(retry_step, "translate")
 
+    def test_missing_translated_file_cannot_mark_the_workflow_successful(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            project = {
+                "project_name": "Project",
+                "project_dir": str(directory),
+                "video": str(video),
+                "source_video": str(video),
+                "raw_srt": str(raw_srt),
+                "translated_srt": str(translated_srt),
+            }
+
+            self.assertTrue(app.workflow_lock.acquire(blocking=False))
+            app.reset_progress("missing-translation")
+            with (
+                patch.object(app, "load_app_config", return_value={
+                    "notebook_url": "https://gemini.google.com/notebook/test-id",
+                    "output_dir": str(directory),
+                }),
+                patch.object(app, "write_project_manifest"),
+                patch.object(
+                    app,
+                    "translate_srt_via_gemini_edge",
+                    return_value=str(translated_srt),
+                ),
+            ):
+                app.run_workflow_thread(
+                    "https://www.douyin.com/video/1",
+                    "ch",
+                    prepared_video={
+                        "source_url": "https://www.douyin.com/video/1",
+                        "video_id": "1",
+                        "source_video": str(video),
+                    },
+                    resume_project=project,
+                    resume_step="translate",
+                )
+
+            snapshot = app.progress_snapshot()
+
+        self.assertEqual(snapshot["status"], "error")
+        self.assertFalse(snapshot["result_ready"])
+        self.assertIn("sub Việt", snapshot["error"])
+
     def test_queue_worker_runs_jobs_one_after_another(self):
         app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
         app.enqueue_workflow("https://www.douyin.com/video/2", "en")
@@ -765,6 +912,7 @@ class ApiTests(unittest.TestCase):
                     "translated_srt": "project/Test video.vi.srt",
                 }) as prepare_project,
                 patch.object(app, "write_project_manifest"),
+                patch.object(app, "validate_project_result", return_value=True),
                 patch.object(app, "run_videocr", return_value="raw.srt") as run_ocr,
                 patch.object(app, "translate_srt_via_gemini_edge", return_value="vi.srt") as translate,
                 patch.object(
