@@ -3,1061 +3,790 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#f3eee4">
+    <meta name="theme-color" content="#173f35">
     <link rel="icon" type="image/jpeg" href="/avatar.jpg">
     <title>VietSub Studio</title>
     <style>
         :root {
-            --paper: #f3eee4;
-            --paper-light: #fbf8f1;
-            --paper-deep: #e5ddcf;
-            --ink: #15221e;
-            --muted: #68736e;
-            --muted-strong: #4f5d57;
-            --line: #d8cfc0;
-            --line-strong: #c5b9a8;
-            --forest: #255f50;
-            --forest-bright: #327765;
-            --forest-dark: #123c32;
-            --mint: #c2e3d0;
-            --mint-light: #edf7f0;
-            --sun: #e5a33e;
-            --coral: #bd5846;
+            --canvas: #eee8dc;
+            --paper: #fffaf0;
+            --paper-2: #f7f0e3;
+            --ink: #14211d;
+            --muted: #69736e;
+            --line: #d8cebd;
+            --forest: #173f35;
+            --forest-2: #245e4f;
+            --mint: #b9dbc8;
+            --sun: #edae49;
+            --sun-soft: #f8dfad;
+            --coral: #bc5949;
+            --blue: #427d96;
             --white: #fffdf8;
-            --shadow: 0 18px 50px rgba(45, 54, 47, 0.11);
-            --shadow-soft: 0 9px 26px rgba(45, 54, 47, 0.08);
-            --mono: "Cascadia Mono", "Consolas", monospace;
+            --shadow: 0 20px 55px rgba(31, 43, 37, .13);
             --display: "Bahnschrift", "Aptos Display", "Trebuchet MS", sans-serif;
             --body: "Aptos", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+            --mono: "Cascadia Mono", "Consolas", monospace;
         }
 
         * { box-sizing: border-box; }
-        html { min-width: 320px; background: var(--paper); scroll-behavior: smooth; }
+        html { min-width: 320px; background: var(--canvas); }
         body {
             min-width: 320px;
             min-height: 100vh;
             margin: 0;
             color: var(--ink);
             background:
-                radial-gradient(circle at 8% 4%, rgba(183, 224, 200, 0.7), transparent 28rem),
-                radial-gradient(circle at 94% 12%, rgba(229, 163, 62, 0.17), transparent 24rem),
-                linear-gradient(118deg, var(--paper) 0%, #f8f4ec 54%, var(--paper-deep) 100%);
-            background-attachment: fixed;
+                radial-gradient(circle at 6% 4%, rgba(185, 219, 200, .72), transparent 32rem),
+                radial-gradient(circle at 94% 12%, rgba(237, 174, 73, .22), transparent 26rem),
+                linear-gradient(125deg, #eee8dc 0%, #faf5eb 52%, #e6ddcf 100%);
             font-family: var(--body);
         }
         body::before {
             position: fixed;
             inset: 0;
             z-index: -1;
-            background-image: radial-gradient(rgba(21, 34, 30, 0.08) 0.6px, transparent 0.6px);
-            background-size: 18px 18px;
-            opacity: 0.15;
+            background-image: radial-gradient(rgba(20, 33, 29, .12) .65px, transparent .65px);
+            background-size: 19px 19px;
+            opacity: .15;
             content: "";
-            pointer-events: none;
         }
-
         button, input, textarea, select { font: inherit; }
         button { cursor: pointer; }
-        button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible {
-            outline: 3px solid rgba(229, 163, 62, 0.55);
-            outline-offset: 3px;
+        button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+            outline: 3px solid rgba(237, 174, 73, .55);
+            outline-offset: 2px;
         }
         [hidden] { display: none !important; }
 
-        .shell { width: min(1220px, calc(100% - 40px)); margin: 0 auto; padding: 26px 0 42px; }
-        .topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 22px;
-            margin-bottom: 23px;
-            animation: reveal 420ms ease both;
-        }
-        .brand { display: flex; min-width: 0; align-items: center; gap: 14px; }
-        .brand-mark {
-            display: block;
-            flex: 0 0 auto;
-            width: 47px;
-            height: 47px;
-            overflow: hidden;
-            border: 2px solid rgba(255, 253, 248, 0.92);
-            border-radius: 15px;
-            background: var(--forest);
-            box-shadow: 5px 5px 0 var(--sun);
-        }
-        .brand-mark img { display: block; width: 100%; height: 100%; object-fit: cover; }
-        .brand h1 { margin: 0; font: 900 22px/1 var(--display); letter-spacing: -0.04em; }
-        .brand p { margin: 5px 0 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-        .edge-status {
-            display: inline-flex;
-            flex: 0 0 auto;
-            align-items: center;
-            gap: 9px;
-            min-height: 38px;
-            padding: 8px 13px;
-            border: 1px solid var(--line);
-            border-radius: 999px;
-            background: rgba(255, 253, 248, 0.74);
-            box-shadow: 0 4px 15px rgba(45, 54, 47, 0.05);
-            color: var(--muted-strong);
-            font-size: 13px;
-            font-weight: 750;
-            backdrop-filter: blur(10px);
-        }
-        .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 0 4px rgba(229, 163, 62, 0.16); }
-        .edge-status.ready .status-dot { background: var(--forest); box-shadow: 0 0 0 4px rgba(37, 95, 80, 0.14); }
-        .edge-status.error .status-dot { background: var(--coral); box-shadow: 0 0 0 4px rgba(189, 88, 70, 0.14); }
+        .shell { width: min(1380px, calc(100% - 34px)); margin: 0 auto; padding: 22px 0 42px; }
+        .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 17px; }
+        .brand { display: flex; min-width: 0; align-items: center; gap: 13px; }
+        .brand-mark { width: 48px; height: 48px; overflow: hidden; border: 2px solid var(--white); border-radius: 15px; box-shadow: 5px 5px 0 var(--sun); }
+        .brand-mark img { width: 100%; height: 100%; object-fit: cover; }
+        .brand h1 { margin: 0; font: 900 23px/1 var(--display); letter-spacing: -.045em; }
+        .brand p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+        .status-cluster { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+        .status-pill { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 253, 248, .75); color: #526059; font-size: 12px; font-weight: 800; backdrop-filter: blur(10px); }
+        .status-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 0 4px rgba(237, 174, 73, .15); }
+        .status-pill.ready i { background: var(--forest-2); box-shadow: 0 0 0 4px rgba(36, 94, 79, .14); }
+        .status-pill.error i { background: var(--coral); box-shadow: 0 0 0 4px rgba(188, 89, 73, .14); }
+        .status-pill.update { border-color: #c7892b; background: #fff2d5; color: #744d14; }
+        .status-pill.update i { background: var(--sun); animation: update-pulse 1.7s ease-in-out infinite; }
 
-        .hero {
-            display: grid;
-            grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.75fr);
-            gap: 18px;
-            margin-bottom: 18px;
-            animation: reveal 520ms 60ms ease both;
-        }
-        .panel {
-            border: 1px solid rgba(207, 197, 182, 0.92);
-            border-radius: 24px;
-            background: rgba(255, 253, 248, 0.82);
-            box-shadow: var(--shadow);
-            backdrop-filter: blur(14px);
-        }
-        .compose { position: relative; overflow: hidden; padding: 29px 31px 27px; }
-        .compose::after {
-            position: absolute;
-            top: -92px;
-            right: -80px;
-            width: 210px;
-            height: 210px;
-            border: 1px solid rgba(37, 95, 80, 0.11);
-            border-radius: 50%;
-            box-shadow: 0 0 0 25px rgba(37, 95, 80, 0.025), 0 0 0 52px rgba(37, 95, 80, 0.02);
-            content: "";
-            pointer-events: none;
-        }
-        .compose-header { position: relative; z-index: 1; }
-        .eyebrow { color: var(--forest); font: 850 11px/1 var(--display); letter-spacing: 0.15em; text-transform: uppercase; }
-        .compose h2 {
-            max-width: 680px;
-            margin: 9px 0 10px;
-            font: 900 clamp(32px, 3.6vw, 46px)/0.98 var(--display);
-            letter-spacing: -0.062em;
-        }
-        .compose h2 span { position: relative; z-index: 0; white-space: nowrap; }
-        .compose h2 span::after {
-            position: absolute;
-            right: -3px;
-            bottom: 1px;
-            left: -3px;
-            z-index: -1;
-            height: 10px;
-            border-radius: 6px;
-            background: rgba(229, 163, 62, 0.35);
-            content: "";
-            transform: rotate(-1deg);
-        }
-        .compose-intro { max-width: 650px; margin: 0 0 22px; color: var(--muted); font-size: 14px; line-height: 1.55; }
-        .field-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 8px; font-size: 13px; font-weight: 800; }
-        .field-label .counter { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-weight: 650; }
-        textarea, .text-input, .select-input {
+        .update-banner { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 17px; padding: 15px 17px; overflow: hidden; border: 1px solid #c98c31; border-radius: 18px; background: linear-gradient(105deg, #173f35 0%, #245e4f 62%, #b87827 140%); box-shadow: 0 14px 34px rgba(23, 63, 53, .2); color: var(--white); animation: update-reveal .38s ease-out; }
+        .update-banner-copy { min-width: 0; }
+        .update-banner-label { color: #f4c66f; font: 900 9px var(--mono); letter-spacing: .15em; text-transform: uppercase; }
+        .update-banner strong { display: block; margin-top: 4px; font: 900 17px var(--display); letter-spacing: -.02em; }
+        .update-banner p { margin: 4px 0 0; color: #d7e8e0; font-size: 11px; line-height: 1.4; }
+        .update-button { flex: 0 0 auto; min-height: 42px; padding: 0 16px; border: 1px solid #ffe2a6; border-radius: 12px; background: var(--sun); box-shadow: 0 4px 0 #87591d; color: #35260f; font-weight: 900; }
+        .update-button:hover:not(:disabled) { background: #f6c15f; transform: translateY(-1px); }
+        @keyframes update-reveal { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes update-pulse { 50% { box-shadow: 0 0 0 7px rgba(237, 174, 73, .12); } }
+
+        .panel { border: 1px solid rgba(207, 196, 177, .94); border-radius: 23px; background: rgba(255, 250, 240, .88); box-shadow: var(--shadow); backdrop-filter: blur(15px); }
+        .studio-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(330px, .72fr); gap: 17px; align-items: start; }
+        .composer { overflow: hidden; }
+        .composer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 24px 25px 18px; border-bottom: 1px solid var(--line); }
+        .eyebrow { color: var(--forest-2); font: 900 10px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
+        .composer h2 { max-width: 760px; margin: 8px 0 8px; font: 900 clamp(29px, 3.4vw, 45px)/.98 var(--display); letter-spacing: -.06em; }
+        .composer h2 span { position: relative; z-index: 0; white-space: nowrap; }
+        .composer h2 span::after { position: absolute; right: -3px; bottom: 1px; left: -3px; z-index: -1; height: 10px; border-radius: 9px; background: rgba(237, 174, 73, .38); content: ""; transform: rotate(-1deg); }
+        .composer-intro { max-width: 690px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+        .step-tag { flex: 0 0 auto; padding: 8px 10px; border: 1px solid #d6c9b5; border-radius: 11px; background: var(--paper-2); color: var(--forest); font: 800 10px var(--mono); }
+
+        .compose-body { display: grid; grid-template-columns: minmax(270px, .76fr) minmax(0, 1.24fr); min-height: 480px; }
+        .input-column { padding: 21px 22px 23px; border-right: 1px solid var(--line); }
+        .preview-column { min-width: 0; padding: 21px 22px 23px; background: rgba(235, 228, 215, .38); }
+        .field { margin-bottom: 14px; }
+        .field-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; font-size: 12px; font-weight: 850; }
+        .field-label small { color: var(--muted); font-size: 10px; font-weight: 650; }
+        textarea, .text-input, .select-input, .number-input {
             width: 100%;
             border: 1px solid var(--line);
-            border-radius: 14px;
-            background: rgba(255, 253, 248, 0.95);
-            color: var(--ink);
-            transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
-        }
-        textarea { display: block; min-height: 105px; padding: 14px 15px; resize: vertical; line-height: 1.5; }
-        textarea::placeholder, input::placeholder { color: #909991; }
-        textarea:hover, .text-input:hover, .select-input:hover { border-color: var(--line-strong); }
-        textarea:focus, .text-input:focus, .select-input:focus { border-color: var(--forest); background: var(--white); box-shadow: 0 0 0 4px rgba(37, 95, 80, 0.11); outline: 0; }
-        textarea.invalid { border-color: var(--coral); box-shadow: 0 0 0 4px rgba(189, 88, 70, 0.1); }
-        .field-error { min-height: 17px; margin-top: 6px; color: var(--coral); font-size: 12px; font-weight: 700; }
-        .name-field { margin: 1px 0 14px; }
-        .name-field .text-input { min-height: 43px; }
-        .optional-label { color: var(--muted); font-size: 10px; font-weight: 650; }
-        .file-preview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 7px; }
-        .file-chip { overflow: hidden; padding: 6px 8px; border: 1px solid #ded6c9; border-radius: 8px; background: rgba(240, 236, 228, 0.72); color: var(--muted-strong); font: 9px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-        .control-row { display: flex; align-items: end; gap: 12px; margin-top: 3px; }
-        .language-control { width: 190px; flex: 0 0 190px; }
-        .select-input { height: 47px; padding: 0 12px; }
-        .workflow-actions { display: flex; min-width: 0; flex: 1; gap: 9px; }
-        .action-button {
-            display: inline-flex;
-            flex: 1;
-            min-height: 47px;
-            align-items: center;
-            justify-content: center;
-            gap: 11px;
-            border: 0;
             border-radius: 13px;
-            background: var(--forest);
-            box-shadow: 0 6px 0 var(--forest-dark);
-            color: var(--white);
-            font: 850 15px/1 var(--display);
-            letter-spacing: 0.005em;
-            transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+            background: rgba(255, 253, 248, .96);
+            color: var(--ink);
+            transition: border-color .15s ease, box-shadow .15s ease;
         }
-        .action-button:hover:not(:disabled) { background: var(--forest-bright); box-shadow: 0 8px 0 var(--forest-dark); transform: translateY(-2px); }
-        .action-button:active:not(:disabled) { box-shadow: 0 2px 0 var(--forest-dark); transform: translateY(4px); }
-        .action-button:disabled { background: #7d8e87; box-shadow: 0 3px 0 #5d6d66; cursor: wait; }
-        .action-button .arrow { font-size: 19px; transition: transform 150ms ease; }
-        .action-button:hover:not(:disabled) .arrow { transform: translateX(3px); }
-        .cancel-button { flex: 0 0 auto; min-height: 47px; border: 1px solid #d8a59b; border-radius: 13px; padding: 0 14px; background: #fff4f1; color: #8b3f32; font-size: 12px; font-weight: 850; }
-        .cancel-button:hover:not(:disabled) { border-color: var(--coral); background: #f9dfd9; }
-        .cancel-button:disabled { opacity: 0.6; cursor: wait; }
-        .input-note { display: flex; align-items: center; gap: 8px; margin-top: 13px; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
-        .input-note b { color: var(--forest); font-family: var(--display); }
-        .key-hint { margin-left: auto; color: #89928d; font: 10px var(--mono); white-space: nowrap; }
+        textarea { min-height: 122px; padding: 13px 14px; resize: vertical; line-height: 1.48; }
+        .text-input, .select-input { min-height: 43px; padding: 0 12px; }
+        .number-input { min-height: 38px; padding: 0 8px; }
+        textarea:focus, .text-input:focus, .select-input:focus, .number-input:focus { border-color: var(--forest-2); box-shadow: 0 0 0 4px rgba(36, 94, 79, .1); outline: 0; }
+        textarea.invalid { border-color: var(--coral); box-shadow: 0 0 0 4px rgba(188, 89, 73, .1); }
+        .field-error { min-height: 16px; margin-top: 5px; color: var(--coral); font-size: 11px; font-weight: 750; }
+        .file-preview { display: grid; gap: 5px; margin-top: 6px; }
+        .file-chip { overflow: hidden; padding: 6px 8px; border: 1px solid #ded4c5; border-radius: 8px; background: rgba(238, 232, 220, .8); color: #59645f; font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+        .inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+        .button-row { display: flex; gap: 8px; margin-top: 17px; }
+        .btn-primary, .btn-secondary, .btn-danger, .btn-ghost { min-height: 43px; border-radius: 12px; padding: 0 14px; font-weight: 850; transition: transform .14s ease, background .14s ease, border-color .14s ease; }
+        .btn-primary { flex: 1; border: 0; background: var(--forest); box-shadow: 0 5px 0 #0d2e27; color: var(--white); }
+        .btn-primary:hover:not(:disabled) { background: var(--forest-2); transform: translateY(-1px); }
+        .btn-primary:active:not(:disabled) { box-shadow: 0 2px 0 #0d2e27; transform: translateY(3px); }
+        .btn-secondary { border: 1px solid #b9aa93; background: var(--paper); color: var(--forest); }
+        .btn-secondary:hover:not(:disabled), .btn-ghost:hover:not(:disabled) { border-color: var(--forest-2); background: #edf5ef; }
+        .btn-danger { border: 1px solid #d8a39a; background: #fff0ed; color: #8c3c2f; }
+        .btn-ghost { min-height: 34px; border: 1px solid var(--line); background: rgba(255,255,255,.5); color: #4e5e57; padding: 0 10px; font-size: 11px; }
+        button:disabled { opacity: .58; cursor: not-allowed; transform: none !important; }
+        .hint { margin: 13px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
 
-        .side-panel { display: flex; min-height: 100%; flex-direction: column; overflow: hidden; border-color: rgba(18, 60, 50, 0.7); background: var(--forest); color: var(--white); }
-        .side-content { position: relative; padding: 28px 27px 23px; }
-        .side-content::after { position: absolute; top: 20px; right: 22px; color: rgba(255,255,255,0.08); content: "03"; font: 900 76px/1 var(--display); }
-        .side-panel h3 { position: relative; z-index: 1; margin: 6px 0 7px; font: 900 24px/1.05 var(--display); letter-spacing: -0.045em; }
-        .side-panel p { position: relative; z-index: 1; margin: 0; color: #d4e5dd; font-size: 13px; line-height: 1.5; }
-        .flow-list { position: relative; display: grid; gap: 15px; margin-top: 23px; }
-        .flow-list::before { position: absolute; top: 17px; bottom: 17px; left: 15px; width: 1px; background: rgba(255,255,255,0.19); content: ""; }
-        .flow-item { position: relative; display: grid; grid-template-columns: 31px minmax(0, 1fr); align-items: center; gap: 11px; }
-        .flow-number { display: grid; z-index: 1; width: 31px; height: 31px; place-items: center; border: 1px solid rgba(255,255,255,0.13); border-radius: 50%; background: #347565; color: var(--mint); font: 850 10px var(--display); }
-        .flow-item strong { display: block; margin-bottom: 2px; color: var(--white); font-size: 13px; }
-        .flow-item small { display: block; color: #bad0c5; font-size: 11px; line-height: 1.3; }
-        .side-footer { display: flex; align-items: flex-start; gap: 10px; margin-top: auto; padding: 17px 27px 18px; border-top: 1px solid rgba(255,255,255,0.13); background: rgba(0,0,0,0.1); color: #d8e8e0; font-size: 12px; line-height: 1.4; }
-        .side-footer-icon { display: grid; flex: 0 0 auto; width: 26px; height: 26px; place-items: center; border-radius: 9px; background: rgba(255,255,255,0.11); color: var(--sun); font-weight: 900; }
+        .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+        .preview-head h3 { margin: 0; font: 900 17px var(--display); letter-spacing: -.025em; }
+        .preview-head span { color: var(--muted); font-size: 10px; }
+        .video-stage { position: relative; display: grid; width: 100%; min-height: 250px; overflow: hidden; place-items: center; border: 1px solid #243e36; border-radius: 16px; background: #0e1613; box-shadow: inset 0 0 0 1px rgba(255,255,255,.04); touch-action: none; }
+        .video-stage video { display: block; width: 100%; height: 100%; object-fit: contain; }
+        .preview-placeholder { max-width: 310px; padding: 30px; color: #b9c8c1; text-align: center; }
+        .preview-placeholder b { display: grid; width: 48px; height: 48px; margin: 0 auto 13px; place-items: center; border: 1px solid rgba(255,255,255,.14); border-radius: 16px; background: rgba(255,255,255,.07); color: var(--sun); font: 900 21px var(--display); }
+        .preview-placeholder strong { display: block; margin-bottom: 6px; color: #eef6f1; font-size: 13px; }
+        .preview-placeholder span { font-size: 11px; line-height: 1.45; }
+        .crop-box { position: absolute; z-index: 3; border: 2px solid var(--sun); background: rgba(237, 174, 73, .14); box-shadow: 0 0 0 9999px rgba(4, 9, 7, .52), inset 0 0 0 1px rgba(255,255,255,.4); cursor: move; }
+        .crop-box::before { position: absolute; top: 7px; left: 8px; padding: 4px 6px; border-radius: 6px; background: var(--sun); color: #35260f; content: "VÙNG OCR"; font: 900 8px var(--display); letter-spacing: .1em; }
+        .crop-handle { position: absolute; width: 14px; height: 14px; border: 2px solid #fff7e6; border-radius: 50%; background: var(--sun); box-shadow: 0 2px 5px rgba(0,0,0,.35); }
+        .crop-handle.nw { top: -8px; left: -8px; cursor: nwse-resize; }
+        .crop-handle.ne { top: -8px; right: -8px; cursor: nesw-resize; }
+        .crop-handle.sw { bottom: -8px; left: -8px; cursor: nesw-resize; }
+        .crop-handle.se { right: -8px; bottom: -8px; cursor: nwse-resize; }
+        .crop-tools { margin-top: 11px; padding: 11px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255, 253, 248, .72); }
+        .crop-values { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+        .crop-values label { color: var(--muted); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+        .crop-values label span { display: block; margin-bottom: 4px; }
+        .crop-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+        .preview-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 18px; margin-top: 9px; color: var(--muted); font-size: 10px; }
 
-        .edge-warning { margin-top: 14px; border: 1px solid #e7bf78; border-radius: 13px; background: #fff3d9; color: #61481d; font-size: 12px; line-height: 1.45; }
-        .edge-warning summary { padding: 11px 13px; font-weight: 850; cursor: pointer; }
-        .warning-body { padding: 0 13px 13px; }
-        .edge-warning code { display: block; overflow: auto; margin-top: 8px; padding: 9px; border-radius: 8px; background: rgba(103, 74, 28, 0.07); font: 10px/1.45 var(--mono); white-space: nowrap; }
-        .copy-button { margin-top: 8px; border: 0; border-radius: 8px; padding: 6px 9px; background: #ecd095; color: #61481d; font-size: 11px; font-weight: 850; }
+        .queue-card { overflow: hidden; }
+        .queue-head { padding: 21px 20px 16px; background: var(--forest); color: var(--white); }
+        .queue-kicker { color: var(--mint); font: 900 10px var(--display); letter-spacing: .15em; text-transform: uppercase; }
+        .queue-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; }
+        .queue-title h2 { margin: 0; font: 900 23px var(--display); letter-spacing: -.04em; }
+        .queue-count { display: grid; min-width: 34px; height: 34px; place-items: center; border-radius: 11px; background: rgba(255,255,255,.12); color: var(--sun); font: 900 14px var(--mono); }
+        .queue-copy { margin: 7px 0 0; color: #c9ddd4; font-size: 11px; line-height: 1.4; }
+        .queue-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 13px 14px; border-bottom: 1px solid var(--line); background: #f3ecdf; }
+        .queue-actions .btn-primary { min-height: 41px; }
+        .queue-list { display: grid; max-height: 510px; overflow: auto; gap: 8px; padding: 13px; }
+        .queue-empty { padding: 34px 18px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.5; }
+        .queue-item { position: relative; overflow: hidden; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.58); }
+        .queue-item.running { border-color: #75a895; background: #eef7f1; }
+        .queue-item.error { border-color: #d69a90; background: #fff3f0; }
+        .queue-item.success { border-color: #9fc5ad; }
+        .queue-item-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+        .queue-index { color: var(--forest-2); font: 900 10px var(--mono); }
+        .queue-name { overflow: hidden; margin-top: 4px; font-size: 12px; font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
+        .queue-id { margin-top: 3px; color: var(--muted); font: 9px var(--mono); }
+        .badge { flex: 0 0 auto; padding: 4px 7px; border-radius: 999px; background: #e9e2d5; color: #59645f; font-size: 9px; font-weight: 900; text-transform: uppercase; }
+        .badge.running { background: var(--mint); color: var(--forest); }
+        .badge.success { background: #d8eddf; color: #286044; }
+        .badge.error, .badge.cancelled { background: #f3d4ce; color: #8c3c2f; }
+        .queue-progress { height: 4px; overflow: hidden; margin-top: 10px; border-radius: 999px; background: #e1dbd0; }
+        .queue-progress i { display: block; height: 100%; border-radius: inherit; background: var(--forest-2); transition: width .25s ease; }
+        .queue-item-actions { display: flex; gap: 6px; margin-top: 9px; }
+        .queue-error { margin-top: 7px; color: var(--coral); font-size: 10px; line-height: 1.35; }
 
-        .workspace {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) 325px;
-            gap: 18px;
-            align-items: start;
-            animation: reveal 520ms 120ms ease both;
-        }
-        .process-card { min-width: 0; overflow: hidden; padding: 21px 23px 23px; }
-        .process-top { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
-        .tabs { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: #eee8dd; }
-        .tab-btn { min-height: 34px; border: 0; border-radius: 9px; padding: 7px 12px; background: transparent; color: var(--muted-strong); font-size: 12px; font-weight: 850; }
-        .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.6); color: var(--ink); }
-        .tab-btn.active { background: var(--white); box-shadow: 0 3px 10px rgba(45,54,47,0.09); color: var(--forest); }
-        .process-status { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-        .process-status::before { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 3px rgba(37, 95, 80, 0.08); content: ""; }
-        .process-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; margin: 19px 0 15px; }
-        .section-title h3 { margin: 0; font: 900 21px/1 var(--display); letter-spacing: -0.04em; }
-        .section-title span { color: var(--muted); font-size: 11px; }
+        .lower-grid { display: grid; grid-template-columns: minmax(0, 1fr) 410px; gap: 17px; margin-top: 17px; align-items: start; }
+        .progress-card, .control-card { padding: 19px 20px 20px; }
+        .section-head { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 14px; }
+        .section-head h3 { margin: 0; font: 900 18px var(--display); letter-spacing: -.025em; }
+        .section-head span { color: var(--muted); font-size: 10px; }
+        .stepper { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin-bottom: 12px; }
+        .step { padding: 8px 5px; border: 1px solid var(--line); border-radius: 10px; background: #f1ebdf; color: var(--muted); text-align: center; font-size: 9px; font-weight: 850; }
+        .step.active { border-color: #79a995; background: #e6f2ea; color: var(--forest); }
+        .step.completed { border-color: #b6d2bf; background: #eff7f1; color: #397058; }
+        .step.error { border-color: #daa298; background: #fff1ee; color: var(--coral); }
+        .console { height: 220px; overflow: auto; padding: 11px 12px; border: 1px solid #253d35; border-radius: 13px; background: #11231e; color: #c9d9d1; font: 10px/1.6 var(--mono); }
+        .log-line.ocr { color: #f1c878; }
+        .log-line.error { color: #f2a69a; }
+        .log-line.success { color: #9ed3af; }
+        .result-box { margin-top: 11px; padding: 12px; border: 1px solid #a9c9b3; border-radius: 13px; background: #eff8f1; }
+        .result-title { margin-bottom: 8px; color: #285f45; font-weight: 900; }
+        .result-path { display: grid; grid-template-columns: 70px minmax(0,1fr); gap: 7px; margin: 5px 0; color: #456058; font-size: 10px; }
+        .result-path span { overflow-wrap: anywhere; }
 
-        .progress-stepper { position: relative; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; padding: 0 2px; }
-        .progress-line, .progress-line-active { position: absolute; top: 16px; left: 10%; right: 10%; height: 2px; border-radius: 99px; background: var(--line); }
-        .progress-line-active { right: auto; width: 0; background: var(--forest); transition: width 280ms ease; }
-        .step { position: relative; z-index: 1; display: grid; min-width: 0; justify-items: center; gap: 7px; text-align: center; color: var(--muted); }
-        .step-circle { display: grid; width: 33px; height: 33px; place-items: center; border: 2px solid var(--line); border-radius: 50%; background: var(--white); font: 850 11px var(--display); transition: 180ms ease; }
-        .step-label { max-width: 96px; font-size: 10.5px; font-weight: 750; line-height: 1.2; }
-        .step.active, .step.completed { color: var(--forest); }
-        .step.active .step-circle { border-color: var(--forest); background: var(--mint); color: var(--forest-dark); box-shadow: 0 0 0 5px rgba(194, 227, 208, 0.52); }
-        .step.completed .step-circle { border-color: var(--forest); background: var(--forest); color: var(--white); }
-        .step.error { color: var(--coral); }
-        .step.error .step-circle { border-color: var(--coral); background: #fae5e0; color: var(--coral); }
-        .ready-state { display: flex; align-items: center; gap: 11px; margin-top: 19px; padding: 13px 14px; border: 1px dashed var(--line-strong); border-radius: 13px; background: rgba(245, 241, 232, 0.6); color: var(--muted); font-size: 12px; line-height: 1.4; }
-        .ready-icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 11px; background: var(--mint-light); color: var(--forest); font: 900 16px var(--display); }
+        .settings-grid { display: grid; gap: 12px; }
+        .setting-field label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 850; }
+        .setting-field small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+        .readonly { background: #eee8dc; color: #66716c; }
+        .diagnostics { padding: 11px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.45); }
+        .diagnostics-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+        .diagnostics-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .diagnostic-item { padding: 7px; border-radius: 9px; background: #eee8dd; font-size: 9px; }
+        .diagnostic-item.ok { background: #e5f1e8; color: #2c6549; }
+        .diagnostic-item.error { background: #f9e1dc; color: #873c31; }
+        .diagnostic-item strong, .diagnostic-item small { display: block; }
+        .diagnostic-item small { margin-top: 2px; opacity: .8; line-height: 1.35; }
+        .history-mini { display: grid; max-height: 210px; overflow: auto; gap: 6px; }
+        .history-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.5); }
+        .history-row strong { display: block; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+        .history-row small { color: var(--muted); font: 8px var(--mono); }
 
-        .console-container { display: none; flex-direction: column; overflow: hidden; margin-top: 19px; border: 1px solid #1a302a; border-radius: 14px; background: #13241f; }
-        .console-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 13px; border-bottom: 1px solid rgba(255,255,255,0.09); color: #c7dad1; font: 700 10px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
-        .console-box { height: 190px; overflow: auto; padding: 11px 13px; color: #dfeae5; font: 11px/1.55 var(--mono); scrollbar-color: #49675e transparent; }
-        .log-line { padding: 1px 0; overflow-wrap: anywhere; }
-        .log-line.ocr { color: #9dd9bd; }
-        .log-line.error { color: #ff9e89; }
-        .log-line.success { color: #f9c671; }
-        .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.25); border-top-color: var(--sun); border-radius: 50%; animation: spin 700ms linear infinite; }
+
+        .toast { position: fixed; right: 20px; bottom: 20px; z-index: 80; max-width: min(390px, calc(100vw - 28px)); padding: 11px 14px; border: 1px solid #447663; border-radius: 12px; background: var(--forest); box-shadow: 0 16px 38px rgba(0,0,0,.22); color: var(--white); font-size: 11px; font-weight: 750; opacity: 0; pointer-events: none; transform: translateY(12px); transition: .18s ease; }
+        .toast.show { opacity: 1; transform: translateY(0); }
+        .toast.error { border-color: #d67868; background: #71372d; }
+        .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3); border-top-color: currentColor; border-radius: 50%; animation: spin .7s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        .result-box { margin-top: 18px; padding: 16px; border: 1px solid #afd0bb; border-radius: 14px; background: var(--mint-light); }
-        .result-title { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; color: var(--forest-dark); font: 850 17px var(--display); }
-        .result-check { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 50%; background: var(--forest); color: var(--white); font-size: 12px; }
-        .result-path { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin: 8px 0; color: #436358; font-size: 12px; }
-        .result-path b { color: var(--forest-dark); }
-        .result-path span { overflow-wrap: anywhere; }
-        .btn-outline { min-height: 34px; border: 1px solid var(--forest); border-radius: 9px; padding: 7px 10px; background: transparent; color: var(--forest); font-size: 11px; font-weight: 850; transition: background 140ms ease, color 140ms ease; }
-        .btn-outline:hover { background: var(--forest); color: var(--white); }
-        .tab-badge { display: inline-grid; min-width: 18px; height: 18px; margin-left: 5px; place-items: center; border-radius: 999px; background: var(--coral); color: var(--white); font: 800 9px var(--body); }
-
-        .settings-grid { display: grid; gap: 15px; padding-top: 19px; }
-        .settings-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-        .settings-head h3 { margin: 0; font: 900 21px/1 var(--display); letter-spacing: -0.04em; }
-        .save-status { color: var(--muted); font-size: 11px; }
-        .save-status.success { color: var(--forest); }
-        .save-status.error { color: var(--coral); }
-        .setting-field label { display: block; margin-bottom: 7px; color: var(--muted-strong); font-size: 12px; font-weight: 800; }
-        .setting-field small { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.4; }
-        .text-input { min-height: 45px; padding: 10px 12px; }
-        .readonly { background: #f0ece4; color: #727e78; cursor: default; }
-        .diagnostics { padding: 13px; border: 1px solid var(--line); border-radius: 13px; background: rgba(245, 241, 232, 0.55); }
-        .diagnostics-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-        .diagnostics-head strong { font: 850 13px var(--display); }
-        .diagnostics-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-        .diagnostic-item { display: grid; min-width: 0; grid-template-columns: 8px minmax(0, 1fr); align-items: start; gap: 7px; color: var(--muted-strong); font-size: 11px; }
-        .diagnostic-copy { min-width: 0; }
-        .diagnostic-copy strong { display: block; line-height: 1.25; }
-        .diagnostic-copy small { display: block; margin-top: 2px; color: var(--muted); line-height: 1.35; }
-        .diagnostic-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--line-strong); }
-        .diagnostic-item.ok .diagnostic-dot { background: var(--forest); }
-        .diagnostic-item.warn .diagnostic-dot { background: var(--sun); }
-        .diagnostic-item.error .diagnostic-dot { background: var(--coral); }
-        .diagnostic-summary { margin-top: 10px; color: var(--muted); font-size: 11px; }
-        .setup-guide { padding: 14px 15px; border: 1px solid #d7c08f; border-radius: 14px; background: #fff7e5; }
-        .setup-guide strong { display: block; color: #654b1f; font: 850 13px var(--display); }
-        .setup-guide p { margin: 5px 0 10px; color: #735f3d; font-size: 11px; line-height: 1.45; }
-        .setup-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-        .setup-step { padding: 9px; border-radius: 10px; background: rgba(255, 253, 248, 0.78); color: #665437; font-size: 10px; line-height: 1.4; }
-        .setup-step b { display: block; margin-bottom: 3px; color: var(--forest-dark); }
-
-        .history-card { min-width: 0; padding: 21px 20px 20px; box-shadow: var(--shadow-soft); }
-        .history-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-        .history-card h3 { margin: 0; font: 900 21px/1 var(--display); letter-spacing: -0.04em; }
-        .history-card p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
-        .history-count { display: inline-flex; min-width: 27px; height: 27px; align-items: center; justify-content: center; border-radius: 9px; background: var(--mint-light); color: var(--forest); font: 850 11px var(--display); }
-        .history-list { display: grid; max-height: 421px; gap: 8px; overflow: auto; padding-right: 4px; scrollbar-color: #b9b1a4 transparent; }
-        .history-item { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,0.47); transition: border-color 140ms ease, background 140ms ease, transform 140ms ease; }
-        .history-item:hover { border-color: #b9cbbf; background: rgba(255,255,255,0.77); transform: translateY(-1px); }
-        .history-info { min-width: 0; }
-        .history-title { overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 800; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-        .history-meta { margin-top: 4px; overflow: hidden; color: var(--muted); font: 9px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-        .history-actions { flex: 0 0 auto; }
-        .history-actions button { min-height: 31px; margin: 0; padding: 6px 8px; white-space: nowrap; }
-        .empty-state { padding: 25px 12px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); font-size: 12px; line-height: 1.45; text-align: center; }
-        .history-loading { display: grid; gap: 8px; }
-        .skeleton { height: 53px; border-radius: 12px; background: linear-gradient(90deg, #eee8de 25%, #f8f4ed 50%, #eee8de 75%); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
-        @keyframes shimmer { to { background-position: -200% 0; } }
-
-        .toast {
-            position: fixed;
-            right: 22px;
-            bottom: 22px;
-            z-index: 20;
-            max-width: min(360px, calc(100% - 28px));
-            padding: 11px 14px;
-            border: 1px solid rgba(18, 60, 50, 0.65);
-            border-radius: 12px;
-            background: var(--forest-dark);
-            box-shadow: 0 16px 40px rgba(18, 60, 50, 0.25);
-            color: var(--white);
-            font-size: 12px;
-            font-weight: 750;
-            line-height: 1.4;
-            opacity: 0;
-            pointer-events: none;
-            transform: translateY(12px);
-            transition: opacity 180ms ease, transform 180ms ease;
+        @media (max-width: 1060px) {
+            .studio-grid, .lower-grid { grid-template-columns: 1fr; }
+            .queue-list { max-height: 360px; grid-template-columns: 1fr 1fr; }
         }
-        .toast.show { opacity: 1; transform: translateY(0); }
-        .toast.error { border-color: #d77a69; background: #71352b; }
-
-        @keyframes reveal { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-        @media (max-width: 860px) {
-            .hero, .workspace { grid-template-columns: minmax(0, 1fr); }
-            .side-panel { min-height: 330px; }
-            .history-list { max-height: 390px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .history-item { grid-template-columns: minmax(0, 1fr); align-items: start; }
-            .history-actions button { width: 100%; }
+        @media (max-width: 760px) {
+            .shell { width: min(100% - 22px, 1380px); padding-top: 15px; }
+            .topbar { align-items: flex-start; flex-direction: column; }
+            .status-cluster { justify-content: flex-start; }
+            .composer-head { padding: 21px 18px 16px; }
+            .step-tag { display: none; }
+            .compose-body { grid-template-columns: 1fr; }
+            .input-column { border-right: 0; border-bottom: 1px solid var(--line); padding: 18px; }
+            .preview-column { padding: 18px; }
+            .video-stage { min-height: 220px; }
+            .queue-list { grid-template-columns: 1fr; }
+            .crop-values { grid-template-columns: 1fr 1fr; }
+            .diagnostics-list { grid-template-columns: 1fr; }
+            .update-banner { align-items: stretch; flex-direction: column; }
+            .update-button { width: 100%; }
         }
-
-        @media (max-width: 620px) {
-            .shell { width: min(100% - 24px, 1220px); padding: 18px 0 28px; }
-            .topbar { align-items: flex-start; flex-direction: column; gap: 15px; margin-bottom: 20px; }
-            .edge-status { min-height: 35px; padding: 7px 11px; }
-            .hero, .workspace { gap: 14px; margin-bottom: 14px; }
-            .panel { border-radius: 21px; }
-            .compose { padding: 24px 19px 22px; }
-            .compose h2 { margin-top: 8px; font-size: clamp(30px, 9.6vw, 38px); }
-            .compose h2 span { white-space: normal; }
-            .compose-intro { margin-bottom: 20px; font-size: 13.5px; }
-            textarea { min-height: 112px; }
-            .control-row { align-items: stretch; flex-direction: column; gap: 10px; }
-            .language-control { width: 100%; flex-basis: auto; }
-            .workflow-actions { width: 100%; flex: 0 0 auto; }
-            .action-button { flex: 1; }
-            .file-preview { grid-template-columns: minmax(0, 1fr); }
-            .key-hint { display: none; }
-            .side-panel { min-height: 0; }
-            .side-content { padding: 25px 21px 22px; }
-            .side-footer { padding: 16px 21px 18px; }
-            .process-card { padding: 17px 16px 19px; }
-            .process-top { align-items: flex-start; flex-direction: column; gap: 11px; }
-            .process-status { max-width: 100%; }
-            .section-title { margin-top: 17px; }
-            .progress-stepper { gap: 0; padding: 0; }
-            .progress-line, .progress-line-active { top: 14px; }
-            .step-circle { width: 29px; height: 29px; font-size: 10px; }
-            .step-label { max-width: 58px; font-size: 9px; line-height: 1.15; }
-            .ready-state { align-items: flex-start; }
-            .result-path { grid-template-columns: 1fr; gap: 2px; }
-            .settings-head { align-items: flex-start; flex-direction: column; gap: 6px; }
-            .diagnostics-list { grid-template-columns: minmax(0, 1fr); }
-            .setup-steps { grid-template-columns: minmax(0, 1fr); }
-            .history-card { padding: 19px 16px; }
-            .history-list { max-height: 430px; grid-template-columns: minmax(0, 1fr); }
-            .history-item { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-            .history-actions button { width: auto; }
-            .toast { right: 14px; bottom: 14px; }
+        @media (max-width: 480px) {
+            .brand p { white-space: normal; }
+            .status-pill { font-size: 10px; }
+            .composer h2 { font-size: 31px; }
+            .inline-fields, .button-row { grid-template-columns: 1fr; flex-direction: column; }
+            .button-row > * { width: 100%; }
+            .video-stage { min-height: 190px; }
+            .lower-grid { gap: 12px; }
+            .progress-card, .control-card { padding: 16px; }
+            .stepper { grid-template-columns: 1fr 1fr 1fr; }
+            .result-path { grid-template-columns: 1fr; }
         }
-
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
-        }
+        @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
     </style>
 </head>
 <body>
     <main class="shell">
         <header class="topbar">
             <div class="brand">
-                <div class="brand-mark"><img src="/avatar.jpg" alt="Avatar VietSub Studio"></div>
-                <div>
-                    <h1>VietSub Studio</h1>
-                    <p>Douyin → OCR → phụ đề tiếng Việt</p>
-                </div>
+                <div class="brand-mark"><img src="/avatar.jpg" alt="VietSub Studio"></div>
+                <div><h1>VietSub Studio</h1><p>Preview vùng OCR · hàng đợi video tuần tự · mã nguồn mở</p></div>
             </div>
-            <div id="edge-status" class="edge-status" role="status" aria-live="polite">
-                <i class="status-dot" aria-hidden="true"></i>
-                <span id="edge-text">Đang kiểm tra Edge</span>
+            <div class="status-cluster">
+                <div id="version-pill" class="status-pill"><i></i><span>v{{ app_version }}</span></div>
+                <div id="edge-pill" class="status-pill"><i></i><span>Đang kiểm tra Edge</span></div>
             </div>
         </header>
 
-        <section class="hero" aria-label="Tạo phụ đề">
-            <div class="panel compose">
-                <div class="compose-header">
-                    <div class="eyebrow">Một link · Một luồng rõ ràng</div>
-                    <h2>Biến video Douyin thành <span>phụ đề Việt.</span></h2>
-                    <p class="compose-intro">Dán nguyên đoạn chia sẻ từ Douyin. Studio tự nhận link, dùng lại video đã tải khi có và giữ nguyên toàn bộ mốc thời gian SRT.</p>
+        <section id="update-banner" class="update-banner" aria-live="polite" hidden>
+            <div class="update-banner-copy">
+                <div class="update-banner-label">Bản cập nhật mới</div>
+                <strong id="update-title">VietSub Studio đã có phiên bản mới</strong>
+                <p id="update-copy">Nên cập nhật để nhận tính năng và bản sửa lỗi mới nhất.</p>
+            </div>
+            <button id="update-btn" class="update-button" type="button">Cập nhật ngay →</button>
+        </section>
+
+        <section class="studio-grid">
+            <div class="panel composer">
+                <div class="composer-head">
+                    <div>
+                        <div class="eyebrow">Chuẩn bị từng video</div>
+                        <h2>Nhìn đúng vùng chữ <span>trước khi OCR.</span></h2>
+                        <p class="composer-intro">Tải preview, kéo khung vàng vào vùng phụ đề rồi thêm video vào hàng đợi. Studio sẽ xử lý lần lượt, không chạy chồng tiến trình.</p>
+                    </div>
+                    <div class="step-tag">PREVIEW → QUEUE → RUN</div>
                 </div>
 
-                <form id="workflow-form" novalidate>
-                    <label class="field-label" for="url-input">
-                        <span>Link hoặc đoạn chia sẻ Douyin</span>
-                        <span id="char-count" class="counter">0 ký tự</span>
-                    </label>
-                    <textarea id="url-input" maxlength="2000" spellcheck="false" aria-describedby="url-error input-note" placeholder="Dán đoạn share của Douyin vào đây…"></textarea>
-                    <div id="url-error" class="field-error" role="alert"></div>
-
-                    <div class="name-field">
-                        <label class="field-label" for="project-name">
-                            <span>Tên dùng chung cho bộ file</span>
-                            <span class="optional-label">Để trống = tên video Douyin</span>
-                        </label>
-                        <input id="project-name" class="text-input" maxlength="100" autocomplete="off" placeholder="Ví dụ: Review sản phẩm 21-07">
-                        <div class="file-preview" aria-label="Xem trước tên file">
-                            <span id="preview-video" class="file-chip">Ten video.mp4</span>
-                            <span id="preview-raw" class="file-chip">Ten video.raw.srt</span>
-                            <span id="preview-vi" class="file-chip">Ten video.vi.srt</span>
+                <div class="compose-body">
+                    <form id="preview-form" class="input-column" novalidate>
+                        <div class="field">
+                            <label class="field-label" for="url-input"><span>Link hoặc đoạn share Douyin</span><small id="char-count">0 ký tự</small></label>
+                            <textarea id="url-input" maxlength="2000" spellcheck="false" placeholder="Dán link video hoặc nguyên đoạn chia sẻ…"></textarea>
+                            <div id="url-error" class="field-error"></div>
                         </div>
+                        <div class="field">
+                            <label class="field-label" for="project-name"><span>Tên bộ file</span><small>Để trống = tên video</small></label>
+                            <input id="project-name" class="text-input" maxlength="100" autocomplete="off" placeholder="Ví dụ: Review sản phẩm 21-07">
+                            <div class="file-preview">
+                                <span id="preview-video-name" class="file-chip">Tên video.mp4</span>
+                                <span id="preview-sub-name" class="file-chip">Tên video.raw.srt · Tên video.vi.srt</span>
+                            </div>
+                        </div>
+                        <div class="inline-fields">
+                            <div class="field">
+                                <label class="field-label" for="ocr-lang"><span>Ngôn ngữ gốc</span></label>
+                                <select id="ocr-lang" class="select-input">
+                                    <option value="ch">Tiếng Trung</option>
+                                    <option value="en">Tiếng Anh</option>
+                                    <option value="ja">Tiếng Nhật</option>
+                                    <option value="ko">Tiếng Hàn</option>
+                                    <option value="vi">Tiếng Việt</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label class="field-label"><span>Trạng thái preview</span></label>
+                                <input id="preview-status" class="text-input readonly" readonly value="Chưa chuẩn bị">
+                            </div>
+                        </div>
+                        <div class="button-row">
+                            <button id="prepare-btn" class="btn-secondary" type="submit">Tải preview</button>
+                            <button id="add-queue-btn" class="btn-primary" type="button" disabled>Thêm vào hàng đợi →</button>
+                        </div>
+                        <p class="hint">Tạo tất cả preview trước, chỉnh crop riêng cho từng video, sau đó bấm “Chạy hàng đợi”. Video đã preview sẽ không bị tải lại.</p>
+                    </form>
+
+                    <div class="preview-column">
+                        <div class="preview-head"><h3>Khung OCR trực quan</h3><span>Kéo khung · kéo 4 góc để đổi kích thước</span></div>
+                        <div id="video-stage" class="video-stage">
+                            <div id="preview-placeholder" class="preview-placeholder"><b>01</b><strong>Chưa có video preview</strong><span>Dán link và bấm “Tải preview”. Video sẽ xuất hiện ở đây để bạn chọn chính xác vùng OCR.</span></div>
+                            <video id="preview-player" controls preload="metadata" hidden></video>
+                            <div id="crop-box" class="crop-box" hidden>
+                                <i class="crop-handle nw" data-handle="nw"></i><i class="crop-handle ne" data-handle="ne"></i>
+                                <i class="crop-handle sw" data-handle="sw"></i><i class="crop-handle se" data-handle="se"></i>
+                            </div>
+                        </div>
+                        <div id="crop-tools" class="crop-tools" hidden>
+                            <div class="crop-values">
+                                <label><span>X (%)</span><input id="crop-x" class="number-input" type="number" min="0" max="100" step="0.1"></label>
+                                <label><span>Y (%)</span><input id="crop-y" class="number-input" type="number" min="0" max="100" step="0.1"></label>
+                                <label><span>Rộng (%)</span><input id="crop-width" class="number-input" type="number" min="1" max="100" step="0.1"></label>
+                                <label><span>Cao (%)</span><input id="crop-height" class="number-input" type="number" min="1" max="100" step="0.1"></label>
+                            </div>
+                            <div class="crop-actions">
+                                <button id="full-frame-btn" class="btn-ghost" type="button">Toàn khung</button>
+                                <button id="lower-third-btn" class="btn-ghost" type="button">1/3 phía dưới</button>
+                                <button id="save-crop-btn" class="btn-ghost" type="button">Lưu làm mặc định</button>
+                            </div>
+                        </div>
+                        <div class="preview-meta"><span id="preview-title">Chưa có video</span><span id="crop-summary">Crop: —</span></div>
                     </div>
-
-                    <div class="control-row">
-                        <div class="language-control">
-                            <label class="field-label" for="ocr-lang"><span>Ngôn ngữ gốc</span></label>
-                            <select id="ocr-lang" class="select-input">
-                                <option value="ch">Tiếng Trung</option>
-                                <option value="en">Tiếng Anh</option>
-                                <option value="ja">Tiếng Nhật</option>
-                                <option value="ko">Tiếng Hàn</option>
-                                <option value="vi">Tiếng Việt</option>
-                            </select>
-                        </div>
-                        <div class="workflow-actions">
-                            <button id="start-btn" class="action-button" type="submit">
-                                <span>Bắt đầu xử lý</span><span class="arrow" aria-hidden="true">→</span>
-                            </button>
-                            <button id="cancel-btn" class="cancel-button" type="button" hidden>Huỷ</button>
-                        </div>
-                    </div>
-                </form>
-
-                <div id="input-note" class="input-note">
-                    <b>TIP</b>
-                    <span>Link video hoặc link share v.douyin.com đều dùng được.</span>
-                    <span class="key-hint">Ctrl + Enter</span>
                 </div>
-
-                <details id="edge-warning" class="edge-warning" hidden>
-                    <summary>Edge chưa sẵn sàng — xem cách khắc phục</summary>
-                    <div class="warning-body">
-                        App sẽ tự mở Edge khi cần. Nếu vẫn lỗi, chạy lệnh sau:
-                        <code id="cmd-text">start msedge.exe --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --user-data-dir="%LOCALAPPDATA%\Microsoft\Edge\User Data Debug"</code>
-                        <button id="copy-cmd-btn" class="copy-button" type="button">Copy lệnh</button>
-                    </div>
-                </details>
             </div>
 
-            <aside class="panel side-panel">
-                <div class="side-content">
-                    <div class="eyebrow" style="color: var(--mint)">Quy trình tự động</div>
-                    <h3>Từ clip đến file sub.</h3>
-                    <p>Ba chặng chính, xuất thành một bộ video và phụ đề có tên đồng bộ.</p>
-                    <div class="flow-list">
-                        <div class="flow-item"><span class="flow-number">01</span><div><strong>Nhận link share</strong><small>Tự bóc đúng URL Douyin</small></div></div>
-                        <div class="flow-item"><span class="flow-number">02</span><div><strong>Lấy video & OCR</strong><small>Dùng Douzy và VideOCR</small></div></div>
-                        <div class="flow-item"><span class="flow-number">03</span><div><strong>Dịch & kiểm tra</strong><small>Giữ nguyên timeline SRT</small></div></div>
-                    </div>
+            <aside class="panel queue-card">
+                <div class="queue-head">
+                    <div class="queue-kicker">Sequential jobs</div>
+                    <div class="queue-title"><h2>Hàng đợi video</h2><span id="queue-count" class="queue-count">0</span></div>
+                    <p class="queue-copy">Mỗi lần chỉ một video dùng Douzy, VideOCR và Gemini. Video kế tiếp tự chạy khi video trước kết thúc.</p>
                 </div>
-                <div class="side-footer"><span class="side-footer-icon" aria-hidden="true">↻</span><span><b>An toàn cache:</b> Studio tạo bản video có tên riêng, không đổi file gốc của Douzy.</span></div>
+                <div class="queue-actions">
+                    <button id="start-queue-btn" class="btn-primary" type="button" disabled>Chạy hàng đợi</button>
+                    <button id="cancel-btn" class="btn-danger" type="button" hidden>Huỷ job</button>
+                    <button id="clear-finished-btn" class="btn-ghost" type="button" title="Xoá các job đã xong">Dọn</button>
+                </div>
+                <div id="queue-list" class="queue-list"><div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div></div>
             </aside>
         </section>
 
-        <section class="workspace" aria-label="Không gian làm việc">
-            <div class="panel process-card">
-                <div class="process-top">
-                    <nav class="tabs" role="tablist" aria-label="Chế độ">
-                        <button class="tab-btn active" id="tab-process" type="button" role="tab" aria-selected="true" aria-controls="content-process">Xử lý</button>
-                        <button class="tab-btn" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="content-settings">Thiết lập <span id="setup-count" class="tab-badge" hidden></span></button>
-                    </nav>
-                    <div class="process-status"><span id="process-caption">Sẵn sàng nhận link</span></div>
+        <section class="lower-grid">
+            <div class="panel progress-card">
+                <div class="section-head"><h3>Tiến trình job hiện tại</h3><span id="process-caption">Sẵn sàng</span></div>
+                <div class="stepper">
+                    <div id="step-resolve" class="step">1 · Giải mã</div><div id="step-download" class="step">2 · Video</div>
+                    <div id="step-ocr" class="step">3 · OCR</div><div id="step-translate" class="step">4 · Dịch</div><div id="step-done" class="step">5 · Xong</div>
                 </div>
-
-                <div id="content-process" role="tabpanel" aria-labelledby="tab-process">
-                    <div class="section-title"><h3>Tiến trình</h3><span>5 bước tự động</span></div>
-                    <div id="stepper-container">
-                        <div class="progress-stepper" aria-label="Tiến trình xử lý">
-                            <div class="progress-line"></div><div id="progress-line-active" class="progress-line-active"></div>
-                            <div class="step" id="step-resolve"><div class="step-circle">1</div><div class="step-label">Giải mã link</div></div>
-                            <div class="step" id="step-download"><div class="step-circle">2</div><div class="step-label">Tải video</div></div>
-                            <div class="step" id="step-ocr"><div class="step-circle">3</div><div class="step-label">Trích xuất sub</div></div>
-                            <div class="step" id="step-translate"><div class="step-circle">4</div><div class="step-label">Dịch tiếng Việt</div></div>
-                            <div class="step" id="step-done"><div class="step-circle">✓</div><div class="step-label">Hoàn tất</div></div>
-                        </div>
-                    </div>
-                    <div id="process-empty" class="ready-state"><span class="ready-icon" aria-hidden="true">→</span><span>Dán link ở phía trên để bắt đầu. Nhật ký chi tiết sẽ xuất hiện tại đây trong lúc xử lý.</span></div>
-                    <div id="console-container" class="console-container" aria-live="polite">
-                        <div class="console-header"><span>Nhật ký xử lý</span><span id="loading-indicator" hidden><i class="spinner"></i></span></div>
-                        <div id="console-box" class="console-box"></div>
-                    </div>
-                    <div id="result-box" class="result-box" hidden>
-                        <div class="result-title"><span class="result-check">✓</span><span id="res-title">Bộ file đã sẵn sàng</span></div>
-                        <div class="result-path"><b>Video</b><span id="res-video"></span></div>
-                        <div class="result-path"><b>Sub OCR</b><span id="res-raw-sub"></span></div>
-                        <div class="result-path"><b>Sub Việt</b><span id="res-sub"></span></div>
-                        <button class="btn-outline" id="btn-open-folder" type="button">Mở thư mục bộ file</button>
-                    </div>
-                </div>
-
-                <div id="content-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
-                    <div class="settings-grid">
-                        <div class="settings-head"><h3>Thiết lập</h3><span id="settings-save-status" class="save-status" role="status"></span></div>
-                        <div class="setup-guide">
-                            <strong>Chuẩn bị một lần trước khi dùng</strong>
-                            <p>Bản EXE đã chứa giao diện và luồng xử lý. Ba thành phần dưới đây vẫn cần được cài trên từng máy.</p>
-                            <div class="setup-steps">
-                                <div class="setup-step"><b>1 · Douzy</b>Cài, mở app và chọn thư mục tải video.</div>
-                                <div class="setup-step"><b>2 · VideOCR</b>Cài ở đường dẫn mặc định và lưu vùng crop nếu cần.</div>
-                                <div class="setup-step"><b>3 · Gemini</b>Dán link Notebook, sau đó đăng nhập trong Edge mà app mở.</div>
-                            </div>
-                        </div>
-                        <div class="setting-field">
-                            <label for="setting-notebook-url">Notebook Gemini dùng để dịch</label>
-                            <input id="setting-notebook-url" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/...">
-                            <small>Thay đổi sẽ được lưu khi bạn rời khỏi ô này.</small>
-                        </div>
-                        <div class="setting-field">
-                            <label for="setting-output-dir">Thư mục xuất bộ file</label>
-                            <input id="setting-output-dir" class="text-input" type="text" placeholder="Để trống = tạo thư mục VietSub Studio cạnh video Douzy">
-                            <small>Mỗi video được đặt trong một thư mục dự án riêng; tên trùng sẽ tự thêm (2), (3)…</small>
-                        </div>
-                        <div class="setting-field"><label for="setting-crop">Vùng OCR đã lưu trong VideOCR</label><input id="setting-crop" class="text-input readonly" readonly></div>
-                        <div class="setting-field"><label for="setting-download-dir">Thư mục tải mặc định của Douzy</label><input id="setting-download-dir" class="text-input readonly" readonly></div>
-                        <div class="diagnostics">
-                            <div class="diagnostics-head"><strong>Kiểm tra hệ thống</strong><button id="refresh-health-btn" class="btn-outline" type="button">Kiểm tra lại</button></div>
-                            <div id="diagnostics-list" class="diagnostics-list"><span class="save-status">Đang kiểm tra…</span></div>
-                            <div id="diagnostics-summary" class="diagnostic-summary"></div>
-                        </div>
-                    </div>
+                <div id="console-box" class="console"><div class="log-line">[*] Chưa có job đang chạy.</div></div>
+                <div id="result-box" class="result-box" hidden>
+                    <div id="result-title" class="result-title">Bộ file đã sẵn sàng</div>
+                    <div class="result-path"><b>Video</b><span id="res-video"></span></div>
+                    <div class="result-path"><b>Sub OCR</b><span id="res-raw"></span></div>
+                    <div class="result-path"><b>Sub Việt</b><span id="res-vi"></span></div>
+                    <button id="open-result-btn" class="btn-secondary" type="button">Mở thư mục</button>
                 </div>
             </div>
 
-            <aside class="panel history-card">
-                <div class="history-header"><div><h3>Đã xử lý</h3><p>Video gần nhất trong Douzy</p></div><span id="history-count" class="history-count">—</span></div>
-                <div id="history-list" class="history-list" aria-live="polite">
-                    <div class="history-loading" aria-label="Đang tải lịch sử"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+            <div class="panel control-card">
+                <div class="section-head"><h3>Thiết lập & chẩn đoán</h3><span>Tự lưu thay đổi</span></div>
+                <div id="settings-panel" class="settings-grid">
+                    <div class="setting-field"><label for="setting-notebook">Notebook Gemini</label><input id="setting-notebook" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/..."><small>Tự lưu khi rời ô.</small></div>
+                    <div class="setting-field"><label for="setting-output">Thư mục xuất</label><input id="setting-output" class="text-input" placeholder="Để trống = thư mục VietSub Studio của Douzy"><small>Phải là đường dẫn tuyệt đối nếu có nhập.</small></div>
+                    <div class="setting-field"><label for="setting-crop">Crop OCR mặc định</label><input id="setting-crop" class="text-input readonly" readonly></div>
+                    <div class="setting-field"><label for="setting-download">Thư mục Douzy</label><input id="setting-download" class="text-input readonly" readonly></div>
+                    <div class="diagnostics">
+                        <div class="diagnostics-head"><strong>Kiểm tra hệ thống</strong><button id="health-btn" class="btn-ghost" type="button">Kiểm tra lại</button></div>
+                        <div id="diagnostics-list" class="diagnostics-list"></div>
+                    </div>
+                    <div class="setting-field"><label>Video gần đây trong Douzy</label><div id="history-list" class="history-mini"></div></div>
                 </div>
-            </aside>
+            </div>
         </section>
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <script>
-        let currentTab = 'process';
-        let statusInterval = null;
-        let isProcessing = false;
-        let resultOpenPath = '';
+        const byId = id => document.getElementById(id);
+        const steps = ['resolve', 'download', 'ocr', 'translate', 'done'];
+        const statusLabels = { queued: 'Đang chờ', running: 'Đang chạy', success: 'Hoàn tất', error: 'Lỗi', cancelled: 'Đã huỷ' };
+        const stepIndex = { resolve: 0, download: 1, ocr: 2, translate: 3, done: 4 };
+        let currentPreview = null;
+        let crop = { crop_x: 0, crop_y: 0, crop_width: 1, crop_height: 1 };
+        let dragState = null;
+        let queueJobs = [];
         let displayedLogCount = 0;
-        let progressFailureCount = 0;
+        let progressJobId = '';
+        let resultOpenPath = '';
         let toastTimer = null;
 
-        const steps = ['resolve', 'download', 'ocr', 'translate', 'done'];
-        const stepCopy = {
-            resolve: 'Đang giải mã link chia sẻ',
-            download: 'Đang tải và chuẩn bị bộ file',
-            ocr: 'VideOCR đang trích xuất phụ đề',
-            translate: 'Gemini đang dịch phụ đề',
-            done: 'Đã hoàn tất'
-        };
-        const healthLabels = {
-            douzy_sidecar: 'Douzy sidecar',
-            douzy_config: 'Cấu hình Douzy',
-            douzy_database: 'Database Douzy',
-            videocr: 'VideOCR CLI',
-            ffprobe: 'FFprobe / crop OCR',
-            notebook: 'Notebook Gemini',
-            edge: 'Edge debug'
-        };
-
-        const byId = id => document.getElementById(id);
-
         function showToast(message, type = 'success') {
-            const toast = byId('toast');
             clearTimeout(toastTimer);
+            const toast = byId('toast');
             toast.textContent = message;
             toast.className = `toast ${type === 'error' ? 'error' : ''} show`;
-            toastTimer = setTimeout(() => { toast.className = 'toast'; }, 3200);
+            toastTimer = setTimeout(() => { toast.className = 'toast'; }, 3500);
         }
 
-        async function fetchJson(url, options) {
+        async function fetchJson(url, options = {}) {
             const response = await fetch(url, options);
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(data.error || `Server trả về lỗi ${response.status}`);
+            let data = {};
+            try { data = await response.json(); } catch (_) {}
+            if (!response.ok) {
+                throw new Error(data.error || `HTTP ${response.status}`);
+            }
             return data;
         }
 
-        function setCaption(text) { byId('process-caption').textContent = text; }
+        async function checkForUpdate() {
+            const pill = byId('version-pill');
+            try {
+                const data = await fetchJson('/api/update');
+                if (data.update_available) {
+                    pill.className = 'status-pill update';
+                    pill.querySelector('span').textContent = `Có v${data.latest_version}`;
+                    byId('update-title').textContent = `VietSub Studio v${data.latest_version} đã sẵn sàng`;
+                    byId('update-copy').textContent = `Bạn đang dùng v${data.current_version}. Hãy cập nhật để nhận tính năng và bản sửa lỗi mới nhất.`;
+                    byId('update-banner').hidden = false;
+                    showToast(`Có bản cập nhật v${data.latest_version}.`);
+                } else {
+                    pill.className = 'status-pill ready';
+                    pill.querySelector('span').textContent = `v${data.current_version} · mới nhất`;
+                }
+            } catch (_) {
+                pill.querySelector('span').textContent = `v{{ app_version }}`;
+            }
+        }
 
-        function sanitizeNamePreview(value) {
-            let name = (value || '').normalize('NFKC').replace(/[<>:"/\\|?*\u0000-\u001f]+/g, ' ');
-            name = name.replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '').slice(0, 100);
-            if (!name) name = 'Tên video Douyin';
-            if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(name)) name = `Video ${name}`;
-            return name;
+        async function openUpdate() {
+            const button = byId('update-btn');
+            button.disabled = true;
+            button.textContent = 'Đang mở trang tải…';
+            try {
+                await fetchJson('/api/update/open', {method: 'POST'});
+                showToast('Đã mở trang GitHub Releases chính thức.');
+            } catch (error) {
+                showToast(error.message, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Cập nhật ngay →';
+            }
+        }
+
+        function cleanName(value) {
+            return (value || 'Tên video').replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ').replace(/\s+/g, ' ').trim() || 'Tên video';
         }
 
         function updateNamePreview() {
-            const name = sanitizeNamePreview(byId('project-name').value);
-            byId('preview-video').textContent = `${name}.mp4`;
-            byId('preview-raw').textContent = `${name}.raw.srt`;
-            byId('preview-vi').textContent = `${name}.vi.srt`;
+            const name = cleanName(byId('project-name').value || currentPreview?.video_title);
+            byId('preview-video-name').textContent = `${name}.mp4`;
+            byId('preview-sub-name').textContent = `${name}.raw.srt · ${name}.vi.srt`;
         }
 
-        async function checkEdge() {
-            const status = byId('edge-status');
-            const warning = byId('edge-warning');
-            try {
-                const data = await fetchJson('/api/check-edge');
-                status.className = `edge-status ${data.connected ? 'ready' : ''}`;
-                byId('edge-text').textContent = data.connected ? 'Edge sẵn sàng' : 'Edge sẽ tự khởi động';
-                warning.hidden = data.connected;
-            } catch (error) {
-                status.className = 'edge-status error';
-                byId('edge-text').textContent = 'Mất kết nối với app';
-                warning.hidden = true;
-            }
-        }
-
-        async function loadSettings() {
-            try {
-                const data = await fetchJson('/api/settings');
-                byId('setting-crop').value = data.crop_coords ? JSON.stringify(data.crop_coords) : 'Quét toàn khung hình';
-                byId('setting-download-dir').value = data.download_dir || 'Chưa xác định';
-                byId('setting-notebook-url').value = data.notebook_url || '';
-                byId('setting-output-dir').value = data.output_dir || '';
-                byId('ocr-lang').value = data.ocr_lang || 'ch';
-            } catch (error) {
-                byId('settings-save-status').textContent = 'Không tải được thiết lập';
-                byId('settings-save-status').className = 'save-status error';
-            }
-        }
-
-        async function saveSettings() {
-            const status = byId('settings-save-status');
-            status.textContent = 'Đang lưu…';
-            status.className = 'save-status';
-            try {
-                await fetchJson('/api/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        notebook_url: byId('setting-notebook-url').value.trim(),
-                        ocr_lang: byId('ocr-lang').value,
-                        output_dir: byId('setting-output-dir').value.trim()
-                    })
-                });
-                status.textContent = '✓ Đã lưu';
-                status.className = 'save-status success';
-                loadHealth();
-            } catch (error) {
-                status.textContent = 'Lưu thất bại';
-                status.className = 'save-status error';
-                showToast(`Không lưu được thiết lập: ${error.message}`, 'error');
-            }
-        }
-
-        async function loadHealth() {
-            const button = byId('refresh-health-btn');
-            const list = byId('diagnostics-list');
-            button.disabled = true;
-            list.innerHTML = '<span class="save-status">Đang kiểm tra…</span>';
-            try {
-                const data = await fetchJson('/api/health');
-                list.replaceChildren();
-                Object.entries(data.checks).forEach(([key, item]) => {
-                    const row = document.createElement('div');
-                    row.className = `diagnostic-item ${item.ok ? 'ok' : item.required ? 'error' : 'warn'}`;
-                    const dot = document.createElement('span');
-                    dot.className = 'diagnostic-dot';
-                    const copy = document.createElement('span');
-                    copy.className = 'diagnostic-copy';
-                    const label = document.createElement('strong');
-                    label.textContent = `${healthLabels[key] || key}: ${item.ok ? 'OK' : item.required ? 'Thiếu' : 'Chưa sẵn sàng'}`;
-                    const detail = document.createElement('small');
-                    detail.textContent = item.detail || '';
-                    copy.append(label, detail);
-                    row.append(dot, copy);
-                    list.appendChild(row);
-                });
-                const missingRequired = Object.values(data.checks).filter(item => item.required && !item.ok).length;
-                byId('setup-count').textContent = missingRequired;
-                byId('setup-count').hidden = missingRequired === 0;
-                byId('diagnostics-summary').textContent = data.ready
-                    ? 'Các thành phần bắt buộc đã sẵn sàng.'
-                    : 'Tool đang thiếu thành phần bắt buộc; xem các mục màu đỏ.';
-                return data;
-            } catch (error) {
-                list.innerHTML = '<span class="save-status error">Không kiểm tra được hệ thống.</span>';
-                byId('diagnostics-summary').textContent = error.message;
-            } finally {
-                button.disabled = false;
-            }
-        }
-
-        function useHistoryItem(item) {
-            byId('url-input').value = `https://www.douyin.com/video/${item.aweme_id}`;
-            byId('project-name').value = item.title || `Douyin ${item.aweme_id}`;
-            updateCharCount();
-            updateNamePreview();
-            switchTab('process');
-            byId('url-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
-            showToast('Đã nạp link và tên video. Kiểm tra rồi bấm Bắt đầu.');
-        }
-
-        async function loadHistory() {
-            const list = byId('history-list');
-            try {
-                const data = await fetchJson('/api/history');
-                list.replaceChildren();
-                byId('history-count').textContent = data.length;
-                if (!data.length) {
-                    const empty = document.createElement('div');
-                    empty.className = 'empty-state';
-                    empty.textContent = 'Chưa có video nào trong lịch sử.';
-                    list.appendChild(empty);
-                    return;
-                }
-                data.forEach(item => {
-                    const row = document.createElement('div');
-                    row.className = 'history-item';
-                    const info = document.createElement('div');
-                    info.className = 'history-info';
-                    const title = document.createElement('div');
-                    title.className = 'history-title';
-                    title.textContent = item.title || 'Không có tiêu đề';
-                    title.title = item.title || '';
-                    const meta = document.createElement('div');
-                    meta.className = 'history-meta';
-                    meta.textContent = `ID ${item.aweme_id} · ${new Date(item.download_time * 1000).toLocaleDateString('vi-VN')}`;
-                    info.append(title, meta);
-                    const action = document.createElement('button');
-                    action.className = 'btn-outline';
-                    action.type = 'button';
-                    action.textContent = 'Dùng lại';
-                    action.addEventListener('click', () => useHistoryItem(item));
-                    const actions = document.createElement('div');
-                    actions.className = 'history-actions';
-                    actions.appendChild(action);
-                    row.append(info, actions);
-                    list.appendChild(row);
-                });
-            } catch (error) {
-                byId('history-count').textContent = '!';
-                list.innerHTML = '<div class="empty-state">Không tải được lịch sử. Hãy thử mở lại app.</div>';
-            }
-        }
-
-        function switchTab(tab) {
-            currentTab = tab;
-            const isProcess = tab === 'process';
-            byId('tab-process').className = isProcess ? 'tab-btn active' : 'tab-btn';
-            byId('tab-settings').className = isProcess ? 'tab-btn' : 'tab-btn active';
-            byId('tab-process').setAttribute('aria-selected', String(isProcess));
-            byId('tab-settings').setAttribute('aria-selected', String(!isProcess));
-            byId('content-process').hidden = !isProcess;
-            byId('content-settings').hidden = isProcess;
-            if (!isProcess) loadHealth();
-        }
-
-        async function copyCmd() {
-            const button = byId('copy-cmd-btn');
-            try {
-                await navigator.clipboard.writeText(byId('cmd-text').innerText);
-                button.textContent = 'Đã copy ✓';
-                showToast('Đã copy lệnh khởi động Edge.');
-                setTimeout(() => { button.textContent = 'Copy lệnh'; }, 1800);
-            } catch (error) {
-                showToast('Không copy được. Hãy bôi đen lệnh và copy thủ công.', 'error');
-            }
-        }
-
-        function setInputError(message = '') {
+        function setUrlError(message = '') {
             byId('url-error').textContent = message;
             byId('url-input').classList.toggle('invalid', Boolean(message));
-            byId('url-input').setAttribute('aria-invalid', String(Boolean(message)));
         }
 
-        function updateCharCount() {
-            const length = byId('url-input').value.length;
-            byId('char-count').textContent = `${length} ký tự`;
-            if (length) setInputError();
-        }
-
-        function setProcessingState(processing, label = 'Đang xử lý') {
-            isProcessing = processing;
-            const button = byId('start-btn');
-            const cancelButton = byId('cancel-btn');
-            button.disabled = processing;
-            button.setAttribute('aria-busy', String(processing));
-            button.innerHTML = processing
-                ? `<span>${label}</span><i class="spinner"></i>`
-                : '<span>Bắt đầu xử lý</span><span class="arrow" aria-hidden="true">→</span>';
-            cancelButton.hidden = !processing;
-            cancelButton.disabled = false;
-            cancelButton.textContent = 'Huỷ';
-            byId('url-input').disabled = processing;
-            byId('project-name').disabled = processing;
-            byId('ocr-lang').disabled = processing;
-            byId('loading-indicator').hidden = !processing;
-        }
-
-        function prepareProgressUI() {
-            byId('console-container').style.display = 'flex';
-            byId('result-box').hidden = true;
-            byId('process-empty').hidden = true;
-        }
-
-        async function startWorkflow() {
-            if (isProcessing) return;
+        async function preparePreview(event) {
+            event.preventDefault();
             const url = byId('url-input').value.trim();
-            const lang = byId('ocr-lang').value;
-            const name = byId('project-name').value.trim();
-            if (!url) {
-                setInputError('Hãy dán link hoặc đoạn chia sẻ Douyin trước khi bắt đầu.');
-                byId('url-input').focus();
-                return;
-            }
-
-            const health = await loadHealth();
-            if (health && !health.ready) {
-                switchTab('settings');
-                showToast('Máy đang thiếu thiết lập bắt buộc. Hoàn tất các mục màu đỏ rồi thử lại.', 'error');
-                return;
-            }
-
-            setInputError();
-            setProcessingState(true, 'Đang chuẩn bị');
-            displayedLogCount = 0;
-            progressFailureCount = 0;
-            if (statusInterval) clearInterval(statusInterval);
-            prepareProgressUI();
-            byId('console-box').replaceChildren();
-            resetStepper();
-            updateStepUI('resolve', 'active');
-            addLogLine('system', '[*] Khởi tạo quy trình...');
-
-            try {
-                await fetchJson('/api/process', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, lang, name })
-                });
-                await pollProgress();
-                if (isProcessing) statusInterval = setInterval(pollProgress, 900);
-            } catch (error) {
-                stopPollingWithError(`Không thể bắt đầu: ${error.message}`);
-            }
-        }
-
-        async function cancelWorkflow() {
-            if (!isProcessing) return;
-            const button = byId('cancel-btn');
+            if (!url) { setUrlError('Hãy dán link hoặc đoạn share Douyin.'); return; }
+            setUrlError();
+            const button = byId('prepare-btn');
             button.disabled = true;
-            button.textContent = 'Đang huỷ…';
-            setCaption('Đang huỷ quy trình…');
+            button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang tải preview</span>';
+            byId('preview-status').value = 'Đang chuẩn bị…';
             try {
-                await fetchJson('/api/cancel', { method: 'POST' });
-                showToast('Đã gửi yêu cầu huỷ. Tool đang dọn tiến trình.');
+                const data = await fetchJson('/api/previews', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url}) });
+                currentPreview = data;
+                byId('url-input').value = data.source_url;
+                if (!byId('project-name').value.trim() && data.video_title) byId('project-name').value = data.video_title;
+                updateNamePreview();
+                byId('preview-placeholder').hidden = true;
+                const player = byId('preview-player');
+                player.hidden = false;
+                player.src = `${data.video_url}?v=${Date.now()}`;
+                player.load();
+                setCrop(data.crop_coords || {crop_x: 0, crop_y: 0, crop_width: 1, crop_height: 1});
+                byId('crop-box').hidden = false;
+                byId('crop-tools').hidden = false;
+                byId('preview-title').textContent = data.video_title || `Douyin ${data.video_id}`;
+                byId('preview-status').value = 'Sẵn sàng chỉnh crop';
+                byId('add-queue-btn').disabled = false;
+                showToast('Preview đã sẵn sàng. Kéo khung vàng vào vùng phụ đề.');
             } catch (error) {
+                byId('preview-status').value = 'Chuẩn bị thất bại';
+                showToast(error.message, 'error');
+            } finally {
                 button.disabled = false;
-                button.textContent = 'Huỷ';
-                showToast(`Không thể huỷ: ${error.message}`, 'error');
+                button.textContent = 'Tải preview';
             }
         }
 
-        function resetStepper() {
-            steps.forEach(step => { byId(`step-${step}`).className = 'step'; });
-            byId('progress-line-active').style.width = '0%';
-            setCaption('Sẵn sàng nhận link');
+        function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
+
+        function setCrop(next, updateInputs = true) {
+            const minSize = .04;
+            let x = clamp(Number(next.crop_x) || 0, 0, 1 - minSize);
+            let y = clamp(Number(next.crop_y) || 0, 0, 1 - minSize);
+            let width = clamp(Number(next.crop_width) || minSize, minSize, 1 - x);
+            let height = clamp(Number(next.crop_height) || minSize, minSize, 1 - y);
+            crop = { crop_x: x, crop_y: y, crop_width: width, crop_height: height };
+            const box = byId('crop-box');
+            box.style.left = `${x * 100}%`; box.style.top = `${y * 100}%`;
+            box.style.width = `${width * 100}%`; box.style.height = `${height * 100}%`;
+            if (updateInputs) {
+                byId('crop-x').value = (x * 100).toFixed(1); byId('crop-y').value = (y * 100).toFixed(1);
+                byId('crop-width').value = (width * 100).toFixed(1); byId('crop-height').value = (height * 100).toFixed(1);
+            }
+            byId('crop-summary').textContent = `Crop: x ${Math.round(x*100)} · y ${Math.round(y*100)} · ${Math.round(width*100)}×${Math.round(height*100)}%`;
         }
 
-        function updateStepUI(step, state) {
-            const index = steps.indexOf(step);
-            if (index < 0) return;
-            steps.forEach((name, stepIndex) => {
-                const element = byId(`step-${name}`);
-                element.className = stepIndex < index ? 'step completed' : stepIndex === index ? `step ${state}` : 'step';
+        function cropFromInputs() {
+            setCrop({
+                crop_x: Number(byId('crop-x').value) / 100,
+                crop_y: Number(byId('crop-y').value) / 100,
+                crop_width: Number(byId('crop-width').value) / 100,
+                crop_height: Number(byId('crop-height').value) / 100
             });
-            byId('progress-line-active').style.width = `${index * 20}%`;
-            setCaption(stepCopy[step] || 'Đang xử lý');
         }
 
-        function addLogLine(type, text) {
-            const box = byId('console-box');
+        function startCropDrag(event) {
+            if (!currentPreview || event.button !== 0) return;
+            const stage = byId('video-stage').getBoundingClientRect();
+            dragState = { startX: event.clientX, startY: event.clientY, crop: {...crop}, handle: event.target.dataset.handle || 'move', stage };
+            event.preventDefault();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+        }
+
+        function moveCrop(event) {
+            if (!dragState) return;
+            const dx = (event.clientX - dragState.startX) / dragState.stage.width;
+            const dy = (event.clientY - dragState.startY) / dragState.stage.height;
+            const base = dragState.crop;
+            let next = {...base};
+            if (dragState.handle === 'move') {
+                next.crop_x = clamp(base.crop_x + dx, 0, 1 - base.crop_width);
+                next.crop_y = clamp(base.crop_y + dy, 0, 1 - base.crop_height);
+            } else {
+                const west = dragState.handle.includes('w');
+                const north = dragState.handle.includes('n');
+                if (west) { const right = base.crop_x + base.crop_width; next.crop_x = clamp(base.crop_x + dx, 0, right - .04); next.crop_width = right - next.crop_x; }
+                else { next.crop_width = clamp(base.crop_width + dx, .04, 1 - base.crop_x); }
+                if (north) { const bottom = base.crop_y + base.crop_height; next.crop_y = clamp(base.crop_y + dy, 0, bottom - .04); next.crop_height = bottom - next.crop_y; }
+                else { next.crop_height = clamp(base.crop_height + dy, .04, 1 - base.crop_y); }
+            }
+            setCrop(next);
+        }
+
+        function endCropDrag() { dragState = null; }
+
+        async function saveDefaultCrop() {
+            try {
+                await fetchJson('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({crop_coords: crop}) });
+                byId('setting-crop').value = JSON.stringify(crop);
+                showToast('Đã lưu vùng OCR làm mặc định.');
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function addToQueue() {
+            if (!currentPreview) return;
+            const button = byId('add-queue-btn');
+            button.disabled = true;
+            try {
+                await fetchJson('/api/queue', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ url: currentPreview.source_url, preview_id: currentPreview.id, name: byId('project-name').value.trim(), lang: byId('ocr-lang').value, crop_coords: crop, video_resolution: currentPreview.video_resolution || null })
+                });
+                showToast('Đã thêm video vào hàng đợi.');
+                clearComposer();
+                await loadQueue();
+            } catch (error) { showToast(error.message, 'error'); button.disabled = false; }
+        }
+
+        function clearComposer() {
+            currentPreview = null;
+            byId('url-input').value = ''; byId('project-name').value = '';
+            byId('char-count').textContent = '0 ký tự'; updateNamePreview();
+            const player = byId('preview-player'); player.pause(); player.removeAttribute('src'); player.load(); player.hidden = true;
+            byId('video-stage').style.aspectRatio = ''; byId('video-stage').style.minHeight = '';
+            byId('preview-placeholder').hidden = false; byId('crop-box').hidden = true; byId('crop-tools').hidden = true;
+            byId('preview-title').textContent = 'Chưa có video'; byId('crop-summary').textContent = 'Crop: —';
+            byId('preview-status').value = 'Chưa chuẩn bị'; byId('add-queue-btn').disabled = true;
+        }
+
+        function progressWidth(step, status) {
+            if (status === 'success') return 100;
+            return [8, 28, 52, 78, 100][stepIndex[step] ?? 0];
+        }
+
+        function renderQueue() {
+            const list = byId('queue-list');
+            byId('queue-count').textContent = queueJobs.length;
+            const queuedCount = queueJobs.filter(job => job.status === 'queued').length;
+            const running = queueJobs.some(job => job.status === 'running');
+            byId('start-queue-btn').disabled = !queuedCount || running;
+            byId('start-queue-btn').textContent = running ? 'Đang chạy tuần tự…' : `Chạy hàng đợi${queuedCount ? ` (${queuedCount})` : ''}`;
+            byId('cancel-btn').hidden = !running;
+            if (!queueJobs.length) { list.innerHTML = '<div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div>'; return; }
+            list.replaceChildren();
+            queueJobs.forEach((job, index) => {
+                const row = document.createElement('article'); row.className = `queue-item ${job.status}`;
+                const top = document.createElement('div'); top.className = 'queue-item-top';
+                const info = document.createElement('div'); info.style.minWidth = '0';
+                info.innerHTML = `<div class="queue-index">JOB ${String(index + 1).padStart(2,'0')}</div><div class="queue-name"></div><div class="queue-id">ID ${job.video_id || 'đang chờ giải mã'} · ${job.ocr_lang.toUpperCase()}</div>`;
+                info.querySelector('.queue-name').textContent = job.project_name || job.video_title || 'Tên tự động từ Douyin';
+                const badge = document.createElement('span'); badge.className = `badge ${job.status}`; badge.textContent = statusLabels[job.status] || job.status;
+                top.append(info, badge); row.appendChild(top);
+                const progress = document.createElement('div'); progress.className = 'queue-progress'; progress.innerHTML = `<i style="width:${progressWidth(job.step, job.status)}%"></i>`; row.appendChild(progress);
+                if (job.error) { const error = document.createElement('div'); error.className = 'queue-error'; error.textContent = job.error; row.appendChild(error); }
+                const actions = document.createElement('div'); actions.className = 'queue-item-actions';
+                if (job.status === 'queued') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = 'Xoá khỏi hàng đợi'; remove.onclick = () => removeQueueJob(job.id); actions.appendChild(remove); }
+                if (job.result?.project_dir) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true); actions.appendChild(open); }
+                if (actions.children.length) row.appendChild(actions);
+                list.appendChild(row);
+            });
+        }
+
+        async function loadQueue() {
+            try { const data = await fetchJson('/api/queue'); queueJobs = data.jobs || []; renderQueue(); if (data.running) await pollProgress(); }
+            catch (error) { console.warn(error); }
+        }
+
+        async function startQueue() {
+            try { await fetchJson('/api/queue/start', {method: 'POST'}); displayedLogCount = 0; progressJobId = ''; byId('console-box').replaceChildren(); await loadQueue(); showToast('Hàng đợi đã bắt đầu chạy tuần tự.'); }
+            catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function removeQueueJob(id) {
+            try { await fetchJson(`/api/queue/${id}`, {method: 'DELETE'}); await loadQueue(); }
+            catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function clearFinished() {
+            try { await fetchJson('/api/queue/finished', {method: 'DELETE'}); await loadQueue(); }
+            catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function cancelJob() {
+            const button = byId('cancel-btn'); button.disabled = true; button.textContent = 'Đang huỷ…';
+            try { await fetchJson('/api/cancel', {method:'POST'}); showToast('Đã gửi yêu cầu huỷ job hiện tại.'); }
+            catch (error) { showToast(error.message, 'error'); }
+            finally { button.disabled = false; button.textContent = 'Huỷ job'; }
+        }
+
+        function updateSteps(step, status) {
+            const activeIndex = stepIndex[step] ?? 0;
+            steps.forEach((name, index) => {
+                const item = byId(`step-${name}`);
+                item.className = index < activeIndex || status === 'success' ? 'step completed' : index === activeIndex ? `step ${status === 'error' || status === 'cancelled' ? 'error' : 'active'}` : 'step';
+            });
+            const captions = {resolve:'Đang giải mã link',download:'Đang chuẩn bị video',ocr:'VideOCR đang quét',translate:'Gemini đang dịch',done:'Đã hoàn tất'};
+            byId('process-caption').textContent = status === 'cancelled' ? 'Job đã huỷ' : captions[step] || 'Sẵn sàng';
+        }
+
+        function addLog(text) {
             const line = document.createElement('div');
-            line.className = `log-line ${type}`;
-            line.textContent = text;
-            box.appendChild(line);
-            while (box.children.length > 500) box.removeChild(box.firstChild);
-            box.scrollTop = box.scrollHeight;
-        }
-
-        function stopStatusPolling() {
-            if (statusInterval) clearInterval(statusInterval);
-            statusInterval = null;
-        }
-
-        function stopPollingWithError(message) {
-            stopStatusPolling();
-            setProcessingState(false);
-            setCaption('Cần thử lại');
-            const activeStep = document.querySelector('.step.active');
-            if (activeStep) activeStep.className = 'step error';
-            addLogLine('error', `[!] ${message}`);
-            showToast(message, 'error');
-        }
-
-        function showResult(result) {
-            resultOpenPath = result.project_dir || result.translated_srt;
-            byId('res-title').textContent = `${result.project_name || 'Bộ file'} đã sẵn sàng`;
-            byId('res-video').textContent = result.video || '';
-            byId('res-raw-sub').textContent = result.raw_srt || '';
-            byId('res-sub').textContent = result.translated_srt || '';
-            byId('result-box').hidden = false;
-        }
-
-        function appendProgressLogs(data) {
-            (data.logs || []).forEach(line => {
-                const type = line.includes('[VideOCR]') ? 'ocr' : line.includes('[!]') ? 'error' : line.includes('Success') ? 'success' : 'system';
-                addLogLine(type, line);
-            });
-            displayedLogCount = data.next_log_index ?? displayedLogCount + (data.logs || []).length;
-        }
-
-        function handleProgressData(data, restoring = false) {
-            appendProgressLogs(data);
-            if (data.status === 'running') {
-                prepareProgressUI();
-                setProcessingState(true);
-                updateStepUI(data.step, 'active');
-                return;
-            }
-            if (data.status === 'success') {
-                stopStatusPolling();
-                setProcessingState(false);
-                prepareProgressUI();
-                updateStepUI('done', 'completed');
-                showResult(data.result);
-                if (!restoring) showToast('Hoàn tất — bộ video và phụ đề đã sẵn sàng.');
-                loadHistory();
-                return;
-            }
-            if (data.status === 'error' || data.status === 'cancelled') {
-                stopStatusPolling();
-                setProcessingState(false);
-                prepareProgressUI();
-                setCaption(data.status === 'cancelled' ? 'Đã huỷ quy trình' : 'Quy trình đã dừng');
-                const activeStep = document.querySelector('.step.active');
-                if (activeStep) activeStep.className = 'step error';
-                if (!restoring) showToast(data.error || 'Quy trình đã dừng.', data.status === 'error' ? 'error' : 'success');
-            }
+            line.className = `log-line ${text.includes('[VideOCR]') ? 'ocr' : text.includes('[!]') ? 'error' : text.includes('Success') ? 'success' : ''}`;
+            line.textContent = text; byId('console-box').appendChild(line);
+            while (byId('console-box').children.length > 500) byId('console-box').firstChild.remove();
+            byId('console-box').scrollTop = byId('console-box').scrollHeight;
         }
 
         async function pollProgress() {
             try {
                 const data = await fetchJson(`/api/progress?after=${displayedLogCount}`);
-                progressFailureCount = 0;
-                handleProgressData(data);
-            } catch (error) {
-                progressFailureCount += 1;
-                if (progressFailureCount >= 3) stopPollingWithError(`Mất kết nối server: ${error.message}`);
-            }
+                if (data.job_id && data.job_id !== progressJobId) { progressJobId = data.job_id; displayedLogCount = 0; byId('console-box').replaceChildren(); return pollProgress(); }
+                (data.logs || []).forEach(addLog); displayedLogCount = data.next_log_index ?? displayedLogCount;
+                if (data.status !== 'idle') updateSteps(data.step, data.status);
+                if (data.status === 'success' && data.result?.project_dir) showResult(data.result, false);
+            } catch (_) {}
         }
 
-        async function restoreProgress() {
-            try {
-                const data = await fetchJson('/api/progress?after=0');
-                if (data.status === 'idle') return;
-                displayedLogCount = 0;
-                byId('console-box').replaceChildren();
-                handleProgressData(data, true);
-                if (data.status === 'running') statusInterval = setInterval(pollProgress, 900);
-            } catch (error) {
-                // The normal connection checks surface server errors elsewhere.
-            }
+        function showResult(result, scroll = false) {
+            resultOpenPath = result.project_dir || result.translated_srt || '';
+            byId('result-title').textContent = `${result.project_name || 'Bộ file'} đã sẵn sàng`;
+            byId('res-video').textContent = result.video || ''; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
+            byId('result-box').hidden = false;
+            if (scroll) byId('result-box').scrollIntoView({behavior:'smooth', block:'center'});
         }
 
-        async function openResultFolder() {
+        async function openResult() {
             if (!resultOpenPath) return;
+            try { await fetchJson('/api/open-folder', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:resultOpenPath})}); }
+            catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function checkEdge() {
+            try { const data = await fetchJson('/api/check-edge'); byId('edge-pill').className = `status-pill ${data.connected ? 'ready' : 'error'}`; byId('edge-pill').querySelector('span').textContent = data.connected ? 'Edge sẵn sàng' : 'Edge chưa kết nối'; }
+            catch (_) {}
+        }
+
+        async function loadSettings() {
             try {
-                await fetchJson('/api/open-folder', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: resultOpenPath })
-                });
-            } catch (error) {
-                showToast(`Không mở được thư mục: ${error.message}`, 'error');
-            }
+                const data = await fetchJson('/api/settings');
+                byId('setting-notebook').value = data.notebook_url || ''; byId('setting-output').value = data.output_dir || '';
+                byId('setting-crop').value = data.crop_coords ? JSON.stringify(data.crop_coords) : 'Toàn khung hình';
+                byId('setting-download').value = data.download_dir || 'Chưa xác định'; byId('ocr-lang').value = data.ocr_lang || 'ch';
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function saveSettings() {
+            try {
+                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value})});
+                showToast('Đã lưu thiết lập.');
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function loadHealth() {
+            const list = byId('diagnostics-list'); list.innerHTML = '<span>Đang kiểm tra…</span>';
+            try {
+                const data = await fetchJson('/api/health'); list.replaceChildren();
+                const labels = {douzy_sidecar:'Douzy sidecar',douzy_config:'Cấu hình Douzy',douzy_database:'Database Douzy',videocr:'VideOCR',ffprobe:'FFprobe',notebook:'Gemini Notebook',edge:'Edge debug'};
+                Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; const strong=document.createElement('strong'); strong.textContent=`${labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
+            } catch (error) { list.textContent = error.message; }
+        }
+
+        async function loadHistory() {
+            const list = byId('history-list');
+            try {
+                const data = await fetchJson('/api/history'); list.replaceChildren();
+                if (!data.length) { list.textContent = 'Chưa có video trong lịch sử Douzy.'; return; }
+                data.slice(0,8).forEach(item => { const row=document.createElement('div'); row.className='history-row'; const info=document.createElement('div'); const title=document.createElement('strong'); title.textContent=item.title||`Douyin ${item.aweme_id}`; const meta=document.createElement('small'); meta.textContent=`ID ${item.aweme_id}`; info.append(title,meta); const button=document.createElement('button'); button.className='btn-ghost'; button.textContent='Nạp'; button.onclick=()=>{byId('url-input').value=`https://www.douyin.com/video/${item.aweme_id}`; byId('project-name').value=item.title||''; updateNamePreview(); window.scrollTo({top:0,behavior:'smooth'});}; row.append(info,button); list.appendChild(row); });
+            } catch (error) { list.textContent = error.message; }
+        }
+
+        function bootApp() {
+            loadSettings(); loadHealth(); loadHistory(); loadQueue(); checkEdge(); checkForUpdate();
+            setInterval(loadQueue, 1100); setInterval(checkEdge, 5000);
         }
 
         window.addEventListener('load', () => {
-            byId('workflow-form').addEventListener('submit', event => { event.preventDefault(); startWorkflow(); });
-            byId('url-input').addEventListener('input', updateCharCount);
+            byId('preview-form').addEventListener('submit', preparePreview);
+            byId('url-input').addEventListener('input', () => { byId('char-count').textContent=`${byId('url-input').value.length} ký tự`; setUrlError(); });
             byId('project-name').addEventListener('input', updateNamePreview);
-            byId('url-input').addEventListener('keydown', event => {
-                if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); startWorkflow(); }
+            byId('add-queue-btn').addEventListener('click', addToQueue);
+            byId('preview-player').addEventListener('loadedmetadata', () => {
+                const player = byId('preview-player');
+                if (!currentPreview || !player.videoWidth || !player.videoHeight) return;
+                currentPreview.video_resolution = {width: player.videoWidth, height: player.videoHeight};
+                const stage = byId('video-stage'); stage.style.aspectRatio = `${player.videoWidth} / ${player.videoHeight}`; stage.style.minHeight = '0';
             });
-            byId('ocr-lang').addEventListener('change', saveSettings);
-            byId('setting-notebook-url').addEventListener('change', saveSettings);
-            byId('setting-output-dir').addEventListener('change', saveSettings);
-            byId('tab-process').addEventListener('click', () => switchTab('process'));
-            byId('tab-settings').addEventListener('click', () => switchTab('settings'));
-            byId('copy-cmd-btn').addEventListener('click', copyCmd);
-            byId('btn-open-folder').addEventListener('click', openResultFolder);
-            byId('cancel-btn').addEventListener('click', cancelWorkflow);
-            byId('refresh-health-btn').addEventListener('click', loadHealth);
-            updateCharCount();
-            updateNamePreview();
-            checkEdge();
-            loadSettings();
-            loadHistory();
-            loadHealth();
-            restoreProgress();
-            setInterval(checkEdge, 5000);
+            byId('crop-box').addEventListener('pointerdown', startCropDrag);
+            window.addEventListener('pointermove', moveCrop); window.addEventListener('pointerup', endCropDrag);
+            ['crop-x','crop-y','crop-width','crop-height'].forEach(id => byId(id).addEventListener('change', cropFromInputs));
+            byId('full-frame-btn').onclick=()=>setCrop({crop_x:0,crop_y:0,crop_width:1,crop_height:1});
+            byId('lower-third-btn').onclick=()=>setCrop({crop_x:.04,crop_y:.64,crop_width:.92,crop_height:.30});
+            byId('save-crop-btn').onclick=saveDefaultCrop;
+            byId('start-queue-btn').onclick=startQueue; byId('cancel-btn').onclick=cancelJob; byId('clear-finished-btn').onclick=clearFinished;
+            byId('open-result-btn').onclick=openResult;
+            byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
+            byId('health-btn').onclick=loadHealth;
+            byId('update-btn').onclick=openUpdate;
+            updateNamePreview(); bootApp();
         });
     </script>
 </body>

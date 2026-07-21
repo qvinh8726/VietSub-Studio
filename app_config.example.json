@@ -1,5 +1,6 @@
 {
   "notebook_url": "",
   "ocr_lang": "ch",
-  "output_dir": ""
+  "output_dir": "",
+  "crop_coords": null
 }
