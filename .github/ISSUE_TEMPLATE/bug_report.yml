@@ -1,0 +1,55 @@
+name: Bug report / Báo lỗi
+description: Report a reproducible problem / Báo cáo lỗi có thể tái hiện
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove private links, Notebook IDs, cookies, and personal paths before submitting.
+        Hãy xoá link riêng tư, Notebook ID, cookie và đường dẫn cá nhân trước khi gửi.
+  - type: input
+    id: version
+    attributes:
+      label: Version / Phiên bản
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation type / Kiểu cài đặt
+      options:
+        - Portable EXE
+        - Python source / Mã nguồn Python
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem / Mô tả lỗi
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps / Các bước tái hiện
+      placeholder: |
+        1. Open...
+        2. Paste...
+        3. Click...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics / Chẩn đoán
+      description: List red/yellow health checks and sanitized log lines.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation / Xác nhận riêng tư
+      options:
+        - label: I removed credentials, private URLs, cookies, and personal data.
+          required: true

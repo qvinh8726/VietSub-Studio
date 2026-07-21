@@ -1,0 +1,34 @@
+VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
+================================================
+
+1. CHAY APP
+- Giai nen file ZIP vao mot thu muc rieng.
+- Mo "VietSub Studio.exe".
+- Lan mo dau co the mat 20-60 giay do Windows giai nen va quet bao mat file EXE.
+- Neu Windows SmartScreen hien canh bao vi app chua co chu ky so, chon More info > Run anyway.
+
+2. CAC THANH PHAN CAN CO TREN MAY
+- Windows 10/11 va Microsoft Edge.
+- Douzy duoc cai o thu muc mac dinh. Mo Douzy it nhat mot lan va chon thu muc tai video.
+- VideOCR duoc cai tai: C:\Program Files\VideOCR\videocr-cli.exe
+- Tuy chon: FFmpeg/FFprobe trong PATH de quy doi vung crop OCR chinh xac hon.
+
+3. THIET LAP LAN DAU
+- Trong VietSub Studio, mo tab "Thiet lap".
+- Dan link Gemini Notebook cua ban, dang:
+  https://gemini.google.com/notebook/ID-CUA-BAN
+- Kiem tra cac muc bat buoc. Khi tat ca muc mau do da het, app san sang.
+- Khi app mo Edge rieng, dang nhap tai khoan Google co quyen truy cap Notebook.
+
+4. XU LY VIDEO
+- Dan link video Douyin hoac ca doan noi dung share.
+- Nhap ten bo file neu muon. Neu de trong, app dung ten video Douyin.
+- Ket qua duoc dat ten dong bo:
+  Ten video.mp4
+  Ten video.raw.srt
+  Ten video.vi.srt
+
+5. LUU Y KHI GUI CHO NGUOI KHAC
+- File EXE chua VietSub Studio, nhung khong kem Douzy, VideOCR hay tai khoan Gemini.
+- Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini cua ho.
+- Cau hinh cua moi may duoc luu rieng trong %APPDATA%\VietSub Studio.

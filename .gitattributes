@@ -1,0 +1,11 @@
+*.py text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.spec text eol=lf
+*.bat text eol=crlf
+*.ico binary
+*.jpg binary

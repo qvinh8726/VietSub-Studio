@@ -1,0 +1,29 @@
+name: Feature request / Đề xuất tính năng
+description: Suggest an improvement / Đề xuất cải tiến
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Vấn đề
+      description: What workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution / Giải pháp đề xuất
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / Phương án khác
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check / Kiểm tra phạm vi
+      options:
+        - label: This request is related to single-video subtitle processing.
+          required: true

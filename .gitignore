@@ -1,0 +1,42 @@
+# Local settings and machine-specific shortcuts
+app_config.json
+*.lnk
+
+# Release artifacts are uploaded to GitHub Releases, not committed to Git
+*.zip
+*.zip.sha256.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller and generated output
+build/
+build_*/
+dist/
+dist_*/
+release/
+VietSub Studio/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
