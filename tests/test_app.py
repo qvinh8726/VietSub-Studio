@@ -1,5 +1,6 @@
 import io
 import hashlib
+import os
 import sqlite3
 import sys
 import tempfile
@@ -107,7 +108,7 @@ class ValidationTests(unittest.TestCase):
                 include_thumbnail=True,
             )
 
-            self.assertEqual(project["video"], str(source.resolve()))
+            self.assertTrue(os.path.samefile(project["video"], source))
             self.assertFalse((Path(project["project_dir"]) / "Video demo.mp4").exists())
             self.assertEqual(Path(project["thumbnail"]).name, "Video demo.thumbnail.jpg")
             self.assertEqual(Path(project["thumbnail"]).read_bytes(), thumbnail.read_bytes())
