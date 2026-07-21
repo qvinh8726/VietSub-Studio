@@ -715,19 +715,20 @@
                 if (job.status === 'queued') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = 'Xoá khỏi hàng đợi'; remove.onclick = () => removeQueueJob(job.id); actions.appendChild(remove); }
                 if (job.status === 'error' || job.status === 'cancelled') { const retry = document.createElement('button'); retry.className = 'btn-secondary'; retry.textContent = job.retry_step === 'translate' ? 'Chạy lại bước dịch' : job.retry_step === 'ocr' ? 'Chạy lại từ OCR' : 'Chạy lại từ video'; retry.onclick = () => retryQueueJob(job.id); actions.appendChild(retry); }
                 if (job.needs_edge_login) { const login = document.createElement('button'); login.className = 'btn-ghost'; login.textContent = 'Mở Edge đăng nhập'; login.onclick = showEdgeLogin; actions.appendChild(login); }
-                if (job.result?.project_dir) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true); actions.appendChild(open); }
+                if (job.status === 'success' && job.result_ready) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true); actions.appendChild(open); }
+                else if ((job.status === 'error' || job.status === 'cancelled') && job.result?.project_dir) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở thư mục làm dở'; open.onclick = () => openResultPath(job.result.project_dir); actions.appendChild(open); }
                 if (actions.children.length) row.appendChild(actions);
                 list.appendChild(row);
             });
         }
 
         async function loadQueue() {
-            try { const data = await fetchJson('/api/queue'); queueJobs = data.jobs || []; renderQueue(); if (data.running) await pollProgress(); }
+            try { const data = await fetchJson('/api/queue'); queueJobs = data.jobs || []; renderQueue(); await pollProgress(); }
             catch (error) { console.warn(error); }
         }
 
         async function startQueue() {
-            try { await fetchJson('/api/queue/start', {method: 'POST'}); displayedLogCount = 0; progressJobId = ''; byId('console-box').replaceChildren(); await loadQueue(); showToast('Hàng đợi đã bắt đầu chạy tuần tự.'); }
+            try { await fetchJson('/api/queue/start', {method: 'POST'}); hideResult(); displayedLogCount = 0; progressJobId = ''; byId('console-box').replaceChildren(); await loadQueue(); showToast('Hàng đợi đã bắt đầu chạy tuần tự.'); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -737,7 +738,7 @@
         }
 
         async function retryQueueJob(id) {
-            try { await fetchJson(`/api/queue/${id}/retry`, {method:'POST'}); await loadQueue(); showToast('Job đã được đưa lại vào hàng đợi.'); }
+            try { await fetchJson(`/api/queue/${id}/retry`, {method:'POST'}); hideResult(); await loadQueue(); showToast('Job đã được đưa lại vào hàng đợi.'); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -747,7 +748,7 @@
         }
 
         async function clearFinished() {
-            try { await fetchJson('/api/queue/finished', {method: 'DELETE'}); await loadQueue(); }
+            try { await fetchJson('/api/queue/finished', {method: 'DELETE'}); hideResult(); await loadQueue(); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -765,7 +766,8 @@
                 item.className = index < activeIndex || status === 'success' ? 'step completed' : index === activeIndex ? `step ${status === 'error' || status === 'cancelled' ? 'error' : 'active'}` : 'step';
             });
             const captions = {resolve:'Đang giải mã link',download:'Đang chuẩn bị video',ocr:'VideOCR đang quét',translate:'Gemini đang dịch',done:'Đã hoàn tất'};
-            byId('process-caption').textContent = status === 'cancelled' ? 'Job đã huỷ' : captions[step] || 'Sẵn sàng';
+            const errorCaptions = {resolve:'Lỗi giải mã link',download:'Lỗi chuẩn bị video',ocr:'VideOCR bị lỗi',translate:'Dịch bằng Gemini bị lỗi',done:'Hoàn tất không hợp lệ'};
+            byId('process-caption').textContent = status === 'cancelled' ? 'Job đã huỷ' : status === 'error' ? errorCaptions[step] || 'Job bị lỗi' : captions[step] || 'Sẵn sàng';
         }
 
         function addLog(text) {
@@ -779,11 +781,18 @@
         async function pollProgress() {
             try {
                 const data = await fetchJson(`/api/progress?after=${displayedLogCount}`);
-                if (data.job_id && data.job_id !== progressJobId) { progressJobId = data.job_id; displayedLogCount = 0; byId('console-box').replaceChildren(); return pollProgress(); }
+                if (data.job_id && data.job_id !== progressJobId) { hideResult(); progressJobId = data.job_id; displayedLogCount = 0; byId('console-box').replaceChildren(); return pollProgress(); }
                 (data.logs || []).forEach(addLog); displayedLogCount = data.next_log_index ?? displayedLogCount;
                 if (data.status !== 'idle') updateSteps(data.step, data.status);
-                if (data.status === 'success' && data.result?.project_dir) showResult(data.result, false);
+                if (data.status === 'success' && data.result_ready) showResult(data.result, false);
+                else if (['running', 'error', 'cancelled'].includes(data.status)) hideResult();
             } catch (_) {}
+        }
+
+        function hideResult() {
+            resultOpenPath = '';
+            byId('res-video').textContent = ''; byId('res-raw').textContent = ''; byId('res-vi').textContent = '';
+            byId('result-box').hidden = true;
         }
 
         function showResult(result, scroll = false) {
@@ -795,8 +804,12 @@
         }
 
         async function openResult() {
-            if (!resultOpenPath) return;
-            try { await fetchJson('/api/open-folder', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:resultOpenPath})}); }
+            await openResultPath(resultOpenPath);
+        }
+
+        async function openResultPath(path) {
+            if (!path) return;
+            try { await fetchJson('/api/open-folder', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})}); }
             catch (error) { showToast(error.message, 'error'); }
         }
 

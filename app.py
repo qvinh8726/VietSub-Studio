@@ -59,7 +59,7 @@ MAX_PROJECT_NAME_LENGTH = 100
 PREVIEW_TTL_SECONDS = 6 * 60 * 60
 MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -268,7 +268,7 @@ def progress_snapshot(after_log_index=0):
             len(progress_status["logs"]),
             max(0, after_log_index - progress_status["log_base_index"]),
         )
-        return {
+        snapshot = {
             "status": progress_status["status"],
             "step": progress_status["step"],
             "logs": list(progress_status["logs"][start_index:]),
@@ -278,6 +278,10 @@ def progress_snapshot(after_log_index=0):
             "job_id": progress_status.get("job_id", ""),
             "result": dict(progress_status["result"])
         }
+    snapshot["result_ready"] = (
+        snapshot["status"] == "success" and project_result_ready(snapshot["result"])
+    )
+    return snapshot
 
 
 def validate_notebook_url(value, allow_empty=False):
@@ -870,21 +874,56 @@ def set_edge_window_visibility(context, page, visible):
         return False
 
 
+GEMINI_INPUT_SELECTORS = (
+    "div.ql-editor",
+    "div[contenteditable='true']",
+    "[role='textbox']",
+    "textarea",
+)
+
+GEMINI_LOGIN_SELECTORS = (
+    "button:has-text('Đăng nhập')",
+    "button:has-text('Sign in')",
+    "a:has-text('Đăng nhập')",
+    "a:has-text('Sign in')",
+    "[role='button']:has-text('Đăng nhập')",
+    "[role='button']:has-text('Sign in')",
+)
+
+
+def first_visible_locator(page, selectors, *, require_enabled=False):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            for index in range(locator.count()):
+                candidate = locator.nth(index)
+                if not candidate.is_visible():
+                    continue
+                if require_enabled and not candidate.is_enabled():
+                    continue
+                return candidate
+        except Exception:
+            pass
+    return None
+
+
 def edge_page_needs_login(page):
     hostname = (urlparse(page.url).hostname or "").lower()
     if hostname == "accounts.google.com" or hostname.endswith(".accounts.google.com"):
         return True
-    for selector in (
-        "a[href*='accounts.google.com']",
-        "button:has-text('Đăng nhập')",
-        "button:has-text('Sign in')",
-    ):
-        try:
-            if page.locator(selector).count() > 0:
-                return True
-        except Exception:
-            pass
-    return False
+    return first_visible_locator(page, GEMINI_LOGIN_SELECTORS) is not None
+
+
+def wait_for_gemini_prompt(page, timeout_seconds=15):
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        check_cancel_requested()
+        prompt_input = first_visible_locator(page, GEMINI_INPUT_SELECTORS)
+        if prompt_input is not None or edge_page_needs_login(page):
+            return prompt_input
+        if time.monotonic() >= deadline:
+            return None
+        page.wait_for_timeout(500)
 
 
 def show_edge_for_login(notebook_url):
@@ -1475,6 +1514,46 @@ def normalize_translated_srt(source_srt, translated_srt):
     return validate_translated_srt(source_srt, translated_srt)
 
 
+def validate_project_result(result):
+    if not isinstance(result, dict):
+        raise ValueError("Dữ liệu bộ file kết quả không hợp lệ.")
+
+    project_dir = str(result.get("project_dir") or "")
+    if not os.path.isdir(project_dir):
+        raise FileNotFoundError("Thư mục kết quả chưa được tạo đầy đủ.")
+
+    required_files = {
+        "video": "video dự án",
+        "raw_srt": "file sub OCR",
+        "translated_srt": "file sub Việt",
+    }
+    for key, label in required_files.items():
+        path = str(result.get(key) or "")
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            raise FileNotFoundError(f"Không tìm thấy {label} hoàn chỉnh: {path or '(trống)'}")
+
+    with open(result["raw_srt"], "r", encoding="utf-8-sig") as source_file:
+        source_srt = source_file.read().strip()
+    with open(result["translated_srt"], "r", encoding="utf-8-sig") as translated_file:
+        translated_srt = translated_file.read().strip()
+
+    validate_translated_srt(source_srt, translated_srt)
+    source_blocks = parse_srt_blocks(source_srt)
+    translated_blocks = parse_srt_blocks(translated_srt)
+    if not source_blocks or len(source_blocks) != len(translated_blocks):
+        raise ValueError("File sub Việt chưa đầy đủ số đoạn so với sub OCR.")
+    if [block[0] for block in source_blocks] != [block[0] for block in translated_blocks]:
+        raise ValueError("File sub Việt đã thay đổi số thứ tự đoạn; không thể báo hoàn thành.")
+    return True
+
+
+def project_result_ready(result):
+    try:
+        return validate_project_result(result)
+    except (OSError, UnicodeError, TypeError, ValueError):
+        return False
+
+
 def find_last_response(page, selectors):
     for selector in selectors:
         locator = page.locator(selector)
@@ -1557,11 +1636,21 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
             gemini_page.wait_for_timeout(5000)
 
         log_to_app(f"Đã liên kết thành công với tab Notebook: '{gemini_page.title()}'")
-        if edge_page_needs_login(gemini_page):
+        log_to_app("Đang chờ giao diện Notebook sẵn sàng...")
+        prompt_input = wait_for_gemini_prompt(gemini_page)
+        if prompt_input is None and edge_page_needs_login(gemini_page):
             set_edge_window_visibility(context, gemini_page, True)
             raise EdgeLoginRequired(
                 "Phiên Google đã hết hạn. Edge đã được mở để đăng nhập; đăng nhập xong hãy bấm Chạy lại."
             )
+        if prompt_input is None:
+            if edge_background:
+                set_edge_window_visibility(context, gemini_page, True)
+                raise EdgeLoginRequired(
+                    "App chưa tìm thấy khung chat của Notebook khi Edge chạy ẩn. "
+                    "Edge đã được mở để kiểm tra; khi khung chat hiện ra hãy bấm Chạy lại."
+                )
+            raise RuntimeError("Không tìm thấy khung nhập liệu chat của Gemini.")
         if edge_background:
             set_edge_window_visibility(context, gemini_page, False)
         else:
@@ -1575,30 +1664,6 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
             "div.markdown",
             ".chat-message"
         ]
-
-        log_to_app("Tìm khung nhập liệu chat...")
-        check_cancel_requested()
-        input_selectors = [
-            "div.ql-editor",
-            "div[contenteditable='true']",
-            "[role='textbox']",
-            "textarea"
-        ]
-
-        prompt_input = None
-        for sel in input_selectors:
-            loc = gemini_page.locator(sel)
-            if loc.count() > 0 and loc.first.is_visible():
-                prompt_input = loc.first
-                break
-
-        if not prompt_input:
-            if edge_background:
-                set_edge_window_visibility(context, gemini_page, True)
-                raise EdgeLoginRequired(
-                    "Không tìm thấy khung chat khi Edge chạy ẩn. Edge đã được mở để kiểm tra đăng nhập; xong hãy bấm Chạy lại."
-                )
-            raise RuntimeError("Không tìm thấy khung nhập liệu chat của Gemini.")
 
         previous_response = find_last_response(gemini_page, response_selectors)
         previous_response_text = previous_response.inner_text() if previous_response else ""
@@ -1616,12 +1681,11 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
             "button[aria-label*='gửi']"
         ]
 
-        submit_btn = None
-        for sel in submit_selectors:
-            loc = gemini_page.locator(sel)
-            if loc.count() > 0 and loc.first.is_enabled():
-                submit_btn = loc.first
-                break
+        submit_btn = first_visible_locator(
+            gemini_page,
+            submit_selectors,
+            require_enabled=True,
+        )
 
         if not submit_btn:
             if edge_background:
@@ -1888,6 +1952,9 @@ def serialize_job(job):
     }
     serialized["retry_step"] = (
         get_job_retry_step(job) if job.get("status") in {"error", "cancelled"} else None
+    )
+    serialized["result_ready"] = (
+        job.get("status") == "success" and project_result_ready(serialized.get("result"))
     )
     return serialized
 
@@ -2327,6 +2394,7 @@ def run_workflow_thread(
         update_progress(result={"translated_srt": translated_srt})
         project["raw_srt"] = raw_srt
         project["translated_srt"] = translated_srt
+        validate_project_result(project)
         write_project_manifest(
             project,
             video_id=video_id,

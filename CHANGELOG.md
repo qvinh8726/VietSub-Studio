@@ -4,6 +4,16 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-07-22
+
+### Fixed
+
+- Prevented hidden or generic Google account links from being mistaken for an expired Gemini session.
+- Waited for the Notebook chat UI before deciding that visible Edge fallback is required.
+- Required the video, raw SRT, and validated Vietnamese SRT to exist before a job can report success.
+- Cleared stale success cards and result actions when a job starts, retries, fails, or is cancelled.
+- Kept failed project folders accessible as incomplete work without labeling them as finished results.
+
 ## [1.3.0] - 2026-07-21
 
 ### Added
