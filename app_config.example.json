@@ -3,5 +3,6 @@
   "ocr_lang": "ch",
   "output_dir": "",
   "crop_coords": null,
-  "edge_background": true
+  "edge_background": true,
+  "desktop_shortcut_initialized": false
 }

@@ -247,6 +247,53 @@ class QueuePersistenceTests(unittest.TestCase):
         self.assertIn("App đã đóng", restored[0]["error"])
 
 
+class DesktopShortcutTests(unittest.TestCase):
+    def test_packaged_app_creates_a_desktop_shortcut_to_the_current_exe(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            desktop = Path(temporary_dir) / "Desktop"
+            desktop.mkdir()
+            executable = Path(temporary_dir) / "VietSub Studio.exe"
+            executable.write_bytes(b"exe")
+
+            def create_fake_shortcut(_command, **kwargs):
+                shortcut_path = Path(kwargs["env"]["VIETSUB_SHORTCUT_PATH"])
+                shortcut_path.write_bytes(b"shortcut")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with (
+                patch.object(app, "is_packaged_app", return_value=True),
+                patch.object(app, "get_desktop_directory", return_value=str(desktop)),
+                patch.object(app.sys, "executable", str(executable)),
+                patch.object(app.subprocess, "run", side_effect=create_fake_shortcut) as run,
+            ):
+                shortcut_path = app.create_desktop_shortcut()
+
+        self.assertEqual(shortcut_path, str(desktop / "VietSub Studio.lnk"))
+        shortcut_env = run.call_args.kwargs["env"]
+        self.assertEqual(shortcut_env["VIETSUB_SHORTCUT_TARGET"], str(executable))
+        self.assertEqual(shortcut_env["VIETSUB_SHORTCUT_WORKDIR"], str(executable.parent))
+
+    def test_initial_shortcut_is_created_only_once(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = str(Path(temporary_dir) / "app_config.json")
+            with (
+                patch.object(app, "CONFIG_PATH", config_path),
+                patch.object(app, "is_packaged_app", return_value=True),
+                patch.object(
+                    app,
+                    "create_desktop_shortcut",
+                    return_value=str(Path(temporary_dir) / "VietSub Studio.lnk"),
+                ) as create_shortcut,
+            ):
+                app.ensure_initial_desktop_shortcut()
+                app.ensure_initial_desktop_shortcut()
+
+                config = app.load_app_config()
+
+        create_shortcut.assert_called_once_with()
+        self.assertTrue(config["desktop_shortcut_initialized"])
+
+
 class ApiTests(unittest.TestCase):
     def setUp(self):
         app.app.config["TESTING"] = True
@@ -422,6 +469,21 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(settings.get_json()["edge_background"])
+
+    def test_shortcut_endpoint_creates_and_records_the_desktop_link(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = str(Path(temporary_dir) / "app_config.json")
+            shortcut_path = str(Path(temporary_dir) / "Desktop" / "VietSub Studio.lnk")
+            with (
+                patch.object(app, "CONFIG_PATH", config_path),
+                patch.object(app, "create_desktop_shortcut", return_value=shortcut_path),
+            ):
+                response = self.client.post("/api/shortcut")
+                config = app.load_app_config()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["path"], shortcut_path)
+        self.assertTrue(config["desktop_shortcut_initialized"])
 
     def test_edge_login_failure_marks_the_current_queue_job(self):
         with tempfile.TemporaryDirectory() as temporary_dir:

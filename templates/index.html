@@ -409,6 +409,11 @@
                         </label>
                         <button id="show-edge-btn" class="btn-ghost" type="button" style="margin-top:7px">Mở Edge để đăng nhập</button>
                     </div>
+                    <div class="setting-field">
+                        <label>Shortcut mở nhanh</label>
+                        <button id="create-shortcut-btn" class="btn-secondary" type="button">Tạo shortcut ngoài Desktop</button>
+                        <small id="shortcut-help">Bản EXE sẽ tự tạo shortcut ở lần mở đầu tiên; có thể bấm đây để tạo lại.</small>
+                    </div>
                     <div class="setting-field"><label for="setting-crop">Crop OCR mặc định</label><input id="setting-crop" class="text-input readonly" readonly></div>
                     <div class="setting-field"><label for="setting-download">Thư mục Douzy</label><input id="setting-download" class="text-input readonly" readonly></div>
                     <div class="diagnostics">
@@ -788,6 +793,20 @@
                 byId('setting-crop').value = data.crop_coords ? JSON.stringify(data.crop_coords) : 'Toàn khung hình';
                 byId('setting-download').value = data.download_dir || 'Chưa xác định'; byId('ocr-lang').value = data.ocr_lang || 'ch';
                 byId('setting-edge-background').checked = data.edge_background !== false;
+                const shortcutButton = byId('create-shortcut-btn');
+                shortcutButton.disabled = !data.desktop_shortcut_supported;
+                shortcutButton.textContent = data.desktop_shortcut_exists ? 'Tạo lại shortcut ngoài Desktop' : 'Tạo shortcut ngoài Desktop';
+                byId('shortcut-help').textContent = data.desktop_shortcut_supported
+                    ? 'Shortcut giúp mở app ngay từ Desktop, không cần tìm lại file EXE.'
+                    : 'Nút này hoạt động trong bản VietSub Studio EXE.';
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function createDesktopShortcut() {
+            try {
+                await fetchJson('/api/shortcut', {method:'POST'});
+                showToast('Đã tạo shortcut VietSub Studio ngoài Desktop.');
+                await loadSettings();
             } catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -843,6 +862,7 @@
             byId('open-result-btn').onclick=openResult;
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
             byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;
+            byId('create-shortcut-btn').onclick=createDesktopShortcut;
             byId('health-btn').onclick=loadHealth;
             byId('update-btn').onclick=openUpdate;
             updateNamePreview(); bootApp();

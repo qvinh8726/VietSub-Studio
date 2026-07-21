@@ -135,9 +135,10 @@ Douzy and VideOCR are third-party applications and are not redistributed by this
 2. Download `VietSub-Studio-Portable-*.zip`.
 3. Extract the ZIP into a normal writable folder. Do not run the EXE from inside the ZIP preview.
 4. Open `VietSub Studio.exe`.
-5. The first launch may take 20-60 seconds while the one-file package is extracted and scanned by Windows security software.
-6. If SmartScreen appears because the community build is not code-signed, review the publisher/source and choose **More info → Run anyway** only if you trust the downloaded release.
-7. Open **Settings** and complete every required item shown in red.
+5. The packaged app creates a `VietSub Studio` shortcut on the Desktop after the first successful launch. Use **Settings → Recreate Desktop shortcut** if it is deleted or the portable folder is moved.
+6. The first launch may take 20-60 seconds while the one-file package is extracted and scanned by Windows security software.
+7. If SmartScreen appears because the community build is not code-signed, review the publisher/source and choose **More info → Run anyway** only if you trust the downloaded release.
+8. Open **Settings** and complete every required item shown in red.
 
 You can verify the downloaded EXE with the `SHA256.txt` file included in the ZIP. The release page also publishes the ZIP checksum.
 
@@ -580,9 +581,10 @@ Douzy và VideOCR là ứng dụng bên thứ ba, không được phân phối l
 2. Tải file `VietSub-Studio-Portable-*.zip`.
 3. Giải nén ZIP vào thư mục bình thường có quyền ghi. Không chạy EXE trực tiếp trong cửa sổ xem trước ZIP.
 4. Mở `VietSub Studio.exe`.
-5. Lần mở đầu có thể mất 20-60 giây vì bản một file cần giải nén tạm và bị Windows quét bảo mật.
-6. Nếu SmartScreen cảnh báo do bản cộng đồng chưa có chữ ký số, hãy kiểm tra đúng nguồn/checksum rồi chỉ chọn **More info → Run anyway** khi bạn tin tưởng bản tải.
-7. Mở **Thiết lập** và xử lý hết các mục bắt buộc màu đỏ.
+5. Bản EXE tự tạo shortcut `VietSub Studio` ngoài Desktop sau lần mở đầu tiên thành công. Nếu shortcut bị xóa hoặc chuyển thư mục portable, dùng **Thiết lập → Tạo lại shortcut ngoài Desktop**.
+6. Lần mở đầu có thể mất 20-60 giây vì bản một file cần giải nén tạm và bị Windows quét bảo mật.
+7. Nếu SmartScreen cảnh báo do bản cộng đồng chưa có chữ ký số, hãy kiểm tra đúng nguồn/checksum rồi chỉ chọn **More info → Run anyway** khi bạn tin tưởng bản tải.
+8. Mở **Thiết lập** và xử lý hết các mục bắt buộc màu đỏ.
 
 Có thể kiểm tra EXE bằng `SHA256.txt` nằm trong ZIP. Trang Release cũng công bố checksum của file ZIP.
 

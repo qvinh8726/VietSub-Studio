@@ -4,6 +4,13 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-21
+
+### Added
+
+- Automatic `VietSub Studio` Desktop shortcut creation on the first packaged EXE launch.
+- An in-app action to recreate the Desktop shortcut after it is deleted or the portable folder is moved.
+
 ## [1.2.0] - 2026-07-21
 
 ### Added

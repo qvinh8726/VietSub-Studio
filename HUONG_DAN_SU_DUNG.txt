@@ -4,6 +4,8 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 1. CHAY APP
 - Giai nen file ZIP vao mot thu muc rieng.
 - Mo "VietSub Studio.exe".
+- Ban EXE se tu tao shortcut "VietSub Studio" ngoai Desktop o lan mo dau tien.
+- Neu shortcut bi xoa hoac ban chuyen thu muc app, bam "Tao lai shortcut ngoai Desktop" trong phan Thiet lap.
 - Lan mo dau co the mat 20-60 giay do Windows giai nen va quet bao mat file EXE.
 - Neu Windows SmartScreen hien canh bao vi app chua co chu ky so, chon More info > Run anyway.
 

@@ -56,7 +56,7 @@ MAX_PROJECT_NAME_LENGTH = 100
 PREVIEW_TTL_SECONDS = 6 * 60 * 60
 MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -390,6 +390,7 @@ def load_app_config():
         "output_dir": "",
         "crop_coords": None,
         "edge_background": True,
+        "desktop_shortcut_initialized": False,
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -409,6 +410,98 @@ def save_app_config(config):
     finally:
         if os.path.exists(temporary_path):
             os.remove(temporary_path)
+
+
+def is_packaged_app():
+    return os.name == "nt" and bool(getattr(sys, "frozen", False))
+
+
+def get_desktop_directory():
+    if os.name != "nt":
+        raise RuntimeError("Shortcut ngoài Desktop chỉ hỗ trợ Windows.")
+    import ctypes
+
+    desktop_path = ctypes.create_unicode_buffer(32768)
+    result = ctypes.windll.shell32.SHGetFolderPathW(
+        None,
+        0x0010,  # CSIDL_DESKTOPDIRECTORY, including redirected OneDrive desktops.
+        None,
+        0,
+        desktop_path,
+    )
+    if result != 0 or not desktop_path.value:
+        raise OSError(result, "Không xác định được thư mục Desktop của Windows.")
+    return os.path.abspath(desktop_path.value)
+
+
+def desktop_shortcut_path():
+    return os.path.join(get_desktop_directory(), "VietSub Studio.lnk")
+
+
+def create_desktop_shortcut():
+    if not is_packaged_app():
+        raise RuntimeError("Shortcut chỉ được tạo từ bản VietSub Studio EXE.")
+
+    target_path = os.path.abspath(sys.executable)
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError("Không tìm thấy file VietSub Studio.exe hiện tại.")
+    shortcut_path = desktop_shortcut_path()
+    if not os.path.isdir(os.path.dirname(shortcut_path)):
+        raise FileNotFoundError("Không tìm thấy thư mục Desktop của Windows.")
+
+    shortcut_env = os.environ.copy()
+    shortcut_env.update({
+        "VIETSUB_SHORTCUT_PATH": shortcut_path,
+        "VIETSUB_SHORTCUT_TARGET": target_path,
+        "VIETSUB_SHORTCUT_WORKDIR": os.path.dirname(target_path),
+        "VIETSUB_SHORTCUT_ICON": f"{target_path},0",
+    })
+    powershell_script = (
+        "$shell = New-Object -ComObject WScript.Shell; "
+        "$shortcut = $shell.CreateShortcut($env:VIETSUB_SHORTCUT_PATH); "
+        "$shortcut.TargetPath = $env:VIETSUB_SHORTCUT_TARGET; "
+        "$shortcut.WorkingDirectory = $env:VIETSUB_SHORTCUT_WORKDIR; "
+        "$shortcut.IconLocation = $env:VIETSUB_SHORTCUT_ICON; "
+        "$shortcut.Description = 'VietSub Studio'; "
+        "$shortcut.WindowStyle = 1; "
+        "$shortcut.Save()"
+    )
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            powershell_script,
+        ],
+        env=shortcut_env,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=15,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if completed.returncode != 0 or not os.path.isfile(shortcut_path):
+        details = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(details or "Windows không thể tạo shortcut ngoài Desktop.")
+    return shortcut_path
+
+
+def ensure_initial_desktop_shortcut():
+    if not is_packaged_app():
+        return ""
+    config = load_app_config()
+    if config.get("desktop_shortcut_initialized"):
+        return ""
+    try:
+        shortcut_path = create_desktop_shortcut()
+        config["desktop_shortcut_initialized"] = True
+        save_app_config(config)
+        return shortcut_path
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        log_to_app(f"Chưa thể tạo shortcut ngoài Desktop: {error}", "error")
+        return ""
 
 def get_douzy_download_dir():
     if not os.path.exists(DOUZY_CONFIG):
@@ -2097,6 +2190,18 @@ def open_update():
     return jsonify({"ok": True, "url": release_url})
 
 
+@app.route('/api/shortcut', methods=['POST'])
+def create_shortcut():
+    try:
+        shortcut_path = create_desktop_shortcut()
+        config = load_app_config()
+        config["desktop_shortcut_initialized"] = True
+        save_app_config(config)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"ok": True, "path": shortcut_path})
+
+
 @app.route('/api/health')
 def health():
     config = load_app_config()
@@ -2277,6 +2382,13 @@ def handle_settings():
         config = load_app_config()
         crop = get_saved_crop_coords()
         down_dir = get_douzy_download_dir()
+        shortcut_supported = is_packaged_app()
+        shortcut_exists = False
+        if shortcut_supported:
+            try:
+                shortcut_exists = os.path.isfile(desktop_shortcut_path())
+            except (OSError, RuntimeError):
+                pass
         return jsonify({
             "crop_coords": crop,
             "download_dir": down_dir,
@@ -2284,6 +2396,8 @@ def handle_settings():
             "ocr_lang": config.get("ocr_lang"),
             "output_dir": config.get("output_dir", ""),
             "edge_background": bool(config.get("edge_background", True)),
+            "desktop_shortcut_supported": shortcut_supported,
+            "desktop_shortcut_exists": shortcut_exists,
         })
 
 @app.route('/api/history')
@@ -2376,6 +2490,7 @@ def run_web_server():
 
 
 def run_desktop_app():
+    ensure_initial_desktop_shortcut()
     initialize_queue_state()
     try:
         import webview
