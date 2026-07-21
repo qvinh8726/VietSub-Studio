@@ -1,5 +1,6 @@
 import io
 import hashlib
+import os
 import sqlite3
 import sys
 import tempfile
@@ -88,6 +89,57 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(Path(first["translated_srt"]).name, "Video demo.vi.srt")
             self.assertEqual(Path(first["video"]).read_bytes(), b"video-data")
             self.assertEqual(second["project_name"], "Video demo (2)")
+
+    def test_douyin_project_reuses_downloaded_video_and_keeps_thumbnail(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            source = directory / "cached.mp4"
+            thumbnail = directory / "cached_cover.jpg"
+            output = directory / "exports"
+            source.write_bytes(b"video-data")
+            thumbnail.write_bytes(b"\xff\xd8\xffthumbnail")
+
+            project = app.prepare_project_files(
+                str(source),
+                "Video demo",
+                "123",
+                output_dir=str(output),
+                reuse_source_video=True,
+                include_thumbnail=True,
+            )
+
+            self.assertTrue(os.path.samefile(project["video"], source))
+            self.assertFalse((Path(project["project_dir"]) / "Video demo.mp4").exists())
+            self.assertEqual(Path(project["thumbnail"]).name, "Video demo.thumbnail.jpg")
+            self.assertEqual(Path(project["thumbnail"]).read_bytes(), thumbnail.read_bytes())
+
+    def test_thumbnail_download_validates_host_size_and_image_bytes(self):
+        class FakeResponse:
+            headers = {"Content-Length": "12", "Content-Type": "image/jpeg"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return "https://p3.douyinpic.com/cover.jpeg"
+
+            def read(self, _limit):
+                return b"\xff\xd8\xffthumbnail"
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            destination = str(Path(temporary_dir) / "video.thumbnail")
+            with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse()):
+                downloaded = app.download_thumbnail(
+                    "https://p3.douyinpic.com/cover.jpeg", destination
+                )
+
+            self.assertEqual(downloaded, destination + ".jpg")
+            self.assertTrue(Path(downloaded).is_file())
+            with self.assertRaises(ValueError):
+                app.download_thumbnail("https://example.com/cover.jpg", destination)
 
     def test_logging_survives_a_legacy_console_encoding(self):
         class Cp1252Console:
@@ -927,7 +979,13 @@ class ApiTests(unittest.TestCase):
             resolve.assert_called_once()
             wait_for_video.assert_called_once_with(ANY, "123", allow_existing=True)
             prepare_project.assert_called_once_with(
-                "video.mp4", None, "123", video_title="Test video", output_dir=""
+                "video.mp4",
+                None,
+                "123",
+                video_title="Test video",
+                output_dir="",
+                reuse_source_video=True,
+                include_thumbnail=True,
             )
             run_ocr.assert_called_once_with(
                 "project/Test video.mp4",

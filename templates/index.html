@@ -391,6 +391,7 @@
                 <div id="result-box" class="result-box" hidden>
                     <div id="result-title" class="result-title">Bộ file đã sẵn sàng</div>
                     <div class="result-path"><b>Video</b><span id="res-video"></span></div>
+                    <div id="res-thumbnail-row" class="result-path" hidden><b>Thumbnail</b><span id="res-thumbnail"></span></div>
                     <div class="result-path"><b>Sub OCR</b><span id="res-raw"></span></div>
                     <div class="result-path"><b>Sub Việt</b><span id="res-vi"></span></div>
                     <button id="open-result-btn" class="btn-secondary" type="button">Mở thư mục</button>
@@ -791,14 +792,14 @@
 
         function hideResult() {
             resultOpenPath = '';
-            byId('res-video').textContent = ''; byId('res-raw').textContent = ''; byId('res-vi').textContent = '';
+            byId('res-video').textContent = ''; byId('res-thumbnail').textContent = ''; byId('res-thumbnail-row').hidden = true; byId('res-raw').textContent = ''; byId('res-vi').textContent = '';
             byId('result-box').hidden = true;
         }
 
         function showResult(result, scroll = false) {
             resultOpenPath = result.project_dir || result.translated_srt || '';
             byId('result-title').textContent = `${result.project_name || 'Bộ file'} đã sẵn sàng`;
-            byId('res-video').textContent = result.video || ''; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
+            byId('res-video').textContent = result.video || ''; byId('res-thumbnail').textContent = result.thumbnail || ''; byId('res-thumbnail-row').hidden = !result.thumbnail; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
             byId('result-box').hidden = false;
             if (scroll) byId('result-box').scrollIntoView({behavior:'smooth', block:'center'});
         }

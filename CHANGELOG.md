@@ -4,6 +4,16 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-07-22
+
+### Added
+
+- Included the Douyin thumbnail in each result folder when Douzy or its metadata provides one.
+
+### Changed
+
+- VideOCR now processes the original Douzy download directly instead of creating a second full-size MP4 copy.
+
 ## [1.3.1] - 2026-07-22
 
 ### Fixed
