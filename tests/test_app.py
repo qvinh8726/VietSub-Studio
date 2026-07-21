@@ -1,8 +1,10 @@
 import io
+import hashlib
 import sqlite3
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
@@ -124,6 +126,18 @@ class ValidationTests(unittest.TestCase):
         self.assertFalse(app.is_newer_release("1.1.0", "1.1.0"))
         with self.assertRaises(ValueError):
             app.parse_release_version("latest")
+
+    def test_update_download_urls_are_restricted_to_the_official_release(self):
+        valid = (
+            "https://github.com/qvinh8726/VietSub-Studio/releases/download/"
+            "v1.3.0/VietSub-Studio-Portable-v1.3.0.zip"
+        )
+        self.assertEqual(app.validate_release_download_url(valid, "1.3.0"), valid)
+        with self.assertRaises(ValueError):
+            app.validate_release_download_url(
+                "https://example.test/VietSub-Studio-Portable-v1.3.0.zip",
+                "1.3.0",
+            )
 
     def test_translation_must_preserve_all_timestamps(self):
         self.assertEqual(app.validate_translated_srt(SOURCE_SRT, TRANSLATED_SRT), TRANSLATED_SRT)
@@ -292,6 +306,60 @@ class DesktopShortcutTests(unittest.TestCase):
 
         create_shortcut.assert_called_once_with()
         self.assertTrue(config["desktop_shortcut_initialized"])
+
+
+class AutomaticUpdateTests(unittest.TestCase):
+    def test_release_zip_is_verified_and_staged_next_to_the_current_exe(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            current_exe = directory / "VietSub Studio.exe"
+            current_exe.write_bytes(b"MZold-version")
+            release_zip = directory / "release.zip"
+            with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("VietSub Studio/VietSub Studio.exe", b"MZnew-version")
+            zip_bytes = release_zip.read_bytes()
+            zip_hash = hashlib.sha256(zip_bytes).hexdigest()
+            zip_name, checksum_name = app.release_asset_names("9.9.9")
+            checksum_bytes = f"{zip_hash.upper()}  {zip_name}\n".encode("ascii")
+            base_url = "https://github.com/qvinh8726/VietSub-Studio/releases/download/v9.9.9"
+            payload = {
+                "tag_name": "v9.9.9",
+                "assets": [
+                    {
+                        "name": zip_name,
+                        "browser_download_url": f"{base_url}/{zip_name}",
+                        "digest": f"sha256:{zip_hash}",
+                        "size": len(zip_bytes),
+                    },
+                    {
+                        "name": checksum_name,
+                        "browser_download_url": f"{base_url}/{checksum_name}",
+                        "size": len(checksum_bytes),
+                    },
+                ],
+            }
+
+            def fake_download(url, destination, _max_bytes):
+                content = checksum_bytes if url.endswith(checksum_name) else zip_bytes
+                Path(destination).write_bytes(content)
+                return hashlib.sha256(content).hexdigest(), len(content)
+
+            update_package = None
+            try:
+                with (
+                    patch.object(app, "is_packaged_app", return_value=True),
+                    patch.object(app.sys, "executable", str(current_exe)),
+                    patch.object(app, "download_release_asset", side_effect=fake_download),
+                ):
+                    update_package = app.prepare_update_executable(payload)
+
+                self.assertEqual(Path(update_package["staged_path"]).read_bytes(), b"MZnew-version")
+                self.assertEqual(update_package["target_path"], str(current_exe))
+                self.assertEqual(update_package["version"], "9.9.9")
+            finally:
+                if update_package:
+                    Path(update_package["staged_path"]).unlink(missing_ok=True)
+                    app.shutil.rmtree(update_package["update_dir"], ignore_errors=True)
 
 
 class ApiTests(unittest.TestCase):
@@ -610,6 +678,36 @@ class ApiTests(unittest.TestCase):
             response = self.client.post("/api/update/open")
         self.assertEqual(response.status_code, 200)
         open_browser.assert_called_once_with(update["release_url"], new=2)
+
+    def test_automatic_update_endpoint_prepares_restart_and_returns_version(self):
+        update_package = {
+            "version": "1.3.1",
+            "target_path": r"C:\Apps\VietSub Studio.exe",
+            "staged_path": r"C:\Apps\.VietSub Studio.update.exe",
+            "update_dir": r"C:\Temp\VietSub-Studio-update-test",
+        }
+        with (
+            patch.object(app, "fetch_latest_release_payload", return_value={"tag_name": "v1.3.1"}),
+            patch.object(app, "prepare_update_executable", return_value=update_package),
+            patch.object(app, "launch_update_helper") as launch_helper,
+            patch.object(app, "schedule_app_exit") as schedule_exit,
+        ):
+            response = self.client.post("/api/update/install")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.get_json()["version"], "1.3.1")
+        launch_helper.assert_called_once_with(update_package)
+        schedule_exit.assert_called_once_with()
+
+    def test_automatic_update_waits_for_the_active_job(self):
+        self.assertTrue(app.workflow_lock.acquire(blocking=False))
+        try:
+            response = self.client.post("/api/update/install")
+        finally:
+            app.workflow_lock.release()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("job", response.get_json()["error"])
 
     def test_cancel_endpoint_reports_the_request(self):
         with patch.object(app, "request_workflow_cancel", return_value=True):

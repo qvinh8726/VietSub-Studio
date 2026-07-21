@@ -441,6 +441,7 @@
         let progressJobId = '';
         let resultOpenPath = '';
         let toastTimer = null;
+        let automaticUpdateSupported = false;
 
         function showToast(message, type = 'success') {
             clearTimeout(toastTimer);
@@ -465,10 +466,14 @@
             try {
                 const data = await fetchJson('/api/update');
                 if (data.update_available) {
+                    automaticUpdateSupported = Boolean(data.automatic_update_supported);
                     pill.className = 'status-pill update';
                     pill.querySelector('span').textContent = `Có v${data.latest_version}`;
                     byId('update-title').textContent = `VietSub Studio v${data.latest_version} đã sẵn sàng`;
-                    byId('update-copy').textContent = `Bạn đang dùng v${data.current_version}. Hãy cập nhật để nhận tính năng và bản sửa lỗi mới nhất.`;
+                    byId('update-copy').textContent = automaticUpdateSupported
+                        ? `Bạn đang dùng v${data.current_version}. App sẽ tự tải, kiểm tra checksum, cài và mở lại.`
+                        : `Bạn đang dùng v${data.current_version}. Bản này cần mở GitHub để tải cập nhật thủ công.`;
+                    byId('update-btn').textContent = automaticUpdateSupported ? 'Tải & cài ngay →' : 'Mở trang tải →';
                     byId('update-banner').hidden = false;
                     showToast(`Có bản cập nhật v${data.latest_version}.`);
                 } else {
@@ -480,18 +485,32 @@
             }
         }
 
-        async function openUpdate() {
+        async function installUpdate() {
             const button = byId('update-btn');
             button.disabled = true;
-            button.textContent = 'Đang mở trang tải…';
+            button.textContent = automaticUpdateSupported ? 'Đang tải & kiểm tra…' : 'Đang mở trang tải…';
             try {
-                await fetchJson('/api/update/open', {method: 'POST'});
-                showToast('Đã mở trang GitHub Releases chính thức.');
+                if (!automaticUpdateSupported) {
+                    await fetchJson('/api/update/open', {method: 'POST'});
+                    showToast('Đã mở trang GitHub Releases chính thức.');
+                    button.disabled = false;
+                    button.textContent = 'Mở trang tải →';
+                    return;
+                }
+                const data = await fetchJson('/api/update/install', {method: 'POST'});
+                button.textContent = 'Đang khởi động lại…';
+                byId('update-copy').textContent = data.message || 'Đã tải xong. App đang cài bản mới và sẽ tự mở lại.';
+                showToast(`Đang cài VietSub Studio v${data.version}.`);
             } catch (error) {
-                showToast(error.message, 'error');
-            } finally {
+                try {
+                    await fetchJson('/api/update/open', {method: 'POST'});
+                    showToast(`${error.message} Đã mở GitHub để cập nhật thủ công.`, 'error');
+                } catch (_) {
+                    showToast(error.message, 'error');
+                }
                 button.disabled = false;
-                button.textContent = 'Cập nhật ngay →';
+                button.textContent = 'Mở trang tải →';
+                automaticUpdateSupported = false;
             }
         }
 
@@ -864,7 +883,7 @@
             byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;
             byId('create-shortcut-btn').onclick=createDesktopShortcut;
             byId('health-btn').onclick=loadHealth;
-            byId('update-btn').onclick=openUpdate;
+            byId('update-btn').onclick=installUpdate;
             updateNamePreview(); bootApp();
         });
     </script>

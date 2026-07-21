@@ -4,6 +4,13 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-21
+
+### Added
+
+- One-click portable EXE updates that download the official ZIP, verify its SHA256 checksum and GitHub digest, replace the running executable, and reopen the app.
+- Automatic GitHub Releases fallback when an in-place update is unavailable or fails.
+
 ## [1.2.1] - 2026-07-21
 
 ### Added

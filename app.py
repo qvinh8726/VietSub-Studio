@@ -12,6 +12,9 @@ import urllib.error
 import urllib.request
 import json
 import webbrowser
+import hashlib
+import tempfile
+import zipfile
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from urllib.parse import urlparse
@@ -56,11 +59,12 @@ MAX_PROJECT_NAME_LENGTH = 100
 PREVIEW_TTL_SECONDS = 6 * 60 * 60
 MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
 UPDATE_CACHE_TTL_SECONDS = 15 * 60
+UPDATE_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{number}" for number in range(1, 10)),
@@ -132,6 +136,56 @@ def validate_release_url(value):
     return value
 
 
+def validate_release_download_url(value, version):
+    parsed = urlparse(value or "")
+    expected_prefix = f"/{GITHUB_REPOSITORY.lower()}/releases/download/v{version}/"
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "github.com":
+        raise ValueError("File cập nhật không thuộc GitHub chính thức.")
+    if not parsed.path.lower().startswith(expected_prefix):
+        raise ValueError("File cập nhật không thuộc đúng release chính thức.")
+    return value
+
+
+def fetch_latest_release_payload():
+    req = urllib.request.Request(
+        LATEST_RELEASE_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"VietSub-Studio/{APP_VERSION}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Không thể kiểm tra bản cập nhật từ GitHub.") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("Dữ liệu release từ GitHub không hợp lệ.")
+    return payload
+
+
+def release_asset_names(version):
+    base_name = f"VietSub-Studio-Portable-v{version}.zip"
+    return base_name, f"{base_name}.sha256.txt"
+
+
+def select_update_assets(payload, version):
+    zip_name, checksum_name = release_asset_names(version)
+    assets = {
+        str(item.get("name", "")): item
+        for item in payload.get("assets", [])
+        if isinstance(item, dict)
+    }
+    zip_asset = assets.get(zip_name)
+    checksum_asset = assets.get(checksum_name)
+    if not zip_asset or not checksum_asset:
+        raise RuntimeError("Release mới chưa có đủ file ZIP và checksum để tự cập nhật.")
+    for asset in (zip_asset, checksum_asset):
+        validate_release_download_url(asset.get("browser_download_url"), version)
+    return zip_asset, checksum_asset
+
+
 def get_update_status(force=False):
     now = time.time()
     with update_cache_lock:
@@ -139,29 +193,22 @@ def get_update_status(force=False):
         if cached and not force and now - update_cache["checked_at"] < UPDATE_CACHE_TTL_SECONDS:
             return dict(cached)
 
-        req = urllib.request.Request(
-            LATEST_RELEASE_API,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": f"VietSub-Studio/{APP_VERSION}",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise RuntimeError("Không thể kiểm tra bản cập nhật từ GitHub.") from error
-
+        payload = fetch_latest_release_payload()
         latest_version = str(payload.get("tag_name", "")).strip().lstrip("v")
         parse_release_version(latest_version)
         release_url = validate_release_url(payload.get("html_url") or LATEST_RELEASE_URL)
+        try:
+            select_update_assets(payload, latest_version)
+            install_assets_available = True
+        except (RuntimeError, ValueError):
+            install_assets_available = False
         status = {
             "current_version": APP_VERSION,
             "latest_version": latest_version,
             "update_available": is_newer_release(latest_version),
             "release_name": str(payload.get("name") or f"VietSub Studio v{latest_version}"),
             "release_url": release_url,
+            "automatic_update_supported": is_packaged_app() and install_assets_available,
         }
         update_cache.update({"checked_at": now, "status": status})
         return dict(status)
@@ -502,6 +549,207 @@ def ensure_initial_desktop_shortcut():
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         log_to_app(f"Chưa thể tạo shortcut ngoài Desktop: {error}", "error")
         return ""
+
+
+def parse_update_checksum(text, expected_filename):
+    for line in str(text or "").splitlines():
+        match = re.fullmatch(r"\s*([0-9A-Fa-f]{64})\s+\*?(.+?)\s*", line)
+        if match and match.group(2) == expected_filename:
+            return match.group(1).lower()
+    raise ValueError("File checksum của release không hợp lệ.")
+
+
+def download_release_asset(url, destination, max_bytes):
+    request_headers = {
+        "Accept": "application/octet-stream",
+        "User-Agent": f"VietSub-Studio/{APP_VERSION}",
+    }
+    digest = hashlib.sha256()
+    total_bytes = 0
+    req = urllib.request.Request(url, headers=request_headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response, open(destination, "wb") as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise RuntimeError("File cập nhật vượt quá kích thước cho phép.")
+                digest.update(chunk)
+                output.write(chunk)
+    except OSError as error:
+        raise RuntimeError("Không thể tải file cập nhật từ GitHub.") from error
+    return digest.hexdigest(), total_bytes
+
+
+def prepare_update_executable(payload):
+    if not is_packaged_app():
+        raise RuntimeError("Tự cập nhật chỉ hỗ trợ bản VietSub Studio EXE.")
+
+    latest_version = str(payload.get("tag_name", "")).strip().lstrip("v")
+    parse_release_version(latest_version)
+    if not is_newer_release(latest_version):
+        raise RuntimeError("Bạn đang dùng phiên bản mới nhất.")
+    zip_asset, checksum_asset = select_update_assets(payload, latest_version)
+    zip_name, checksum_name = release_asset_names(latest_version)
+
+    update_dir = tempfile.mkdtemp(prefix="VietSub-Studio-update-")
+    staged_path = ""
+    try:
+        checksum_path = os.path.join(update_dir, checksum_name)
+        download_release_asset(
+            checksum_asset["browser_download_url"],
+            checksum_path,
+            1024 * 1024,
+        )
+        with open(checksum_path, "r", encoding="utf-8-sig") as checksum_file:
+            expected_hash = parse_update_checksum(checksum_file.read(), zip_name)
+
+        zip_path = os.path.join(update_dir, zip_name)
+        downloaded_hash, downloaded_size = download_release_asset(
+            zip_asset["browser_download_url"],
+            zip_path,
+            UPDATE_DOWNLOAD_MAX_BYTES,
+        )
+        if downloaded_hash.lower() != expected_hash:
+            raise RuntimeError("Checksum ZIP cập nhật không khớp; đã huỷ cài đặt.")
+        api_digest = str(zip_asset.get("digest") or "").lower()
+        if api_digest and api_digest != f"sha256:{downloaded_hash.lower()}":
+            raise RuntimeError("Digest GitHub của file cập nhật không khớp.")
+        declared_size = int(zip_asset.get("size") or 0)
+        if declared_size and downloaded_size != declared_size:
+            raise RuntimeError("Kích thước file cập nhật không khớp với GitHub.")
+
+        extracted_exe = os.path.join(update_dir, "VietSub Studio.exe")
+        expected_member = "VietSub Studio/VietSub Studio.exe"
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                members = {
+                    item.filename.replace("\\", "/"): item
+                    for item in archive.infolist()
+                    if not item.is_dir()
+                }
+                member = members.get(expected_member)
+                if member is None or member.file_size <= 0:
+                    raise RuntimeError("ZIP cập nhật không chứa đúng file VietSub Studio.exe.")
+                if member.file_size > UPDATE_DOWNLOAD_MAX_BYTES:
+                    raise RuntimeError("File EXE cập nhật vượt quá kích thước cho phép.")
+                with archive.open(member) as source, open(extracted_exe, "wb") as destination:
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
+        except (OSError, zipfile.BadZipFile) as error:
+            raise RuntimeError("Không thể đọc ZIP cập nhật đã tải.") from error
+
+        with open(extracted_exe, "rb") as executable_file:
+            if executable_file.read(2) != b"MZ":
+                raise RuntimeError("File EXE cập nhật không hợp lệ.")
+
+        target_path = os.path.abspath(sys.executable)
+        if not os.path.isfile(target_path):
+            raise FileNotFoundError("Không tìm thấy file VietSub Studio.exe hiện tại.")
+        staged_path = os.path.join(
+            os.path.dirname(target_path),
+            f".VietSub Studio.update-{uuid.uuid4().hex}.exe",
+        )
+        shutil.copy2(extracted_exe, staged_path)
+        return {
+            "version": latest_version,
+            "target_path": target_path,
+            "staged_path": staged_path,
+            "update_dir": update_dir,
+        }
+    except Exception:
+        if staged_path and os.path.exists(staged_path):
+            try:
+                os.remove(staged_path)
+            except OSError:
+                pass
+        shutil.rmtree(update_dir, ignore_errors=True)
+        raise
+
+
+def launch_update_helper(update_package):
+    helper_env = os.environ.copy()
+    helper_env.update({
+        "VIETSUB_UPDATE_PID": str(os.getpid()),
+        "VIETSUB_UPDATE_TARGET": update_package["target_path"],
+        "VIETSUB_UPDATE_STAGED": update_package["staged_path"],
+        "VIETSUB_UPDATE_TEMP": update_package["update_dir"],
+    })
+    helper_script = r"""
+$ErrorActionPreference = 'Stop'
+$appPid = [int]$env:VIETSUB_UPDATE_PID
+$target = $env:VIETSUB_UPDATE_TARGET
+$staged = $env:VIETSUB_UPDATE_STAGED
+$updateTemp = $env:VIETSUB_UPDATE_TEMP
+$backup = "$target.old"
+$targetDir = Split-Path -Parent $target
+Wait-Process -Id $appPid -ErrorAction SilentlyContinue
+$replaced = $false
+for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    try {
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+        Move-Item -LiteralPath $target -Destination $backup -Force
+        try {
+            Move-Item -LiteralPath $staged -Destination $target -Force
+        } catch {
+            Move-Item -LiteralPath $backup -Destination $target -Force
+            throw
+        }
+        $replaced = $true
+        break
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+if (-not $replaced) {
+    if (Test-Path -LiteralPath $target) {
+        Start-Process -FilePath $target -WorkingDirectory $targetDir
+    }
+    exit 1
+}
+try {
+    Start-Process -FilePath $target -WorkingDirectory $targetDir
+} catch {
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+    if (Test-Path -LiteralPath $backup) {
+        Move-Item -LiteralPath $backup -Destination $target -Force
+        Start-Process -FilePath $target -WorkingDirectory $targetDir
+    }
+    exit 1
+}
+Start-Sleep -Seconds 2
+if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force }
+"""
+    creation_flags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+    return subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            helper_script,
+        ],
+        env=helper_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=creation_flags,
+    )
+
+
+def schedule_app_exit(delay_seconds=1.5):
+    def exit_after_response():
+        time.sleep(delay_seconds)
+        os._exit(0)
+
+    Thread(target=exit_after_response, daemon=True).start()
 
 def get_douzy_download_dir():
     if not os.path.exists(DOUZY_CONFIG):
@@ -2188,6 +2436,34 @@ def open_update():
     if not webbrowser.open(validate_release_url(release_url), new=2):
         return jsonify({"error": "Không thể mở trang cập nhật trong trình duyệt."}), 500
     return jsonify({"ok": True, "url": release_url})
+
+
+@app.route('/api/update/install', methods=['POST'])
+def install_update():
+    if workflow_lock.locked():
+        return jsonify({"error": "Hãy chờ job hiện tại chạy xong rồi cập nhật app."}), 409
+
+    update_package = None
+    try:
+        payload = fetch_latest_release_payload()
+        update_package = prepare_update_executable(payload)
+        launch_update_helper(update_package)
+    except (OSError, RuntimeError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as error:
+        if update_package:
+            try:
+                if os.path.exists(update_package["staged_path"]):
+                    os.remove(update_package["staged_path"])
+            except OSError:
+                pass
+            shutil.rmtree(update_package["update_dir"], ignore_errors=True)
+        return jsonify({"error": str(error)}), 400
+
+    schedule_app_exit()
+    return jsonify({
+        "status": "installing",
+        "version": update_package["version"],
+        "message": "Đã xác minh bản cập nhật. App sẽ tự khởi động lại.",
+    }), 202
 
 
 @app.route('/api/shortcut', methods=['POST'])

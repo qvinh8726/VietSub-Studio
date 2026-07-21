@@ -81,7 +81,7 @@ The application is a local Flask service presented as a desktop window through p
 - Per-video crop coordinates plus a reusable default crop.
 - Persistent multi-video queue with one sequential worker, per-job state, removal, cancellation, and results across app restarts.
 - Retry from the last reusable stage: prepared video, OCR output, or translation.
-- Automatic GitHub Release checks with an in-app notification and update button when a newer version is available.
+- One-click portable updates from official GitHub Releases with ZIP SHA256/digest verification, automatic EXE replacement, restart, and manual-download fallback.
 - Optional crop conversion with FFprobe.
 - Gemini Notebook translation through a dedicated local Edge profile that runs minimized by default.
 - Visible Edge fallback and one-click reopen when Google login or Notebook inspection is required.
@@ -294,6 +294,7 @@ Local API endpoints:
 | `/api/queue/start` | POST | Start the single sequential worker. |
 | `/api/queue/<job_id>/retry` | POST | Retry from video preparation, OCR, or translation. |
 | `/api/edge/show` | POST | Restore the dedicated Edge window for login or inspection. |
+| `/api/update/install` | POST | Download, verify, install, and restart into the latest packaged release. |
 | `/api/progress` | GET | Retrieve state and incremental logs. |
 | `/api/cancel` | POST | Cancel the active workflow and child processes. |
 | `/api/open-folder` | POST | Open only a path produced by the current workflow. |
@@ -451,6 +452,8 @@ Yes. Packaged settings live under `%APPDATA%\VietSub Studio`, so moving the EXE 
 
 The release is not signed with a commercial Windows code-signing certificate. Always download from the official GitHub Releases page and verify checksums.
 
+From v1.3.0 onward, the packaged EXE can update itself in place. It accepts only assets from this repository's official GitHub Release URL, verifies both the published ZIP checksum and GitHub asset digest, waits for active jobs to finish, replaces the executable, and reopens the app. If the portable folder is not writable or validation fails, it opens the official release page instead.
+
 ### Why does the first launch take so long?
 
 PyInstaller's one-file mode extracts bundled resources to a temporary directory, and Windows security software may scan them. Later launches can still take several seconds.
@@ -527,7 +530,7 @@ VietSub Studio nối nhiều công cụ cục bộ thành một quy trình có h
 - Lưu crop riêng cho từng video hoặc lưu làm crop mặc định.
 - Hàng đợi nhiều video chạy tuần tự, được lưu qua lần đóng/mở app, có trạng thái từng job, xoá job chờ, huỷ job đang chạy và mở kết quả.
 - Chạy lại từ bước còn tận dụng được: chuẩn bị video, OCR hoặc dịch.
-- Tự kiểm tra GitHub Releases, hiện thông báo và nút cập nhật khi có phiên bản mới hơn.
+- Cập nhật portable một chạm từ GitHub Releases chính thức: kiểm tra SHA256/digest, tự thay EXE, mở lại app và fallback sang tải thủ công khi cần.
 - Có thể chuyển đổi vùng crop bằng FFprobe.
 - Dịch qua Gemini Notebook trong profile Edge riêng, mặc định chạy thu nhỏ dưới nền.
 - Tự hiện Edge và có nút mở lại khi cần đăng nhập Google hoặc kiểm tra Notebook.
@@ -738,6 +741,7 @@ Các API cục bộ:
 | `/api/queue/start` | POST | Chạy worker tuần tự duy nhất. |
 | `/api/queue/<job_id>/retry` | POST | Chạy lại từ bước video, OCR hoặc dịch. |
 | `/api/edge/show` | POST | Hiện cửa sổ Edge riêng để đăng nhập hoặc kiểm tra. |
+| `/api/update/install` | POST | Tải, xác minh, cài và khởi động lại vào bản packaged mới nhất. |
 | `/api/progress` | GET | Lấy trạng thái và log tăng dần. |
 | `/api/cancel` | POST | Huỷ quy trình cùng tiến trình con đang hoạt động. |
 | `/api/open-folder` | POST | Chỉ mở đường dẫn do quy trình hiện tại tạo ra. |
@@ -894,6 +898,8 @@ Có. Bản đóng gói lưu thiết lập tại `%APPDATA%\VietSub Studio`, nên
 ### Tại sao SmartScreen cảnh báo?
 
 Bản release chưa được ký bằng chứng thư code-signing thương mại. Chỉ tải từ GitHub Releases chính thức và luôn kiểm tra checksum.
+
+Từ v1.3.0, bản EXE có thể tự cập nhật tại chỗ. App chỉ nhận asset từ release chính thức của repository này, kiểm tra cả checksum ZIP đã công bố và digest của GitHub, chờ job đang chạy kết thúc, thay file EXE rồi tự mở lại. Nếu thư mục portable không có quyền ghi hoặc xác minh thất bại, app sẽ mở trang release chính thức để cập nhật thủ công.
 
 ### Tại sao lần đầu mở lâu?
 

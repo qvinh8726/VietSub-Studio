@@ -39,4 +39,5 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 - File EXE chua VietSub Studio, nhung khong kem Douzy, VideOCR hay tai khoan Gemini.
 - Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini cua ho.
 - Cau hinh cua moi may duoc luu rieng trong %APPDATA%\VietSub Studio.
-- Khi co phien ban moi, app se hien thong bao va nut "Cap nhat ngay" de mo trang GitHub Releases chinh thuc.
+- Khi co phien ban moi, bam "Tai & cai ngay". App se tai ZIP chinh thuc, kiem tra SHA256, thay EXE va tu mo lai.
+- Neu khong the tu cai (vi du thu muc khong co quyen ghi), app se mo GitHub Releases de cap nhat thu cong.
