@@ -1,5 +1,7 @@
 # Local settings and machine-specific shortcuts
 app_config.json
+workflow_queue.json
+local_videos/
 *.lnk
 
 # Release artifacts are uploaded to GitHub Releases, not committed to Git

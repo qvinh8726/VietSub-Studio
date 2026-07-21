@@ -118,6 +118,7 @@
         .file-chip { overflow: hidden; padding: 6px 8px; border: 1px solid #ded4c5; border-radius: 8px; background: rgba(238, 232, 220, .8); color: #59645f; font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
         .inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
         .button-row { display: flex; gap: 8px; margin-top: 17px; }
+        .local-file-input { display: none; }
         .btn-primary, .btn-secondary, .btn-danger, .btn-ghost { min-height: 43px; border-radius: 12px; padding: 0 14px; font-weight: 850; transition: transform .14s ease, background .14s ease, border-color .14s ease; }
         .btn-primary { flex: 1; border: 0; background: var(--forest); box-shadow: 0 5px 0 #0d2e27; color: var(--white); }
         .btn-primary:hover:not(:disabled) { background: var(--forest-2); transform: translateY(-1px); }
@@ -202,6 +203,11 @@
         .settings-grid { display: grid; gap: 12px; }
         .setting-field label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 850; }
         .setting-field small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+        .toggle-setting { display: flex !important; align-items: flex-start; gap: 10px; padding: 11px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.5); cursor: pointer; }
+        .toggle-setting input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--forest-2); }
+        .toggle-setting span { display: block; }
+        .toggle-setting strong { display: block; font-size: 11px; }
+        .toggle-setting small { margin-top: 3px; }
         .readonly { background: #eee8dc; color: #66716c; }
         .diagnostics { padding: 11px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.45); }
         .diagnostics-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
@@ -294,7 +300,7 @@
                 <div class="compose-body">
                     <form id="preview-form" class="input-column" novalidate>
                         <div class="field">
-                            <label class="field-label" for="url-input"><span>Link hoặc đoạn share Douyin</span><small id="char-count">0 ký tự</small></label>
+                            <label class="field-label" for="url-input"><span>Link/đoạn share Douyin hoặc MP4 local</span><small id="char-count">0 ký tự</small></label>
                             <textarea id="url-input" maxlength="2000" spellcheck="false" placeholder="Dán link video hoặc nguyên đoạn chia sẻ…"></textarea>
                             <div id="url-error" class="field-error"></div>
                         </div>
@@ -323,16 +329,18 @@
                             </div>
                         </div>
                         <div class="button-row">
+                            <input id="local-video-input" class="local-file-input" type="file" accept="video/mp4,.mp4">
+                            <button id="local-video-btn" class="btn-secondary" type="button">Chọn MP4</button>
                             <button id="prepare-btn" class="btn-secondary" type="submit">Tải preview</button>
                             <button id="add-queue-btn" class="btn-primary" type="button" disabled>Thêm vào hàng đợi →</button>
                         </div>
-                        <p class="hint">Tạo tất cả preview trước, chỉnh crop riêng cho từng video, sau đó bấm “Chạy hàng đợi”. Video đã preview sẽ không bị tải lại.</p>
+                        <p class="hint">Tạo preview từ Douyin hoặc chọn MP4 trên máy, chỉnh crop riêng rồi thêm vào hàng đợi. Hàng đợi được giữ lại khi đóng app.</p>
                     </form>
 
                     <div class="preview-column">
                         <div class="preview-head"><h3>Khung OCR trực quan</h3><span>Kéo khung · kéo 4 góc để đổi kích thước</span></div>
                         <div id="video-stage" class="video-stage">
-                            <div id="preview-placeholder" class="preview-placeholder"><b>01</b><strong>Chưa có video preview</strong><span>Dán link và bấm “Tải preview”. Video sẽ xuất hiện ở đây để bạn chọn chính xác vùng OCR.</span></div>
+                            <div id="preview-placeholder" class="preview-placeholder"><b>01</b><strong>Chưa có video preview</strong><span>Dán link Douyin hoặc chọn MP4 trên máy để chọn chính xác vùng OCR.</span></div>
                             <video id="preview-player" controls preload="metadata" hidden></video>
                             <div id="crop-box" class="crop-box" hidden>
                                 <i class="crop-handle nw" data-handle="nw"></i><i class="crop-handle ne" data-handle="ne"></i>
@@ -361,7 +369,7 @@
                 <div class="queue-head">
                     <div class="queue-kicker">Sequential jobs</div>
                     <div class="queue-title"><h2>Hàng đợi video</h2><span id="queue-count" class="queue-count">0</span></div>
-                    <p class="queue-copy">Mỗi lần chỉ một video dùng Douzy, VideOCR và Gemini. Video kế tiếp tự chạy khi video trước kết thúc.</p>
+                    <p class="queue-copy">Mỗi lần chỉ một video dùng VideOCR và Gemini; nguồn Douyin mới gọi thêm Douzy. Video kế tiếp tự chạy khi video trước kết thúc.</p>
                 </div>
                 <div class="queue-actions">
                     <button id="start-queue-btn" class="btn-primary" type="button" disabled>Chạy hàng đợi</button>
@@ -394,6 +402,13 @@
                 <div id="settings-panel" class="settings-grid">
                     <div class="setting-field"><label for="setting-notebook">Notebook Gemini</label><input id="setting-notebook" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/..."><small>Tự lưu khi rời ô.</small></div>
                     <div class="setting-field"><label for="setting-output">Thư mục xuất</label><input id="setting-output" class="text-input" placeholder="Để trống = thư mục VietSub Studio của Douzy"><small>Phải là đường dẫn tuyệt đối nếu có nhập.</small></div>
+                    <div class="setting-field">
+                        <label class="toggle-setting" for="setting-edge-background">
+                            <input id="setting-edge-background" type="checkbox" checked>
+                            <span><strong>Chạy Edge ẩn</strong><small>Edge vẫn render đầy đủ nhưng không giành focus. Khi Google hết phiên, app sẽ hiện Edge để đăng nhập lại.</small></span>
+                        </label>
+                        <button id="show-edge-btn" class="btn-ghost" type="button" style="margin-top:7px">Mở Edge để đăng nhập</button>
+                    </div>
                     <div class="setting-field"><label for="setting-crop">Crop OCR mặc định</label><input id="setting-crop" class="text-input readonly" readonly></div>
                     <div class="setting-field"><label for="setting-download">Thư mục Douzy</label><input id="setting-download" class="text-input readonly" readonly></div>
                     <div class="diagnostics">
@@ -501,21 +516,7 @@
             byId('preview-status').value = 'Đang chuẩn bị…';
             try {
                 const data = await fetchJson('/api/previews', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url}) });
-                currentPreview = data;
-                byId('url-input').value = data.source_url;
-                if (!byId('project-name').value.trim() && data.video_title) byId('project-name').value = data.video_title;
-                updateNamePreview();
-                byId('preview-placeholder').hidden = true;
-                const player = byId('preview-player');
-                player.hidden = false;
-                player.src = `${data.video_url}?v=${Date.now()}`;
-                player.load();
-                setCrop(data.crop_coords || {crop_x: 0, crop_y: 0, crop_width: 1, crop_height: 1});
-                byId('crop-box').hidden = false;
-                byId('crop-tools').hidden = false;
-                byId('preview-title').textContent = data.video_title || `Douyin ${data.video_id}`;
-                byId('preview-status').value = 'Sẵn sàng chỉnh crop';
-                byId('add-queue-btn').disabled = false;
+                applyPreview(data);
                 showToast('Preview đã sẵn sàng. Kéo khung vàng vào vùng phụ đề.');
             } catch (error) {
                 byId('preview-status').value = 'Chuẩn bị thất bại';
@@ -523,6 +524,47 @@
             } finally {
                 button.disabled = false;
                 button.textContent = 'Tải preview';
+            }
+        }
+
+        function applyPreview(data) {
+            currentPreview = data;
+            if (data.source_type !== 'local') byId('url-input').value = data.source_url;
+            if (!byId('project-name').value.trim() && data.video_title) byId('project-name').value = data.video_title;
+            updateNamePreview();
+            byId('preview-placeholder').hidden = true;
+            const player = byId('preview-player');
+            player.hidden = false;
+            player.src = `${data.video_url}?v=${Date.now()}`;
+            player.load();
+            setCrop(data.crop_coords || {crop_x: 0, crop_y: 0, crop_width: 1, crop_height: 1});
+            byId('crop-box').hidden = false;
+            byId('crop-tools').hidden = false;
+            const sourceLabel = data.source_type === 'local' ? 'LOCAL · ' : '';
+            byId('preview-title').textContent = `${sourceLabel}${data.video_title || data.video_id}`;
+            byId('preview-status').value = data.source_type === 'local' ? 'MP4 local sẵn sàng' : 'Sẵn sàng chỉnh crop';
+            byId('add-queue-btn').disabled = false;
+        }
+
+        async function prepareLocalPreview() {
+            const input = byId('local-video-input');
+            const file = input.files?.[0];
+            if (!file) return;
+            const button = byId('local-video-btn');
+            button.disabled = true;
+            button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang nạp MP4</span>';
+            byId('preview-status').value = 'Đang copy video local…';
+            const form = new FormData(); form.append('video', file);
+            try {
+                const data = await fetchJson('/api/previews/local', {method:'POST', body:form});
+                applyPreview(data);
+                showToast('MP4 local đã sẵn sàng để chỉnh vùng OCR.');
+            } catch (error) {
+                byId('preview-status').value = 'Không nạp được MP4';
+                showToast(error.message, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Chọn MP4';
             }
         }
 
@@ -610,6 +652,7 @@
         function clearComposer() {
             currentPreview = null;
             byId('url-input').value = ''; byId('project-name').value = '';
+            byId('local-video-input').value = '';
             byId('char-count').textContent = '0 ký tự'; updateNamePreview();
             const player = byId('preview-player'); player.pause(); player.removeAttribute('src'); player.load(); player.hidden = true;
             byId('video-stage').style.aspectRatio = ''; byId('video-stage').style.minHeight = '';
@@ -637,14 +680,17 @@
                 const row = document.createElement('article'); row.className = `queue-item ${job.status}`;
                 const top = document.createElement('div'); top.className = 'queue-item-top';
                 const info = document.createElement('div'); info.style.minWidth = '0';
-                info.innerHTML = `<div class="queue-index">JOB ${String(index + 1).padStart(2,'0')}</div><div class="queue-name"></div><div class="queue-id">ID ${job.video_id || 'đang chờ giải mã'} · ${job.ocr_lang.toUpperCase()}</div>`;
-                info.querySelector('.queue-name').textContent = job.project_name || job.video_title || 'Tên tự động từ Douyin';
+                const sourceMeta = job.source_type === 'local' ? 'LOCAL' : `ID ${job.video_id || 'đang chờ giải mã'}`;
+                info.innerHTML = `<div class="queue-index">JOB ${String(index + 1).padStart(2,'0')}</div><div class="queue-name"></div><div class="queue-id">${sourceMeta} · ${job.ocr_lang.toUpperCase()}</div>`;
+                info.querySelector('.queue-name').textContent = job.project_name || job.video_title || (job.source_type === 'local' ? 'Video local' : 'Tên tự động từ Douyin');
                 const badge = document.createElement('span'); badge.className = `badge ${job.status}`; badge.textContent = statusLabels[job.status] || job.status;
                 top.append(info, badge); row.appendChild(top);
                 const progress = document.createElement('div'); progress.className = 'queue-progress'; progress.innerHTML = `<i style="width:${progressWidth(job.step, job.status)}%"></i>`; row.appendChild(progress);
                 if (job.error) { const error = document.createElement('div'); error.className = 'queue-error'; error.textContent = job.error; row.appendChild(error); }
                 const actions = document.createElement('div'); actions.className = 'queue-item-actions';
                 if (job.status === 'queued') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = 'Xoá khỏi hàng đợi'; remove.onclick = () => removeQueueJob(job.id); actions.appendChild(remove); }
+                if (job.status === 'error' || job.status === 'cancelled') { const retry = document.createElement('button'); retry.className = 'btn-secondary'; retry.textContent = job.retry_step === 'translate' ? 'Chạy lại bước dịch' : job.retry_step === 'ocr' ? 'Chạy lại từ OCR' : 'Chạy lại từ video'; retry.onclick = () => retryQueueJob(job.id); actions.appendChild(retry); }
+                if (job.needs_edge_login) { const login = document.createElement('button'); login.className = 'btn-ghost'; login.textContent = 'Mở Edge đăng nhập'; login.onclick = showEdgeLogin; actions.appendChild(login); }
                 if (job.result?.project_dir) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true); actions.appendChild(open); }
                 if (actions.children.length) row.appendChild(actions);
                 list.appendChild(row);
@@ -663,6 +709,16 @@
 
         async function removeQueueJob(id) {
             try { await fetchJson(`/api/queue/${id}`, {method: 'DELETE'}); await loadQueue(); }
+            catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function retryQueueJob(id) {
+            try { await fetchJson(`/api/queue/${id}/retry`, {method:'POST'}); await loadQueue(); showToast('Job đã được đưa lại vào hàng đợi.'); }
+            catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function showEdgeLogin() {
+            try { await fetchJson('/api/edge/show', {method:'POST'}); showToast('Đã mở Edge. Đăng nhập xong rồi bấm chạy lại job.'); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -731,12 +787,13 @@
                 byId('setting-notebook').value = data.notebook_url || ''; byId('setting-output').value = data.output_dir || '';
                 byId('setting-crop').value = data.crop_coords ? JSON.stringify(data.crop_coords) : 'Toàn khung hình';
                 byId('setting-download').value = data.download_dir || 'Chưa xác định'; byId('ocr-lang').value = data.ocr_lang || 'ch';
+                byId('setting-edge-background').checked = data.edge_background !== false;
             } catch (error) { showToast(error.message, 'error'); }
         }
 
         async function saveSettings() {
             try {
-                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value})});
+                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, edge_background:byId('setting-edge-background').checked})});
                 showToast('Đã lưu thiết lập.');
             } catch (error) { showToast(error.message, 'error'); }
         }
@@ -766,6 +823,7 @@
 
         window.addEventListener('load', () => {
             byId('preview-form').addEventListener('submit', preparePreview);
+            byId('local-video-btn').onclick=()=>byId('local-video-input').click(); byId('local-video-input').addEventListener('change', prepareLocalPreview);
             byId('url-input').addEventListener('input', () => { byId('char-count').textContent=`${byId('url-input').value.length} ký tự`; setUrlError(); });
             byId('project-name').addEventListener('input', updateNamePreview);
             byId('add-queue-btn').addEventListener('click', addToQueue);
@@ -784,6 +842,7 @@
             byId('start-queue-btn').onclick=startQueue; byId('cancel-btn').onclick=cancelJob; byId('clear-finished-btn').onclick=clearFinished;
             byId('open-result-btn').onclick=openResult;
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
+            byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;
             byId('health-btn').onclick=loadHealth;
             byId('update-btn').onclick=openUpdate;
             updateNamePreview(); bootApp();

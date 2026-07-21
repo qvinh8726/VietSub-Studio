@@ -9,7 +9,7 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 
 2. CAC THANH PHAN CAN CO TREN MAY
 - Windows 10/11 va Microsoft Edge.
-- Douzy duoc cai o thu muc mac dinh. Mo Douzy it nhat mot lan va chon thu muc tai video.
+- Neu dung link Douyin: cai Douzy o thu muc mac dinh, mo it nhat mot lan va chon thu muc tai video.
 - VideOCR duoc cai tai: C:\Program Files\VideOCR\videocr-cli.exe
 - Tuy chon: FFmpeg/FFprobe trong PATH de quy doi vung crop OCR chinh xac hon.
 
@@ -18,14 +18,16 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 - Dan link Gemini Notebook cua ban, dang:
   https://gemini.google.com/notebook/ID-CUA-BAN
 - Kiem tra cac muc bat buoc. Khi tat ca muc mau do da het, app san sang.
-- Khi app mo Edge rieng, dang nhap tai khoan Google co quyen truy cap Notebook.
+- De bat "Chay Edge an" neu muon. Edge van render binh thuong nhung duoc thu nho.
+- Khi app tu hien Edge, dang nhap tai khoan Google co quyen truy cap Notebook roi bam chay lai job.
 
 4. XU LY VIDEO
-- Dan link video Douyin hoac ca doan noi dung share.
+- Dan link/video share Douyin hoac bam "Chon MP4" de nhan video tren may.
 - Nhap ten bo file neu muon. Neu de trong, app dung ten video Douyin.
 - Bam "Tai preview", sau do keo va doi kich thuoc khung vang vao vung phu de.
 - Bam "Them vao hang doi" va lap lai voi cac video khac.
 - Bam "Chay hang doi". App se tu xu ly tung video mot, khong chay song song.
+- Hang doi duoc luu khi dong app. Job loi/da huy co the chay lai tu video, OCR hoac dich neu file trung gian con ton tai.
 - Ket qua duoc dat ten dong bo:
   Ten video.mp4
   Ten video.raw.srt

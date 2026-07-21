@@ -46,13 +46,17 @@ CONFIG_DIR = (
     else APP_HOME
 )
 CONFIG_PATH = os.path.join(CONFIG_DIR, "app_config.json")
+QUEUE_PATH = os.path.join(CONFIG_DIR, "workflow_queue.json")
+LOCAL_VIDEO_DIR = os.path.join(CONFIG_DIR, "local_videos")
 
 SUPPORTED_OCR_LANGS = {"ch", "en", "ja", "ko", "vi"}
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
 MAX_LOG_LINES = 2_000
 MAX_PROJECT_NAME_LENGTH = 100
 PREVIEW_TTL_SECONDS = 6 * 60 * 60
-APP_VERSION = "1.1.0"
+MAX_PERSISTED_JOBS = 500
+ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
+APP_VERSION = "1.2.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -92,11 +96,16 @@ queue_state_lock = Lock()
 workflow_jobs = []
 queue_worker_thread = None
 current_job_id = ""
+queue_state_initialized = False
 update_cache_lock = Lock()
 update_cache = {"checked_at": 0.0, "status": None}
 
 
 class WorkflowCancelled(RuntimeError):
+    pass
+
+
+class EdgeLoginRequired(RuntimeError):
     pass
 
 
@@ -201,6 +210,7 @@ def update_progress(*, status=None, step=None, error=None, result=None):
                     job["error"] = error
                 if result:
                     job["result"].update(result)
+                persist_queue_state_locked()
                 break
 
 
@@ -379,6 +389,7 @@ def load_app_config():
         "ocr_lang": "ch",
         "output_dir": "",
         "crop_coords": None,
+        "edge_background": True,
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -444,11 +455,14 @@ def check_edge_status():
     except Exception:
         return False
 
-def ensure_edge_running(notebook_url):
+def ensure_edge_running(notebook_url, background=None):
     check_cancel_requested()
     if check_edge_status():
         log_to_app("Trình duyệt Edge debug đang mở sẵn.")
         return True
+
+    if background is None:
+        background = bool(load_app_config().get("edge_background", True))
 
     log_to_app("Trình duyệt Edge debug chưa mở. Đang tự động kích hoạt...")
     edge_bin = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
@@ -460,11 +474,18 @@ def ensure_edge_running(notebook_url):
         "--remote-debugging-port=9222",
         "--remote-debugging-address=127.0.0.1",
         f"--user-data-dir={USER_DATA_DIR_DEBUG}",
-        notebook_url
     ]
+    if background:
+        cmd.extend([
+            "--start-minimized",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ])
+    cmd.append(notebook_url)
     try:
-        # Launch Edge in background
-        subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen(cmd, creationflags=creation_flags)
         # Wait for port to bind
         for _ in range(10):
             check_cancel_requested()
@@ -478,6 +499,70 @@ def ensure_edge_running(notebook_url):
     except Exception as e:
         log_to_app(f"Lỗi kích hoạt Edge tự động: {e}", "error")
         return False
+
+
+def set_edge_window_visibility(context, page, visible):
+    try:
+        session = context.new_cdp_session(page)
+        window_id = session.send("Browser.getWindowForTarget")["windowId"]
+        if visible:
+            session.send(
+                "Browser.setWindowBounds",
+                {"windowId": window_id, "bounds": {"windowState": "normal"}},
+            )
+            session.send(
+                "Browser.setWindowBounds",
+                {
+                    "windowId": window_id,
+                    "bounds": {"left": 80, "top": 60, "width": 1280, "height": 900},
+                },
+            )
+            page.bring_to_front()
+        else:
+            session.send(
+                "Browser.setWindowBounds",
+                {"windowId": window_id, "bounds": {"windowState": "minimized"}},
+            )
+        session.detach()
+        return True
+    except Exception:
+        return False
+
+
+def edge_page_needs_login(page):
+    hostname = (urlparse(page.url).hostname or "").lower()
+    if hostname == "accounts.google.com" or hostname.endswith(".accounts.google.com"):
+        return True
+    for selector in (
+        "a[href*='accounts.google.com']",
+        "button:has-text('Đăng nhập')",
+        "button:has-text('Sign in')",
+    ):
+        try:
+            if page.locator(selector).count() > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def show_edge_for_login(notebook_url):
+    notebook_url = validate_notebook_url(notebook_url)
+    if not ensure_edge_running(notebook_url, background=False):
+        raise RuntimeError("Không thể mở Edge để đăng nhập.")
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        if not browser.contexts:
+            raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
+        context = browser.contexts[0]
+        notebook_id = urlparse(notebook_url).path.rstrip("/").rsplit("/", 1)[-1]
+        page = next((item for item in context.pages if notebook_id in item.url), None)
+        if page is None:
+            page = context.new_page()
+            page.goto(notebook_url)
+        if not set_edge_window_visibility(context, page, True):
+            page.bring_to_front()
+    return True
 
 # Sidecar & automation functions
 def queue_process_output(stream, output_queue):
@@ -1101,6 +1186,7 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
         raise ValueError("File phụ đề trống. Không có gì để dịch.")
 
     notebook_url = validate_notebook_url(notebook_url)
+    edge_background = bool(load_app_config().get("edge_background", True))
 
     # Ensure Edge is running
     if not ensure_edge_running(notebook_url):
@@ -1130,7 +1216,15 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
             gemini_page.wait_for_timeout(5000)
 
         log_to_app(f"Đã liên kết thành công với tab Notebook: '{gemini_page.title()}'")
-        gemini_page.bring_to_front()
+        if edge_page_needs_login(gemini_page):
+            set_edge_window_visibility(context, gemini_page, True)
+            raise EdgeLoginRequired(
+                "Phiên Google đã hết hạn. Edge đã được mở để đăng nhập; đăng nhập xong hãy bấm Chạy lại."
+            )
+        if edge_background:
+            set_edge_window_visibility(context, gemini_page, False)
+        else:
+            set_edge_window_visibility(context, gemini_page, True)
 
         response_selectors = [
             "message-content",
@@ -1158,6 +1252,11 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
                 break
 
         if not prompt_input:
+            if edge_background:
+                set_edge_window_visibility(context, gemini_page, True)
+                raise EdgeLoginRequired(
+                    "Không tìm thấy khung chat khi Edge chạy ẩn. Edge đã được mở để kiểm tra đăng nhập; xong hãy bấm Chạy lại."
+                )
             raise RuntimeError("Không tìm thấy khung nhập liệu chat của Gemini.")
 
         previous_response = find_last_response(gemini_page, response_selectors)
@@ -1184,6 +1283,11 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
                 break
 
         if not submit_btn:
+            if edge_background:
+                set_edge_window_visibility(context, gemini_page, True)
+                raise EdgeLoginRequired(
+                    "Không tìm thấy nút gửi khi Edge chạy ẩn. Edge đã được mở để kiểm tra Notebook; xong hãy bấm Chạy lại."
+                )
             raise RuntimeError("Không tìm thấy nút gửi của Gemini; không thể gửi an toàn.")
 
         log_to_app("Gửi lệnh dịch sang NotebookLM...")
@@ -1318,10 +1422,15 @@ def download_video_source(video_url, notebook_url):
 
 def prune_video_previews():
     cutoff = time.time() - PREVIEW_TTL_SECONDS
+    expired_sources = []
     with preview_registry_lock:
         expired = [key for key, item in preview_registry.items() if item["created_at"] < cutoff]
         for key in expired:
-            preview_registry.pop(key, None)
+            preview = preview_registry.pop(key, None)
+            if preview and preview.get("managed_source"):
+                expired_sources.append(preview.get("source_video"))
+    for source_path in expired_sources:
+        remove_managed_source_if_unused(source_path)
 
 
 def get_video_preview(preview_id):
@@ -1346,6 +1455,8 @@ def create_video_preview(video_url):
             "id": preview_id,
             "created_at": time.time(),
             "crop_coords": get_saved_crop_coords(),
+            "source_type": "douyin",
+            "managed_source": False,
         })
         with preview_registry_lock:
             preview_registry[preview_id] = preview
@@ -1355,6 +1466,7 @@ def create_video_preview(video_url):
             "video_id": preview["video_id"],
             "video_title": preview["video_title"],
             "crop_coords": preview["crop_coords"],
+            "source_type": preview["source_type"],
             "video_url": f"/api/previews/{preview_id}/video",
         }
     finally:
@@ -1362,15 +1474,211 @@ def create_video_preview(video_url):
         preview_lock.release()
 
 
+def create_local_video_preview(upload):
+    if workflow_lock.locked():
+        raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
+    if not preview_lock.acquire(blocking=False):
+        raise RuntimeError("Một preview khác đang được chuẩn bị.")
+    try:
+        original_name = os.path.basename((upload.filename or "").replace("\\", "/"))
+        extension = os.path.splitext(original_name)[1].lower()
+        if extension not in ALLOWED_LOCAL_VIDEO_EXTENSIONS:
+            raise ValueError("Hiện tại video trên máy phải là file MP4.")
+
+        preview_id = uuid.uuid4().hex
+        os.makedirs(LOCAL_VIDEO_DIR, exist_ok=True)
+        destination = os.path.join(LOCAL_VIDEO_DIR, f"{preview_id}.mp4")
+        temporary_path = f"{destination}.{uuid.uuid4().hex}.part"
+        try:
+            upload.save(temporary_path)
+            if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:
+                raise ValueError("File video đang trống hoặc không đọc được.")
+            os.replace(temporary_path, destination)
+        finally:
+            if os.path.exists(temporary_path):
+                os.remove(temporary_path)
+
+        preview = {
+            "id": preview_id,
+            "created_at": time.time(),
+            "source_url": f"local://{preview_id}",
+            "video_id": f"local-{preview_id[:12]}",
+            "source_video": destination,
+            "video_title": os.path.splitext(original_name)[0] or "Video local",
+            "original_name": original_name,
+            "crop_coords": get_saved_crop_coords(),
+            "source_type": "local",
+            "managed_source": True,
+        }
+        with preview_registry_lock:
+            preview_registry[preview_id] = preview
+        return {
+            "id": preview_id,
+            "source_url": preview["source_url"],
+            "video_id": preview["video_id"],
+            "video_title": preview["video_title"],
+            "original_name": preview["original_name"],
+            "crop_coords": preview["crop_coords"],
+            "source_type": preview["source_type"],
+            "video_url": f"/api/previews/{preview_id}/video",
+        }
+    finally:
+        preview_lock.release()
+
+
+def get_job_retry_step(job):
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    if os.path.isfile(str(result.get("video") or "")):
+        if job.get("step") == "translate" and os.path.isfile(str(result.get("raw_srt") or "")):
+            return "translate"
+        return "ocr"
+    return "download"
+
+
 def serialize_job(job):
-    return {
+    serialized = {
         key: job.get(key)
         for key in (
             "id", "source_url", "video_id", "video_title", "project_name", "ocr_lang",
             "crop_coords", "video_resolution", "preview_id", "status", "step", "error", "result",
-            "created_at", "started_at", "finished_at",
+            "created_at", "started_at", "finished_at", "source_type", "needs_edge_login",
+            "resume_step",
         )
     }
+    serialized["retry_step"] = (
+        get_job_retry_step(job) if job.get("status") in {"error", "cancelled"} else None
+    )
+    return serialized
+
+
+PERSISTED_JOB_KEYS = (
+    "id", "source_url", "video_id", "video_title", "source_video", "project_name",
+    "ocr_lang", "crop_coords", "video_resolution", "preview_id", "use_saved_crop",
+    "source_type", "managed_source", "status", "step", "error", "result",
+    "needs_edge_login", "resume_step", "created_at", "started_at", "finished_at",
+)
+
+
+def persisted_job(job):
+    return {key: job.get(key) for key in PERSISTED_JOB_KEYS}
+
+
+def write_queue_file(path, jobs):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    payload = {"version": 1, "jobs": [persisted_job(job) for job in jobs[-MAX_PERSISTED_JOBS:]]}
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+
+
+def persist_queue_state_locked():
+    if app.config.get("TESTING"):
+        return
+    write_queue_file(QUEUE_PATH, workflow_jobs)
+
+
+def normalize_persisted_job(value):
+    if not isinstance(value, dict):
+        return None
+    try:
+        ocr_lang = validate_ocr_lang(value.get("ocr_lang", "ch"))
+        crop_coords = validate_crop_coords(value.get("crop_coords"))
+        resolution = validate_video_resolution(value.get("video_resolution"))
+    except ValueError:
+        return None
+
+    status = value.get("status")
+    if status not in {"queued", "running", "success", "error", "cancelled"}:
+        status = "error"
+    error = str(value.get("error") or "")
+    if status == "running":
+        status = "error"
+        error = "App đã đóng khi job đang chạy. Bấm Chạy lại để tiếp tục từ file đã có."
+
+    source_type = value.get("source_type") if value.get("source_type") in {"douyin", "local"} else "douyin"
+    result = value.get("result") if isinstance(value.get("result"), dict) else {}
+    source_video = str(value.get("source_video") or "")
+    if source_type == "local" and not os.path.isfile(source_video) and not os.path.isfile(str(result.get("video") or "")):
+        status = "error"
+        error = "Video local không còn tồn tại. Hãy chọn lại file MP4."
+
+    return {
+        "id": str(value.get("id") or uuid.uuid4().hex),
+        "source_url": str(value.get("source_url") or ""),
+        "video_id": str(value.get("video_id") or ""),
+        "video_title": str(value.get("video_title") or ""),
+        "source_video": source_video,
+        "project_name": str(value.get("project_name") or ""),
+        "ocr_lang": ocr_lang,
+        "crop_coords": crop_coords,
+        "video_resolution": (
+            {"width": resolution[0], "height": resolution[1]} if resolution else None
+        ),
+        "preview_id": str(value.get("preview_id") or ""),
+        "use_saved_crop": bool(value.get("use_saved_crop", False)),
+        "source_type": source_type,
+        "managed_source": bool(value.get("managed_source", source_type == "local")),
+        "status": status,
+        "step": value.get("step") if value.get("step") in {"resolve", "download", "ocr", "translate", "done"} else "resolve",
+        "error": error,
+        "result": dict(result),
+        "needs_edge_login": bool(value.get("needs_edge_login", False)),
+        "resume_step": value.get("resume_step") if value.get("resume_step") in {"download", "ocr", "translate"} else "download",
+        "created_at": value.get("created_at") or int(time.time()),
+        "started_at": value.get("started_at"),
+        "finished_at": value.get("finished_at"),
+    }
+
+
+def load_queue_file(path):
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    values = payload.get("jobs", []) if isinstance(payload, dict) else []
+    jobs = [normalize_persisted_job(value) for value in values[-MAX_PERSISTED_JOBS:]]
+    return [job for job in jobs if job]
+
+
+def is_managed_local_video(path):
+    if not path:
+        return False
+    try:
+        local_root = os.path.normcase(os.path.abspath(LOCAL_VIDEO_DIR))
+        candidate = os.path.normcase(os.path.abspath(path))
+        return os.path.commonpath([local_root, candidate]) == local_root
+    except (OSError, ValueError):
+        return False
+
+
+def remove_managed_source_if_unused(path):
+    if not is_managed_local_video(path):
+        return
+    with queue_state_lock:
+        in_use = any(job.get("source_video") == path for job in workflow_jobs)
+    if not in_use:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+def initialize_queue_state():
+    global queue_state_initialized
+    with queue_state_lock:
+        if queue_state_initialized:
+            return
+        workflow_jobs[:] = load_queue_file(QUEUE_PATH)
+        queue_state_initialized = True
+        persist_queue_state_locked()
 
 
 def queue_snapshot():
@@ -1389,20 +1697,25 @@ def enqueue_workflow(
     use_saved_crop=True,
     autostart=False,
 ):
-    video_url = validate_douyin_url(video_url)
     ocr_lang = validate_ocr_lang(ocr_lang)
     if project_name is not None and not isinstance(project_name, str):
         raise ValueError("Tên bộ file không hợp lệ.")
     preview = get_video_preview(preview_id) if preview_id else None
     if preview_id and not preview:
         raise ValueError("Preview đã hết hạn. Hãy tạo lại preview video.")
-    if preview and preview["source_url"] != video_url:
-        raise ValueError("Preview không khớp với link video đã chọn.")
+    if preview:
+        source_url = preview["source_url"]
+        if video_url != source_url:
+            raise ValueError("Preview không khớp với video đã chọn.")
+        source_type = preview.get("source_type", "douyin")
+    else:
+        source_url = validate_douyin_url(video_url)
+        source_type = "douyin"
     normalized_crop = validate_crop_coords(crop_coords)
     normalized_resolution = validate_video_resolution(video_resolution)
     job = {
         "id": uuid.uuid4().hex,
-        "source_url": video_url,
+        "source_url": source_url,
         "video_id": preview.get("video_id", "") if preview else "",
         "video_title": preview.get("video_title", "") if preview else "",
         "source_video": preview.get("source_video", "") if preview else "",
@@ -1415,16 +1728,21 @@ def enqueue_workflow(
         ),
         "preview_id": preview_id,
         "use_saved_crop": bool(use_saved_crop),
+        "source_type": source_type,
+        "managed_source": bool(preview and preview.get("managed_source")),
         "status": "queued",
         "step": "resolve",
         "error": "",
         "result": {},
+        "needs_edge_login": False,
+        "resume_step": "download",
         "created_at": int(time.time()),
         "started_at": None,
         "finished_at": None,
     }
     with queue_state_lock:
         workflow_jobs.append(job)
+        persist_queue_state_locked()
     if autostart:
         start_workflow_queue()
     return serialize_job(job)
@@ -1458,9 +1776,12 @@ def run_queue_worker():
                 queue_worker_thread = None
                 return
             job["status"] = "running"
+            job["error"] = ""
+            job["needs_edge_login"] = False
             job["started_at"] = int(time.time())
             current_job_id = job["id"]
             job_data = dict(job)
+            persist_queue_state_locked()
         workflow_lock.acquire()
         cancel_event.clear()
         reset_progress(job_data["id"])
@@ -1471,6 +1792,7 @@ def run_queue_worker():
                 "video_id": job_data["video_id"],
                 "source_video": job_data["source_video"],
                 "video_title": job_data.get("video_title", ""),
+                "source_type": job_data.get("source_type", "douyin"),
             }
         run_workflow_thread(
             job_data["source_url"],
@@ -1480,6 +1802,8 @@ def run_queue_worker():
             crop_coords=job_data.get("crop_coords"),
             use_saved_crop=job_data.get("use_saved_crop", True),
             video_resolution=job_data.get("video_resolution"),
+            resume_project=job_data.get("result"),
+            resume_step=job_data.get("resume_step", "download"),
         )
         with queue_state_lock:
             for item in workflow_jobs:
@@ -1487,23 +1811,79 @@ def run_queue_worker():
                     item["finished_at"] = int(time.time())
                     break
             current_job_id = ""
+            persist_queue_state_locked()
 
 
 def remove_queued_job(job_id):
+    removed = None
     with queue_state_lock:
         for index, job in enumerate(workflow_jobs):
             if job["id"] != job_id:
                 continue
             if job["status"] != "queued":
                 raise RuntimeError("Chỉ có thể xoá video đang chờ trong hàng đợi.")
-            return serialize_job(workflow_jobs.pop(index))
+            removed = workflow_jobs.pop(index)
+            persist_queue_state_locked()
+            break
+    if removed:
+        remove_managed_source_if_unused(removed.get("source_video"))
+        return serialize_job(removed)
     raise ValueError("Không tìm thấy video trong hàng đợi.")
 
 
 def clear_finished_jobs():
+    removed_sources = []
     with queue_state_lock:
         removable = {"success", "error", "cancelled"}
+        removed_sources = [
+            job.get("source_video") for job in workflow_jobs
+            if job["status"] in removable and job.get("managed_source")
+        ]
         workflow_jobs[:] = [job for job in workflow_jobs if job["status"] not in removable]
+        persist_queue_state_locked()
+    for source_path in removed_sources:
+        remove_managed_source_if_unused(source_path)
+
+
+def retry_queue_job(job_id):
+    with queue_state_lock:
+        job = next((item for item in workflow_jobs if item["id"] == job_id), None)
+        if not job:
+            raise ValueError("Không tìm thấy video trong hàng đợi.")
+        if job["status"] not in {"error", "cancelled"}:
+            raise RuntimeError("Chỉ có thể chạy lại job bị lỗi hoặc đã huỷ.")
+
+        resume_step = get_job_retry_step(job)
+        source_video = job.get("source_video") or ""
+        if resume_step == "download" and source_video and not os.path.isfile(source_video):
+            if job.get("source_type") == "local":
+                raise FileNotFoundError("Video local không còn tồn tại. Hãy chọn lại file MP4.")
+            # A Douyin preview cache may have been cleaned externally; retry by downloading it again.
+            job["source_video"] = ""
+            job["preview_id"] = ""
+
+        job.update({
+            "status": "queued",
+            "step": resume_step if resume_step != "download" else "resolve",
+            "error": "",
+            "needs_edge_login": False,
+            "resume_step": resume_step,
+            "started_at": None,
+            "finished_at": None,
+        })
+        persist_queue_state_locked()
+        return serialize_job(job)
+
+
+def update_current_job_metadata(**values):
+    if not current_job_id:
+        return
+    with queue_state_lock:
+        for job in workflow_jobs:
+            if job["id"] == current_job_id:
+                job.update(values)
+                persist_queue_state_locked()
+                break
 
 
 def run_workflow_thread(
@@ -1515,6 +1895,8 @@ def run_workflow_thread(
     crop_coords=None,
     use_saved_crop=True,
     video_resolution=None,
+    resume_project=None,
+    resume_step="download",
 ):
     sidecar_proc = None
     project = None
@@ -1530,30 +1912,48 @@ def run_workflow_thread(
             if douzy_download_dir:
                 output_dir = os.path.join(douzy_download_dir, "VietSub Studio")
 
-        update_progress(step="download")
-        if prepared_video:
-            source_url = prepared_video["source_url"]
-            video_id = prepared_video["video_id"]
-            video_file = prepared_video["source_video"]
-            video_title = prepared_video.get("video_title", "")
-            if not os.path.isfile(video_file):
-                raise FileNotFoundError("Video preview không còn tồn tại. Hãy tạo lại preview.")
-            log_to_app("Dùng video đã chuẩn bị từ preview, bỏ qua bước tải lại.")
+        if resume_step in {"ocr", "translate"}:
+            resume_project = resume_project if isinstance(resume_project, dict) else {}
+            required_keys = ("project_name", "project_dir", "video", "raw_srt", "translated_srt")
+            if not all(resume_project.get(key) for key in required_keys):
+                raise FileNotFoundError("Bộ file cũ không còn đầy đủ để chạy tiếp.")
+            project = {key: resume_project[key] for key in required_keys}
+            project["source_video"] = resume_project.get("source_video", "")
+            if not os.path.isdir(project["project_dir"]) or not os.path.isfile(project["video"]):
+                raise FileNotFoundError("Video dự án không còn tồn tại để chạy tiếp.")
+            source_url = prepared_video.get("source_url", video_url) if prepared_video else video_url
+            video_id = prepared_video.get("video_id", "") if prepared_video else ""
+            log_to_app(
+                "Dùng lại bộ file đã có và tiếp tục từ bước dịch."
+                if resume_step == "translate"
+                else "Dùng lại video dự án và tiếp tục từ bước OCR."
+            )
+            update_progress(step=resume_step, result=project)
         else:
-            downloaded = download_video_source(video_url, notebook_url)
-            source_url = downloaded["source_url"]
-            video_id = downloaded["video_id"]
-            video_file = downloaded["source_video"]
-            video_title = downloaded.get("video_title", "")
-        update_progress(result={"source_video": video_file})
-        project = prepare_project_files(
-            video_file,
-            project_name,
-            video_id,
-            video_title=video_title,
-            output_dir=output_dir,
-        )
-        update_progress(result=project)
+            update_progress(step="download")
+            if prepared_video:
+                source_url = prepared_video["source_url"]
+                video_id = prepared_video["video_id"]
+                video_file = prepared_video["source_video"]
+                video_title = prepared_video.get("video_title", "")
+                if not os.path.isfile(video_file):
+                    raise FileNotFoundError("Video preview không còn tồn tại. Hãy tạo lại preview.")
+                log_to_app("Dùng video đã chuẩn bị từ preview, bỏ qua bước tải lại.")
+            else:
+                downloaded = download_video_source(video_url, notebook_url)
+                source_url = downloaded["source_url"]
+                video_id = downloaded["video_id"]
+                video_file = downloaded["source_video"]
+                video_title = downloaded.get("video_title", "")
+            update_progress(result={"source_video": video_file})
+            project = prepare_project_files(
+                video_file,
+                project_name,
+                video_id,
+                video_title=video_title,
+                output_dir=output_dir,
+            )
+            update_progress(result=project)
         write_project_manifest(
             project,
             video_id=video_id,
@@ -1561,16 +1961,21 @@ def run_workflow_thread(
             status="processing",
         )
 
-        update_progress(step="ocr")
-        raw_srt = run_videocr(
-            project["video"],
-            ocr_lang=ocr_lang,
-            output_srt=project["raw_srt"],
-            crop_coords=crop_coords,
-            use_saved_crop=use_saved_crop,
-            video_resolution=video_resolution,
-        )
-        update_progress(result={"raw_srt": raw_srt})
+        if resume_step == "translate":
+            raw_srt = project["raw_srt"]
+            if not os.path.isfile(raw_srt):
+                raise FileNotFoundError("File sub OCR không còn tồn tại để chạy tiếp bước dịch.")
+        else:
+            update_progress(step="ocr")
+            raw_srt = run_videocr(
+                project["video"],
+                ocr_lang=ocr_lang,
+                output_srt=project["raw_srt"],
+                crop_coords=crop_coords,
+                use_saved_crop=use_saved_crop,
+                video_resolution=video_resolution,
+            )
+            update_progress(result={"raw_srt": raw_srt})
 
         update_progress(step="translate")
         translated_srt = translate_srt_via_gemini_edge(
@@ -1601,6 +2006,21 @@ def run_workflow_thread(
                 status="cancelled",
                 error=str(e),
             )
+    except EdgeLoginRequired as e:
+        update_progress(status="error", error=str(e))
+        update_current_job_metadata(needs_edge_login=True)
+        log_to_app(str(e), "error")
+        if project:
+            try:
+                write_project_manifest(
+                    project,
+                    video_id=video_id,
+                    source_url=source_url,
+                    status="error",
+                    error=str(e),
+                )
+            except OSError:
+                pass
     except Exception as e:
         update_progress(status="error", error=str(e))
         log_to_app(f"Lỗi quy trình: {e}", "error")
@@ -1643,6 +2063,16 @@ def check_edge():
     return jsonify({"connected": connected})
 
 
+@app.route('/api/edge/show', methods=['POST'])
+def show_edge():
+    config = load_app_config()
+    try:
+        show_edge_for_login(config.get("notebook_url"))
+    except (RuntimeError, ValueError, OSError) as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"ok": True})
+
+
 @app.route('/api/update')
 def check_update():
     try:
@@ -1678,13 +2108,13 @@ def health():
     checks = {
         "douzy_sidecar": {
             "ok": os.path.isfile(SIDECAR_BIN),
-            "required": True,
-            "detail": "Cài Douzy đúng thư mục mặc định rồi mở ứng dụng ít nhất một lần.",
+            "required": False,
+            "detail": "Chỉ cần cho link Douyin; MP4 trên máy không dùng Douzy.",
         },
         "douzy_config": {
             "ok": os.path.isfile(DOUZY_CONFIG),
-            "required": True,
-            "detail": "Mở Douzy và chọn thư mục tải video để tạo cấu hình.",
+            "required": False,
+            "detail": "Chỉ cần cho link Douyin; mở Douzy và chọn thư mục tải để tạo cấu hình.",
         },
         "douzy_database": {
             "ok": os.path.isfile(DOUZY_DB),
@@ -1709,7 +2139,7 @@ def health():
         "edge": {
             "ok": check_edge_status(),
             "required": False,
-            "detail": "App sẽ tự mở Edge; hãy đăng nhập Gemini trong cửa sổ đó.",
+            "detail": "Edge chạy nền; app chỉ hiện cửa sổ khi cần đăng nhập hoặc kiểm tra Notebook.",
         },
     }
     ready = all(item["ok"] for item in checks.values() if item["required"])
@@ -1729,6 +2159,21 @@ def prepare_preview():
         return jsonify({"error": str(error)}), 409
     except (FileNotFoundError, TimeoutError, OSError) as error:
         return jsonify({"error": str(error)}), 500
+
+
+@app.route('/api/previews/local', methods=['POST'])
+def prepare_local_preview():
+    upload = request.files.get("video")
+    if upload is None:
+        return jsonify({"error": "Hãy chọn một file MP4 trên máy."}), 400
+    try:
+        return jsonify(create_local_video_preview(upload)), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 409
+    except OSError as error:
+        return jsonify({"error": f"Không thể lưu video local: {error}"}), 500
 
 
 @app.route('/api/previews/<preview_id>/video')
@@ -1784,6 +2229,18 @@ def delete_queue_job(job_id):
         return jsonify({"error": str(error)}), 409
 
 
+@app.route('/api/queue/<job_id>/retry', methods=['POST'])
+def retry_job(job_id):
+    try:
+        return jsonify(retry_queue_job(job_id))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 404
+    except FileNotFoundError as error:
+        return jsonify({"error": str(error)}), 400
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 409
+
+
 @app.route('/api/queue/finished', methods=['DELETE'])
 def clear_queue_finished():
     clear_finished_jobs()
@@ -1807,6 +2264,10 @@ def handle_settings():
                 config["output_dir"] = validate_output_dir(data["output_dir"])
             if "crop_coords" in data:
                 config["crop_coords"] = validate_crop_coords(data["crop_coords"])
+            if "edge_background" in data:
+                if not isinstance(data["edge_background"], bool):
+                    raise ValueError("Tuỳ chọn chạy Edge ẩn không hợp lệ.")
+                config["edge_background"] = data["edge_background"]
             save_app_config(config)
         except (OSError, ValueError) as e:
             return jsonify({"error": str(e)}), 400
@@ -1822,6 +2283,7 @@ def handle_settings():
             "notebook_url": config.get("notebook_url"),
             "ocr_lang": config.get("ocr_lang"),
             "output_dir": config.get("output_dir", ""),
+            "edge_background": bool(config.get("edge_background", True)),
         })
 
 @app.route('/api/history')
@@ -1908,11 +2370,13 @@ def open_folder():
     return jsonify({"error": "Đường dẫn kết quả không còn tồn tại."}), 400
 
 def run_web_server():
+    initialize_queue_state()
     log_to_app("Mở local web server tại http://127.0.0.1:5000...")
     app.run(host="127.0.0.1", port=5000, debug=False)
 
 
 def run_desktop_app():
+    initialize_queue_state()
     try:
         import webview
     except ImportError as error:

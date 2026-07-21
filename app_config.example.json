@@ -2,5 +2,6 @@
   "notebook_url": "",
   "ocr_lang": "ch",
   "output_dir": "",
-  "crop_coords": null
+  "crop_coords": null,
+  "edge_background": true
 }

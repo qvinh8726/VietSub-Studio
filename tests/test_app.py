@@ -1,3 +1,4 @@
+import io
 import sqlite3
 import sys
 import tempfile
@@ -191,6 +192,61 @@ class DownloadLookupTests(unittest.TestCase):
             self.assertEqual(app.resolve_video_file_path(str(directory)), str(video))
 
 
+class QueuePersistenceTests(unittest.TestCase):
+    def make_job(self, **overrides):
+        job = {
+            "id": "job-1",
+            "source_url": "https://www.douyin.com/video/123",
+            "video_id": "123",
+            "video_title": "Demo",
+            "source_video": "",
+            "project_name": "Demo",
+            "ocr_lang": "ch",
+            "crop_coords": None,
+            "video_resolution": None,
+            "preview_id": "",
+            "use_saved_crop": True,
+            "source_type": "douyin",
+            "managed_source": False,
+            "status": "queued",
+            "step": "resolve",
+            "error": "",
+            "result": {},
+            "needs_edge_login": False,
+            "resume_step": "download",
+            "created_at": 1,
+            "started_at": None,
+            "finished_at": None,
+        }
+        job.update(overrides)
+        return job
+
+    def test_queue_jobs_round_trip_through_the_persistence_file(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = str(Path(temporary_dir) / "workflow_queue.json")
+            app.write_queue_file(queue_path, [self.make_job()])
+
+            restored = app.load_queue_file(queue_path)
+
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0]["id"], "job-1")
+        self.assertEqual(restored[0]["status"], "queued")
+
+    def test_running_job_becomes_retryable_after_restart(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = str(Path(temporary_dir) / "workflow_queue.json")
+            app.write_queue_file(
+                queue_path,
+                [self.make_job(status="running", step="ocr", started_at=10)],
+            )
+
+            restored = app.load_queue_file(queue_path)
+
+        self.assertEqual(restored[0]["status"], "error")
+        self.assertEqual(restored[0]["step"], "ocr")
+        self.assertIn("App đã đóng", restored[0]["error"])
+
+
 class ApiTests(unittest.TestCase):
     def setUp(self):
         app.app.config["TESTING"] = True
@@ -260,6 +316,170 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(job["crop_coords"], crop)
         self.assertEqual(job["preview_id"], preview_id)
+
+    def test_local_mp4_can_be_previewed_and_queued(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                patch.object(app, "LOCAL_VIDEO_DIR", temporary_dir),
+                patch.object(app, "get_saved_crop_coords", return_value=None),
+            ):
+                response = self.client.post(
+                    "/api/previews/local",
+                    data={"video": (io.BytesIO(b"local-video"), "sample.mp4")},
+                    content_type="multipart/form-data",
+                )
+                self.assertEqual(response.status_code, 201)
+                preview = response.get_json()
+                job_response = self.client.post(
+                    "/api/queue",
+                    json={
+                        "url": preview["source_url"],
+                        "preview_id": preview["id"],
+                        "lang": "ch",
+                    },
+                )
+
+                self.assertEqual(job_response.status_code, 201)
+                job = job_response.get_json()
+                self.assertEqual(job["source_type"], "local")
+                with app.preview_registry_lock:
+                    source_video = app.preview_registry[preview["id"]]["source_video"]
+                self.assertEqual(Path(source_video).read_bytes(), b"local-video")
+
+    def test_local_preview_rejects_non_mp4_files(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with patch.object(app, "LOCAL_VIDEO_DIR", temporary_dir):
+                response = self.client.post(
+                    "/api/previews/local",
+                    data={"video": (io.BytesIO(b"video"), "sample.mov")},
+                    content_type="multipart/form-data",
+                )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("MP4", response.get_json()["error"])
+
+    def test_retry_resumes_from_ocr_or_translation_when_files_exist(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+
+            first = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+            second = app.enqueue_workflow("https://www.douyin.com/video/2", "ch")
+            with app.queue_state_lock:
+                first_job = next(job for job in app.workflow_jobs if job["id"] == first["id"])
+                first_job.update({
+                    "status": "error",
+                    "step": "ocr",
+                    "result": {"video": str(video), "raw_srt": str(directory / "missing.srt")},
+                })
+                second_job = next(job for job in app.workflow_jobs if job["id"] == second["id"])
+                second_job.update({
+                    "status": "error",
+                    "step": "translate",
+                    "result": {"video": str(video), "raw_srt": str(raw_srt)},
+                })
+
+            retried_ocr = app.retry_queue_job(first["id"])
+            retried_translation = app.retry_queue_job(second["id"])
+
+        self.assertEqual(retried_ocr["resume_step"], "ocr")
+        self.assertEqual(retried_translation["resume_step"], "translate")
+
+    def test_retry_redownloads_douyin_but_requires_local_source(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            missing_source = str(Path(temporary_dir) / "missing-preview.mp4")
+            douyin = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+            local = app.enqueue_workflow("https://www.douyin.com/video/2", "ch")
+            with app.queue_state_lock:
+                douyin_job = next(job for job in app.workflow_jobs if job["id"] == douyin["id"])
+                douyin_job.update({"status": "error", "source_video": missing_source})
+                local_job = next(job for job in app.workflow_jobs if job["id"] == local["id"])
+                local_job.update({
+                    "status": "error",
+                    "source_type": "local",
+                    "source_video": missing_source,
+                })
+
+            retried = app.retry_queue_job(douyin["id"])
+            self.assertEqual(retried["resume_step"], "download")
+            with app.queue_state_lock:
+                self.assertEqual(douyin_job["source_video"], "")
+            with self.assertRaises(FileNotFoundError):
+                app.retry_queue_job(local["id"])
+
+    def test_edge_background_setting_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = str(Path(temporary_dir) / "app_config.json")
+            with patch.object(app, "CONFIG_PATH", config_path):
+                response = self.client.post(
+                    "/api/settings",
+                    json={"edge_background": False},
+                )
+                settings = self.client.get("/api/settings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(settings.get_json()["edge_background"])
+
+    def test_edge_login_failure_marks_the_current_queue_job(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            project = {
+                "project_name": "Project",
+                "project_dir": str(directory),
+                "video": str(video),
+                "source_video": str(video),
+                "raw_srt": str(raw_srt),
+                "translated_srt": str(translated_srt),
+            }
+            queued = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+            with app.queue_state_lock:
+                job = next(item for item in app.workflow_jobs if item["id"] == queued["id"])
+                job.update({"status": "running", "step": "translate", "result": dict(project)})
+                app.current_job_id = job["id"]
+
+            self.assertTrue(app.workflow_lock.acquire(blocking=False))
+            app.reset_progress(job["id"])
+            try:
+                with (
+                    patch.object(app, "load_app_config", return_value={
+                        "notebook_url": "https://gemini.google.com/notebook/test-id",
+                        "output_dir": str(directory),
+                    }),
+                    patch.object(app, "write_project_manifest"),
+                    patch.object(
+                        app,
+                        "translate_srt_via_gemini_edge",
+                        side_effect=app.EdgeLoginRequired("Cần đăng nhập Edge."),
+                    ),
+                ):
+                    app.run_workflow_thread(
+                        "https://www.douyin.com/video/1",
+                        "ch",
+                        prepared_video={
+                            "source_url": "https://www.douyin.com/video/1",
+                            "video_id": "1",
+                            "source_video": str(video),
+                        },
+                        resume_project=project,
+                        resume_step="translate",
+                    )
+            finally:
+                if app.workflow_lock.locked():
+                    app.workflow_lock.release()
+
+            retry_step = app.serialize_job(job)["retry_step"]
+
+        self.assertEqual(app.progress_snapshot()["status"], "error")
+        self.assertTrue(job["needs_edge_login"])
+        self.assertEqual(retry_step, "translate")
 
     def test_queue_worker_runs_jobs_one_after_another(self):
         app.enqueue_workflow("https://www.douyin.com/video/1", "ch")

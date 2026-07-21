@@ -4,6 +4,20 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-21
+
+### Added
+
+- Local MP4 selection with preview and editable per-video OCR crop regions.
+- Persistent queue storage across app restarts.
+- Retry actions that reuse prepared video or raw OCR subtitles when available.
+- Background Edge mode with visible login/Notebook fallback and a manual reopen button.
+
+### Changed
+
+- Douzy is now optional for local MP4 workflows and remains required for Douyin sources.
+- Expired managed local previews are cleaned up when no queued job references them.
+
 ## [1.1.0] - 2026-07-21
 
 ### Added
