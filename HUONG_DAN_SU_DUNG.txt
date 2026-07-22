@@ -31,12 +31,14 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 - Bam "Them vao hang doi" va lap lai voi cac video khac.
 - Bam "Chay hang doi". App se tu xu ly tung video mot, khong chay song song.
 - Hang doi duoc luu khi dong app. Job loi/da huy co the chay lai tu video, OCR hoac dich neu file trung gian con ton tai.
-- Ket qua duoc dat ten dong bo:
-  Video Douyin: dung truc tiep file MP4 Douzy da tai, khong tao them ban sao.
-  Video local: Ten video.mp4
+- Trong Thiet lap, bam "Chon thu muc..." de chon noi luu doc lap voi Douzy.
+  Neu de trong, app dung Documents\VietSub Studio.
+- Ket qua duoc dat ten dong bo trong mot folder mang ten project:
+  Ten video.mp4 (MP4 Douyin duoc chuyen khoi Douzy sau khi dich thanh cong)
   Ten video.thumbnail.jpg/png/webp (neu nguon co thumbnail)
   Ten video.raw.srt
   Ten video.vi.srt
+  Ten video.data.json, Ten video.music.mp3 va asset Douzy khac (neu co)
 - App chi bao "da san sang" khi ca ba file ton tai va sub Viet vuot qua kiem tra timestamp/so doan.
 - Job loi van co nut mo thu muc lam do, nhung khong duoc gan nhan la ket qua hoan tat.
 

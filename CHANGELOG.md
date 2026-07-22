@@ -4,6 +4,17 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-22
+
+### Added
+
+- Added a native Windows folder picker for choosing a project output directory independent from Douzy.
+
+### Changed
+
+- Completed Douyin projects now move the original MP4 and related Douzy assets into the named project folder after translation validation, keeping video, raw SRT, Vietnamese SRT, thumbnail, and metadata together.
+- Empty output settings now default to `Documents\VietSub Studio` instead of the Douzy download directory.
+
 ## [1.3.2] - 2026-07-22
 
 ### Added
