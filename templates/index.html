@@ -203,6 +203,8 @@
         .settings-grid { display: grid; gap: 12px; }
         .setting-field label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 850; }
         .setting-field small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+        .path-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+        .path-picker .btn-secondary { white-space: nowrap; }
         .toggle-setting { display: flex !important; align-items: flex-start; gap: 10px; padding: 11px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.5); cursor: pointer; }
         .toggle-setting input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--forest-2); }
         .toggle-setting span { display: block; }
@@ -260,6 +262,7 @@
             .progress-card, .control-card { padding: 16px; }
             .stepper { grid-template-columns: 1fr 1fr 1fr; }
             .result-path { grid-template-columns: 1fr; }
+            .path-picker { grid-template-columns: 1fr; }
         }
         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
     </style>
@@ -402,7 +405,11 @@
                 <div class="section-head"><h3>Thiết lập & chẩn đoán</h3><span>Tự lưu thay đổi</span></div>
                 <div id="settings-panel" class="settings-grid">
                     <div class="setting-field"><label for="setting-notebook">Notebook Gemini</label><input id="setting-notebook" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/..."><small>Tự lưu khi rời ô.</small></div>
-                    <div class="setting-field"><label for="setting-output">Thư mục xuất</label><input id="setting-output" class="text-input" placeholder="Để trống = thư mục VietSub Studio của Douzy"><small>Phải là đường dẫn tuyệt đối nếu có nhập.</small></div>
+                    <div class="setting-field">
+                        <label for="setting-output">Thư mục lưu project</label>
+                        <div class="path-picker"><input id="setting-output" class="text-input" placeholder="Để trống = Documents\VietSub Studio"><button id="choose-output-btn" class="btn-secondary" type="button">Chọn thư mục…</button></div>
+                        <small id="output-help">Mỗi tên project sẽ có một folder riêng chứa video, sub gốc, sub Việt, thumbnail và các asset Douzy.</small>
+                    </div>
                     <div class="setting-field">
                         <label class="toggle-setting" for="setting-edge-background">
                             <input id="setting-edge-background" type="checkbox" checked>
@@ -823,6 +830,8 @@
             try {
                 const data = await fetchJson('/api/settings');
                 byId('setting-notebook').value = data.notebook_url || ''; byId('setting-output').value = data.output_dir || '';
+                byId('setting-output').placeholder = data.default_output_dir || 'Documents\\VietSub Studio';
+                byId('output-help').textContent = `Để trống sẽ lưu tại ${data.default_output_dir}. Mỗi project có folder riêng chứa đủ video, SRT và thumbnail.`;
                 byId('setting-crop').value = data.crop_coords ? JSON.stringify(data.crop_coords) : 'Toàn khung hình';
                 byId('setting-download').value = data.download_dir || 'Chưa xác định'; byId('ocr-lang').value = data.ocr_lang || 'ch';
                 byId('setting-edge-background').checked = data.edge_background !== false;
@@ -848,6 +857,19 @@
                 await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, edge_background:byId('setting-edge-background').checked})});
                 showToast('Đã lưu thiết lập.');
             } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function chooseOutputDirectory() {
+            if (!window.pywebview || !window.pywebview.api) {
+                showToast('Nút chọn thư mục hoạt động trong app VietSub Studio.', 'error');
+                return;
+            }
+            try {
+                const selected = await window.pywebview.api.select_output_directory(byId('setting-output').value.trim());
+                if (!selected) return;
+                byId('setting-output').value = selected;
+                await saveSettings();
+            } catch (error) { showToast(error.message || String(error), 'error'); }
         }
 
         async function loadHealth() {
@@ -894,6 +916,7 @@
             byId('start-queue-btn').onclick=startQueue; byId('cancel-btn').onclick=cancelJob; byId('clear-finished-btn').onclick=clearFinished;
             byId('open-result-btn').onclick=openResult;
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
+            byId('choose-output-btn').onclick=chooseOutputDirectory;
             byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;
             byId('create-shortcut-btn').onclick=createDesktopShortcut;
             byId('health-btn').onclick=loadHealth;

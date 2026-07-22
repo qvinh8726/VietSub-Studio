@@ -28,9 +28,9 @@
 >
 > File EXE portable chứa VietSub Studio nhưng **không** đóng gói Douzy, VideOCR, Microsoft Edge, tài khoản Google hoặc Gemini Notebook. Mỗi máy vẫn phải chuẩn bị các thành phần đó.
 >
-> Douyin videos are processed directly from the MP4 downloaded by Douzy, so VietSub Studio does not create another full-size video copy. Local MP4 files keep a managed-copy workflow because browser uploads do not expose the original filesystem path safely.
+> Douyin videos are processed from the MP4 downloaded by Douzy, then that MP4 and its related assets are moved into the selected project folder after the Vietnamese SRT passes validation. This keeps one full-size video copy while making every completed project self-contained. Local MP4 files keep a managed-copy workflow because browser uploads do not expose the original filesystem path safely.
 >
-> Video Douyin được xử lý trực tiếp từ file MP4 do Douzy tải, vì vậy VietSub Studio không nhân đôi thêm một video dung lượng lớn. MP4 chọn từ máy vẫn dùng bản sao do app quản lý vì trình duyệt không cung cấp đường dẫn file gốc một cách an toàn.
+> Video Douyin được xử lý từ file MP4 do Douzy tải; sau khi SRT tiếng Việt vượt qua kiểm tra, app chuyển MP4 và các asset liên quan vào thư mục project đã chọn. Nhờ vậy chỉ có một bản video dung lượng lớn nhưng mỗi project hoàn tất vẫn tự chứa đầy đủ file. MP4 chọn từ máy vẫn dùng bản sao do app quản lý vì trình duyệt không cung cấp đường dẫn file gốc một cách an toàn.
 
 ---
 
@@ -69,7 +69,7 @@ The complete workflow is:
 4. Stream the prepared video into the in-app preview and let the user drag or resize the OCR rectangle over the exact subtitle region.
 5. Save the crop, OCR language, project name, source metadata, and video resolution as an independent queue job.
 6. Run jobs sequentially so Douzy, VideOCR, Gemini, and the Edge debug profile are never driven concurrently by multiple videos.
-7. Process Douyin videos directly from the original Douzy MP4 instead of cloning another multi-gigabyte video into the result folder.
+7. Process the original Douzy MP4 in place, then move it and the related Douzy assets into the project folder only after translation succeeds.
 8. Ask the installed VideOCR CLI to scan only the selected area and write the original-language `.raw.srt` file.
 9. Connect Playwright to a dedicated Microsoft Edge debug profile, submit the raw SRT to the user's Gemini Notebook, and collect the translated response.
 10. Restore source timecodes when Gemini rewrites compatible subtitle blocks, then reject incomplete translations, missing blocks, changed indexes, or invalid timestamps.
@@ -99,7 +99,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Accepts MP4 files from the local machine without requiring Douzy.
 - Reuses the Douzy history/cache when the requested Douyin video is already available.
 - Reads Douzy's recorded title, video path, metadata, and optional cover image.
-- Processes the original Douzy MP4 directly, eliminating the previous second full-size project copy.
+- Moves the original Douzy MP4, cover, metadata, music, and other per-video assets into the completed project folder without leaving a second full-size copy.
 - Copies a local MP4 into managed app storage so it remains available to the persisted queue.
 
 ### OCR preview and recognition
@@ -148,7 +148,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Provides a responsive pywebview desktop interface backed by a local Flask API.
 - Includes a dependency health panel for Douzy, VideOCR, FFprobe, Notebook settings, and Edge.
 - Shows recent Douzy history and can reload a previous video quickly.
-- Supports a configurable output directory.
+- Supports a native Windows folder picker and a configurable output directory independent from Douzy.
 - Creates or recreates a Desktop shortcut for the packaged EXE.
 - Keeps the Edge window minimized during normal translation while retaining a reliable visible fallback.
 - Ships as a portable one-file Windows EXE with a custom icon.
@@ -168,20 +168,23 @@ If the project name is `Product Review`, VietSub Studio creates:
 
 ```text
 Product Review/
-├── Product Review.mp4 (local MP4 sources only)
+├── Product Review.mp4
 ├── Product Review.thumbnail.jpg (when available)
 ├── Product Review.raw.srt
 ├── Product Review.vi.srt
+├── Product Review.data.json (when Douzy provides it)
+├── Product Review.music.mp3 (when Douzy provides it)
 └── project.json
 ```
 
-- Douyin videos are processed directly from the file downloaded by Douzy, avoiding a second full-size MP4 copy. The `video` field in `project.json` points to that original Douzy path. Local MP4 uploads are still copied into the project folder.
+- A completed Douyin project contains the original MP4 moved from Douzy. Local MP4 uploads are copied into the same self-contained layout.
 - `Product Review.thumbnail.jpg`: the Douyin thumbnail copied from Douzy or downloaded from its saved metadata when available; PNG and WebP are also supported.
 - `Product Review.raw.srt`: OCR output in the selected source language.
 - `Product Review.vi.srt`: translated Vietnamese subtitle with source timestamps preserved.
+- Extra Douzy assets use synchronized names such as `Product Review.data.json` and `Product Review.music.mp3`.
 - `project.json`: project name, source URL, Douyin video ID, paths, status, error information, and update timestamp.
 
-When a project folder already exists, the next project becomes `Product Review (2)`. Generated subtitles, thumbnails, and manifests use the unique project name; the referenced Douzy source MP4 keeps its original Douzy filename and location.
+When a project folder already exists, the next project becomes `Product Review (2)`. The video, subtitles, thumbnail, Douzy assets, and manifest all use the unique project name.
 
 ## Requirements
 
@@ -246,7 +249,7 @@ VietSub Studio does not ask for your Google password and does not store it. Auth
 
 ### 4. Choose an output directory
 
-The output directory is optional. When it is empty, projects are created inside a `VietSub Studio` folder under Douzy's configured download directory. You may enter another absolute Windows path in Settings.
+Use **Choose folder** in Settings to select any destination on the machine. The setting is independent from Douzy. When it is empty, projects are created in `Documents\VietSub Studio` (or the Windows fallback directory if Documents cannot be resolved).
 
 ## Processing videos
 
@@ -394,7 +397,7 @@ The Flask server binds to `127.0.0.1`, not to the public network.
 | Dedicated Edge profile | `%LOCALAPPDATA%\Microsoft\Edge\User Data Debug` | Same |
 | Douzy config | `%APPDATA%\douyin-downloader-desktop\config.yml` | Same |
 | Douzy history database | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Same |
-| Project output | Selected output directory or Douzy download directory | Same |
+| Project output | Selected output directory or `Documents\VietSub Studio` | Same |
 
 `app_config.json` is ignored by Git because it may contain a private Notebook URL. Use `app_config.example.json` only as a safe reference.
 
@@ -491,7 +494,7 @@ Wait up to 60 seconds on the first launch. Extract it from the ZIP first, then c
 
 ### Where are my results?
 
-Open Settings to see the configured output directory. When empty, the default is a `VietSub Studio` folder inside Douzy's download directory. The result panel can open the exact project folder after success.
+Open Settings to see or choose the output directory. When empty, the default is `Documents\VietSub Studio`. The result panel can open the exact self-contained project folder after success.
 
 ## Frequently asked questions
 
@@ -597,7 +600,7 @@ Toàn bộ quy trình gồm:
 4. Phát video đã chuẩn bị trong khung preview của app để người dùng kéo/đổi kích thước vùng OCR đúng vị trí phụ đề.
 5. Lưu crop, ngôn ngữ OCR, tên dự án, metadata nguồn và độ phân giải thành một job độc lập trong hàng đợi.
 6. Chạy tuần tự để Douzy, VideOCR, Gemini và profile Edge debug không bị nhiều video điều khiển cùng lúc.
-7. Với video Douyin, dùng trực tiếp file MP4 gốc do Douzy tải thay vì nhân đôi thêm một video nhiều GB vào thư mục kết quả.
+7. Với video Douyin, xử lý trực tiếp MP4 gốc tại Douzy rồi chỉ chuyển MP4 và các asset liên quan vào folder project sau khi dịch thành công.
 8. Gọi VideOCR CLI quét đúng vùng đã chọn và ghi phụ đề ngôn ngữ gốc vào file `.raw.srt`.
 9. Kết nối Playwright với profile Edge debug riêng, gửi sub OCR vào Gemini Notebook của người dùng và lấy phản hồi dịch.
 10. Khôi phục timestamp nguồn nếu Gemini chỉ viết lại mốc thời gian nhưng vẫn giữ đúng cấu trúc block; từ chối bản dịch thiếu đoạn, đổi số thứ tự hoặc sai timestamp.
@@ -627,7 +630,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Nhận file MP4 trên máy mà không cần Douzy.
 - Dùng lại lịch sử/cache Douzy nếu video Douyin đã được tải trước đó.
 - Đọc tiêu đề, đường dẫn video, metadata và ảnh cover từ dữ liệu Douzy.
-- Xử lý trực tiếp MP4 gốc của Douzy, loại bỏ bản sao video dung lượng lớn từng được tạo trong thư mục dự án.
+- Chuyển MP4 gốc, cover, metadata, nhạc và các asset riêng của video từ Douzy vào folder project hoàn tất mà không tạo bản sao video dung lượng lớn thứ hai.
 - Sao chép MP4 local vào vùng app quản lý để job vẫn tồn tại sau khi đóng/mở ứng dụng.
 
 ### Preview vùng OCR và nhận dạng
@@ -676,7 +679,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Giao diện desktop responsive bằng pywebview, phía sau là Flask API cục bộ.
 - Bảng kiểm tra Douzy, VideOCR, FFprobe, Notebook và Edge kèm hướng dẫn sửa từng mục.
 - Hiển thị lịch sử Douzy và nạp lại video gần đây nhanh chóng.
-- Cho phép chọn thư mục xuất kết quả.
+- Có hộp thoại Windows để chọn thư mục lưu riêng, hoàn toàn độc lập với thư mục tải Douzy.
 - Tự tạo hoặc tạo lại shortcut ngoài Desktop cho bản EXE.
 - Giữ Edge thu nhỏ trong luồng dịch bình thường nhưng vẫn có fallback hiện cửa sổ đáng tin cậy.
 - Đóng gói thành một file EXE Windows portable với icon riêng.
@@ -696,20 +699,23 @@ Nếu đặt tên dự án là `Review sản phẩm`, ứng dụng tạo:
 
 ```text
 Review sản phẩm/
-├── Review sản phẩm.mp4 (chỉ nguồn MP4 local)
+├── Review sản phẩm.mp4
 ├── Review sản phẩm.thumbnail.jpg (nếu có)
 ├── Review sản phẩm.raw.srt
 ├── Review sản phẩm.vi.srt
+├── Review sản phẩm.data.json (nếu Douzy có)
+├── Review sản phẩm.music.mp3 (nếu Douzy có)
 └── project.json
 ```
 
-- Video Douyin được xử lý trực tiếp từ file Douzy đã tải, không nhân đôi thêm một file MP4 dung lượng lớn. Trường `video` trong `project.json` trỏ tới file Douzy gốc. Video MP4 chọn từ máy vẫn được sao chép vào thư mục dự án.
+- Project Douyin hoàn tất chứa MP4 gốc đã được chuyển khỏi thư mục Douzy. MP4 chọn từ máy vẫn được sao chép vào cùng bố cục project tự chứa.
 - `Review sản phẩm.thumbnail.jpg`: thumbnail Douyin lấy từ Douzy hoặc tải từ metadata đã lưu nếu có; app cũng hỗ trợ PNG và WebP.
 - `Review sản phẩm.raw.srt`: phụ đề OCR theo ngôn ngữ gốc đã chọn.
 - `Review sản phẩm.vi.srt`: phụ đề tiếng Việt, giữ mốc thời gian nguồn.
+- Các asset Douzy khác được đổi tên đồng bộ như `Review sản phẩm.data.json` và `Review sản phẩm.music.mp3`.
 - `project.json`: tên dự án, URL nguồn, ID video Douyin, đường dẫn file, trạng thái, lỗi và thời gian cập nhật.
 
-Nếu thư mục đã tồn tại, dự án tiếp theo sẽ là `Review sản phẩm (2)`. Các file sub, thumbnail và manifest được tạo theo tên dự án riêng; MP4 Douzy được tham chiếu vẫn giữ nguyên tên và vị trí do Douzy tạo.
+Nếu thư mục đã tồn tại, dự án tiếp theo sẽ là `Review sản phẩm (2)`. Video, sub, thumbnail, asset Douzy và manifest đều dùng tên project riêng này.
 
 ## Yêu cầu hệ thống
 
@@ -774,7 +780,7 @@ VietSub Studio không hỏi và không lưu mật khẩu Google. Việc đăng n
 
 ### 4. Chọn thư mục xuất
 
-Thư mục xuất là tuỳ chọn. Nếu để trống, dự án được tạo trong thư mục `VietSub Studio` bên dưới thư mục tải đã cấu hình của Douzy. Bạn có thể nhập một đường dẫn Windows tuyệt đối khác trong Thiết lập.
+Bấm **Chọn thư mục…** trong Thiết lập để chọn bất kỳ nơi lưu nào trên máy, độc lập với Douzy. Nếu để trống, app dùng `Documents\VietSub Studio` (hoặc thư mục Windows dự phòng nếu không xác định được Documents).
 
 ## Xử lý nhiều video tuần tự
 
@@ -920,7 +926,7 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng.
 | Profile Edge riêng | `%LOCALAPPDATA%\Microsoft\Edge\User Data Debug` | Giống nhau |
 | Cấu hình Douzy | `%APPDATA%\douyin-downloader-desktop\config.yml` | Giống nhau |
 | Database lịch sử Douzy | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Giống nhau |
-| Kết quả dự án | Thư mục xuất đã chọn hoặc thư mục tải Douzy | Giống nhau |
+| Kết quả dự án | Thư mục đã chọn hoặc `Documents\VietSub Studio` | Giống nhau |
 
 `app_config.json` bị Git bỏ qua vì có thể chứa link Notebook riêng. `app_config.example.json` chỉ là mẫu an toàn.
 
@@ -1017,7 +1023,7 @@ Lần đầu hãy chờ tối đa 60 giây. Phải giải nén ZIP trước, sau
 
 ### Kết quả nằm ở đâu?
 
-Mở Thiết lập để xem thư mục xuất. Nếu để trống, mặc định là thư mục `VietSub Studio` bên trong thư mục tải Douzy. Sau khi thành công, bảng kết quả có nút mở đúng thư mục dự án.
+Mở Thiết lập để xem hoặc chọn thư mục lưu. Nếu để trống, mặc định là `Documents\VietSub Studio`. Sau khi thành công, bảng kết quả có nút mở đúng folder project tự chứa.
 
 ## Câu hỏi thường gặp
 

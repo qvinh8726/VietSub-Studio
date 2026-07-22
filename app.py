@@ -61,7 +61,7 @@ MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.4.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -471,22 +471,43 @@ def is_packaged_app():
     return os.name == "nt" and bool(getattr(sys, "frozen", False))
 
 
-def get_desktop_directory():
+def get_windows_known_folder(csidl, label):
     if os.name != "nt":
-        raise RuntimeError("Shortcut ngoài Desktop chỉ hỗ trợ Windows.")
+        raise RuntimeError(f"Thư mục {label} chỉ hỗ trợ Windows.")
     import ctypes
 
-    desktop_path = ctypes.create_unicode_buffer(32768)
+    folder_path = ctypes.create_unicode_buffer(32768)
     result = ctypes.windll.shell32.SHGetFolderPathW(
         None,
-        0x0010,  # CSIDL_DESKTOPDIRECTORY, including redirected OneDrive desktops.
+        csidl,
         None,
         0,
-        desktop_path,
+        folder_path,
     )
-    if result != 0 or not desktop_path.value:
-        raise OSError(result, "Không xác định được thư mục Desktop của Windows.")
-    return os.path.abspath(desktop_path.value)
+    if result != 0 or not folder_path.value:
+        raise OSError(result, f"Không xác định được thư mục {label} của Windows.")
+    return os.path.abspath(folder_path.value)
+
+
+def get_desktop_directory():
+    # CSIDL_DESKTOPDIRECTORY also follows redirected OneDrive desktops.
+    return get_windows_known_folder(0x0010, "Desktop")
+
+
+def get_documents_directory():
+    # CSIDL_PERSONAL follows the user's redirected Documents directory.
+    return get_windows_known_folder(0x0005, "Documents")
+
+
+def get_default_output_directory():
+    try:
+        base_directory = get_documents_directory()
+    except (OSError, RuntimeError):
+        try:
+            base_directory = get_desktop_directory()
+        except (OSError, RuntimeError):
+            base_directory = os.path.expanduser("~")
+    return os.path.abspath(os.path.join(base_directory, "VietSub Studio"))
 
 
 def desktop_shortcut_path():
@@ -1324,13 +1345,173 @@ def copy_file_atomic(source_path, destination_path):
             os.remove(temporary_path)
 
 
+def move_file_safely(source_path, destination_path):
+    source_path = os.path.abspath(source_path)
+    destination_path = os.path.abspath(destination_path)
+    if os.path.normcase(source_path) == os.path.normcase(destination_path):
+        return destination_path
+
+    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+    try:
+        os.replace(source_path, destination_path)
+    except OSError:
+        copy_file_atomic(source_path, destination_path)
+        os.remove(source_path)
+    return destination_path
+
+
+def path_is_within(path, directory):
+    if not path or not directory:
+        return False
+    try:
+        common = os.path.commonpath((os.path.abspath(path), os.path.abspath(directory)))
+        return os.path.normcase(common) == os.path.normcase(os.path.abspath(directory))
+    except (OSError, ValueError):
+        return False
+
+
+def should_move_douzy_source(source_video):
+    download_root = get_douzy_download_dir()
+    source_dir = os.path.dirname(os.path.abspath(source_video))
+    return (
+        path_is_within(source_video, download_root)
+        and not os.path.isfile(os.path.join(source_dir, "project.json"))
+    )
+
+
+def project_asset_destination(source_path, source_video, project):
+    filename = os.path.basename(source_path)
+    stem, extension = os.path.splitext(filename)
+    source_stem = os.path.splitext(os.path.basename(source_video))[0]
+    project_name = project["project_name"]
+
+    if os.path.normcase(source_path) == os.path.normcase(source_video):
+        return project["video_destination"]
+    if stem.startswith(source_stem):
+        asset_name = stem[len(source_stem):].strip(" ._-").lower()
+        if (
+            asset_name in {"cover", "origin_cover", "thumbnail", "thumb"}
+            and extension.lower() in ALLOWED_THUMBNAIL_EXTENSIONS
+        ):
+            normalized_extension = ".jpg" if extension.lower() == ".jpeg" else extension.lower()
+            return os.path.join(project["project_dir"], project_name + ".thumbnail" + normalized_extension)
+        if asset_name:
+            safe_asset_name = sanitize_project_name(asset_name, fallback="asset").replace(" ", "-")
+            destination = os.path.join(
+                project["project_dir"], f"{project_name}.{safe_asset_name}{extension.lower()}"
+            )
+            reserved_paths = {
+                os.path.normcase(project["raw_srt"]),
+                os.path.normcase(project["translated_srt"]),
+                os.path.normcase(os.path.join(project["project_dir"], "project.json")),
+            }
+            if os.path.normcase(destination) in reserved_paths:
+                destination = os.path.join(
+                    project["project_dir"],
+                    f"{project_name}.douzy-{safe_asset_name}{extension.lower()}",
+                )
+            return destination
+    return os.path.join(project["project_dir"], filename)
+
+
+def update_douzy_video_path(video_id, destination_video):
+    if not video_id or not os.path.isfile(DOUZY_DB):
+        return
+    try:
+        conn = sqlite3.connect(DOUZY_DB, timeout=3)
+        try:
+            conn.execute(
+                "UPDATE aweme SET file_path = ? WHERE id = "
+                "(SELECT id FROM aweme WHERE aweme_id = ? ORDER BY download_time DESC LIMIT 1)",
+                (destination_video, video_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error) as error:
+        log_to_app(f"Không thể cập nhật đường dẫn mới trong lịch sử Douzy: {error}", "error")
+
+
+def replace_source_video_references(old_path, new_path):
+    old_path = os.path.abspath(old_path)
+    with preview_registry_lock:
+        for preview in preview_registry.values():
+            if os.path.normcase(str(preview.get("source_video") or "")) == os.path.normcase(old_path):
+                preview["source_video"] = new_path
+    with queue_state_lock:
+        for job in workflow_jobs:
+            if os.path.normcase(str(job.get("source_video") or "")) == os.path.normcase(old_path):
+                job["source_video"] = new_path
+        try:
+            persist_queue_state_locked()
+        except OSError as error:
+            log_to_app(f"Chưa thể lưu đường dẫn video mới vào hàng đợi: {error}", "error")
+
+
+def finalize_project_assets(project, video_id=""):
+    if not project.get("move_source_video"):
+        return project
+
+    source_video = os.path.abspath(project["video"])
+    destination_video = os.path.abspath(project["video_destination"])
+    if not os.path.isfile(source_video):
+        if os.path.isfile(destination_video):
+            project.update({
+                "video": destination_video,
+                "source_video": destination_video,
+                "move_source_video": False,
+            })
+            return project
+        raise FileNotFoundError("Video Douzy không còn tồn tại để chuyển vào thư mục dự án.")
+
+    source_dir = os.path.dirname(source_video)
+    source_stem = os.path.splitext(os.path.basename(source_video))[0]
+    dedicated_source_dir = os.path.basename(os.path.normpath(source_dir)) == source_stem
+    candidates = []
+    for name in os.listdir(source_dir):
+        candidate = os.path.join(source_dir, name)
+        if os.path.normcase(candidate) == os.path.normcase(project["project_dir"]):
+            continue
+        candidate_stem = os.path.splitext(name)[0]
+        if os.path.isfile(candidate) and (dedicated_source_dir or candidate_stem.startswith(source_stem)):
+            candidates.append(candidate)
+
+    # Move the large MP4 last so an ancillary-asset error leaves the retry source intact.
+    candidates.sort(key=lambda path: os.path.normcase(path) == os.path.normcase(source_video))
+    log_to_app("Đang chuyển video và asset Douzy vào thư mục dự án...")
+    moved_video = ""
+    for candidate in candidates:
+        destination = project_asset_destination(candidate, source_video, project)
+        moved_path = move_file_safely(candidate, destination)
+        if os.path.normcase(candidate) == os.path.normcase(source_video):
+            moved_video = moved_path
+        elif ".thumbnail" in os.path.basename(moved_path).lower():
+            project["thumbnail"] = moved_path
+
+    if not moved_video:
+        moved_video = move_file_safely(source_video, destination_video)
+    try:
+        os.rmdir(source_dir)
+    except OSError:
+        pass
+
+    project["original_source_video"] = source_video
+    project["video"] = moved_video
+    project["source_video"] = moved_video
+    project["move_source_video"] = False
+    update_douzy_video_path(video_id, moved_video)
+    replace_source_video_references(source_video, moved_video)
+    log_to_app(f"Đã gom toàn bộ file Douzy vào: {project['project_dir']}")
+    return project
+
+
 def prepare_project_files(
     source_video,
     requested_name,
     video_id,
     video_title="",
     output_dir="",
-    reuse_source_video=False,
+    defer_video_move=False,
     include_thumbnail=False,
 ):
     check_cancel_requested()
@@ -1338,18 +1519,19 @@ def prepare_project_files(
         raise FileNotFoundError(f"Không tìm thấy file video hoàn chỉnh: {source_video}")
     fallback_name = video_title or f"Douyin {video_id}"
     sanitized_name = sanitize_project_name(requested_name, fallback=fallback_name)
-    default_root = os.path.join(os.path.dirname(source_video), "VietSub Studio")
+    default_root = get_default_output_directory()
     output_root = validate_output_dir(output_dir) or default_root
     project_name, project_dir = allocate_project_directory(output_root, sanitized_name)
-    video_path = os.path.abspath(source_video) if reuse_source_video else os.path.join(project_dir, project_name + ".mp4")
+    video_destination = os.path.join(project_dir, project_name + ".mp4")
+    video_path = os.path.abspath(source_video) if defer_video_move else video_destination
     raw_srt_path = os.path.join(project_dir, project_name + ".raw.srt")
     translated_srt_path = os.path.join(project_dir, project_name + ".vi.srt")
 
     log_to_app(f"Tạo bộ file đồng bộ với tên: {project_name}")
     try:
         check_cancel_requested()
-        if reuse_source_video:
-            log_to_app("Dùng trực tiếp video Douzy đã tải, không tạo thêm bản sao MP4.")
+        if defer_video_move:
+            log_to_app("Dùng video tại Douzy trong lúc xử lý; sẽ chuyển vào dự án sau khi dịch xong.")
         else:
             log_to_app("Đang sao chép video vào thư mục kết quả...")
             copy_file_atomic(source_video, video_path)
@@ -1368,7 +1550,9 @@ def prepare_project_files(
         "project_name": project_name,
         "project_dir": project_dir,
         "video": video_path,
-        "source_video": source_video,
+        "source_video": os.path.abspath(source_video),
+        "video_destination": video_destination,
+        "move_source_video": bool(defer_video_move),
         "thumbnail": thumbnail_path,
         "raw_srt": raw_srt_path,
         "translated_srt": translated_srt_path,
@@ -1385,6 +1569,9 @@ def write_project_manifest(project, *, video_id, source_url, status, error=""):
         "error": error,
         "video": project["video"],
         "source_video": project["source_video"],
+        "original_source_video": project.get("original_source_video", ""),
+        "video_destination": project.get("video_destination", project["video"]),
+        "move_source_video": bool(project.get("move_source_video")),
         "thumbnail": project.get("thumbnail", ""),
         "raw_srt": project["raw_srt"],
         "translated_srt": project["translated_srt"],
@@ -2080,7 +2267,10 @@ def create_local_video_preview(upload):
 
 def get_job_retry_step(job):
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    if os.path.isfile(str(result.get("video") or "")):
+    available_video = result.get("video") or ""
+    if not os.path.isfile(str(available_video)):
+        available_video = result.get("video_destination") or ""
+    if os.path.isfile(str(available_video)):
         if job.get("step") == "translate" and os.path.isfile(str(result.get("raw_srt") or "")):
             return "translate"
         return "ocr"
@@ -2463,19 +2653,20 @@ def run_workflow_thread(
         config = load_app_config()
         notebook_url = validate_notebook_url(config.get("notebook_url"))
         output_dir = validate_output_dir(config.get("output_dir", ""))
-        if not output_dir:
-            douzy_download_dir = get_douzy_download_dir()
-            if douzy_download_dir:
-                output_dir = os.path.join(douzy_download_dir, "VietSub Studio")
 
         if resume_step in {"ocr", "translate"}:
             resume_project = resume_project if isinstance(resume_project, dict) else {}
             required_keys = ("project_name", "project_dir", "video", "raw_srt", "translated_srt")
             if not all(resume_project.get(key) for key in required_keys):
                 raise FileNotFoundError("Bộ file cũ không còn đầy đủ để chạy tiếp.")
-            project = {key: resume_project[key] for key in required_keys}
-            project["source_video"] = resume_project.get("source_video", "")
+            project = dict(resume_project)
+            if not os.path.isfile(project["video"]) and os.path.isfile(str(project.get("video_destination") or "")):
+                project["video"] = project["video_destination"]
+                project["move_source_video"] = False
+            project["source_video"] = resume_project.get("source_video", project["video"])
             project["thumbnail"] = resume_project.get("thumbnail", "")
+            project["video_destination"] = resume_project.get("video_destination", project["video"])
+            project["move_source_video"] = bool(resume_project.get("move_source_video"))
             if not os.path.isdir(project["project_dir"]) or not os.path.isfile(project["video"]):
                 raise FileNotFoundError("Video dự án không còn tồn tại để chạy tiếp.")
             source_url = prepared_video.get("source_url", video_url) if prepared_video else video_url
@@ -2509,7 +2700,9 @@ def run_workflow_thread(
                 video_id,
                 video_title=video_title,
                 output_dir=output_dir,
-                reuse_source_video=source_type == "douyin",
+                defer_video_move=(
+                    source_type == "douyin" and should_move_douzy_source(video_file)
+                ),
                 include_thumbnail=source_type == "douyin",
             )
             update_progress(result=project)
@@ -2545,6 +2738,8 @@ def run_workflow_thread(
         update_progress(result={"translated_srt": translated_srt})
         project["raw_srt"] = raw_srt
         project["translated_srt"] = translated_srt
+        project = finalize_project_assets(project, video_id)
+        update_progress(result=project)
         validate_project_result(project)
         write_project_manifest(
             project,
@@ -2890,6 +3085,7 @@ def handle_settings():
             "notebook_url": config.get("notebook_url"),
             "ocr_lang": config.get("ocr_lang"),
             "output_dir": config.get("output_dir", ""),
+            "default_output_dir": get_default_output_directory(),
             "edge_background": bool(config.get("edge_background", True)),
             "desktop_shortcut_supported": shortcut_supported,
             "desktop_shortcut_exists": shortcut_exists,
@@ -2984,6 +3180,31 @@ def run_web_server():
     app.run(host="127.0.0.1", port=5000, debug=False)
 
 
+class DesktopApi:
+    def __init__(self, webview_module):
+        self.webview = webview_module
+        self.window = None
+
+    def select_output_directory(self, initial_directory=""):
+        directory = ""
+        try:
+            validated = validate_output_dir(initial_directory)
+            if validated and os.path.isdir(validated):
+                directory = validated
+        except ValueError:
+            pass
+        if not directory:
+            directory = get_default_output_directory()
+            if not os.path.isdir(directory):
+                directory = os.path.dirname(directory)
+        selected = self.window.create_file_dialog(
+            self.webview.FileDialog.FOLDER,
+            directory=directory,
+            allow_multiple=False,
+        )
+        return os.path.abspath(selected[0]) if selected else ""
+
+
 def run_desktop_app():
     ensure_initial_desktop_shortcut()
     initialize_queue_state()
@@ -2996,14 +3217,17 @@ def run_desktop_app():
     port = server.server_port
     Thread(target=server.serve_forever, daemon=True).start()
     try:
-        webview.create_window(
+        desktop_api = DesktopApi(webview)
+        window = webview.create_window(
             "VietSub Studio",
             f"http://127.0.0.1:{port}",
+            js_api=desktop_api,
             width=1320,
             height=880,
             min_size=(960, 680),
             background_color="#f5f1e8",
         )
+        desktop_api.window = window
         webview.start(
             gui="edgechromium",
             debug=False,

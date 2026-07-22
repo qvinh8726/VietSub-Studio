@@ -70,6 +70,45 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.validate_output_dir("relative-folder")
 
+    def test_default_output_directory_is_independent_from_douzy(self):
+        with patch.object(app, "get_documents_directory", return_value=r"C:\Users\Test\Documents"):
+            self.assertEqual(
+                app.get_default_output_directory(),
+                os.path.abspath(r"C:\Users\Test\Documents\VietSub Studio"),
+            )
+
+    def test_desktop_folder_picker_returns_the_selected_directory(self):
+        class FakeWebview:
+            class FileDialog:
+                FOLDER = 20
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            api = app.DesktopApi(FakeWebview)
+            api.window = Mock()
+            api.window.create_file_dialog.return_value = (temporary_dir,)
+
+            selected = api.select_output_directory(temporary_dir)
+
+            self.assertEqual(selected, os.path.abspath(temporary_dir))
+            api.window.create_file_dialog.assert_called_once_with(
+                20,
+                directory=os.path.abspath(temporary_dir),
+                allow_multiple=False,
+            )
+
+    def test_only_fresh_douzy_downloads_are_moved(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            download_root = Path(temporary_dir) / "douzy"
+            source_folder = download_root / "video-id"
+            source_folder.mkdir(parents=True)
+            source = source_folder / "video-id.mp4"
+            source.write_bytes(b"video")
+
+            with patch.object(app, "get_douzy_download_dir", return_value=str(download_root)):
+                self.assertTrue(app.should_move_douzy_source(str(source)))
+                (source_folder / "project.json").write_text("{}", encoding="utf-8")
+                self.assertFalse(app.should_move_douzy_source(str(source)))
+
     def test_project_bundle_uses_synchronized_unique_names(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
@@ -90,21 +129,27 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(Path(first["video"]).read_bytes(), b"video-data")
             self.assertEqual(second["project_name"], "Video demo (2)")
 
-    def test_douyin_project_reuses_downloaded_video_and_keeps_thumbnail(self):
+    def test_douyin_project_moves_all_downloaded_assets_after_translation(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
-            source = directory / "cached.mp4"
-            thumbnail = directory / "cached_cover.jpg"
+            source_folder = directory / "cached"
+            source_folder.mkdir()
+            source = source_folder / "cached.mp4"
+            thumbnail = source_folder / "cached_cover.jpg"
+            metadata = source_folder / "cached_data.json"
+            music = source_folder / "cached_music.mp3"
             output = directory / "exports"
             source.write_bytes(b"video-data")
             thumbnail.write_bytes(b"\xff\xd8\xffthumbnail")
+            metadata.write_text('{"id":"123"}', encoding="utf-8")
+            music.write_bytes(b"music-data")
 
             project = app.prepare_project_files(
                 str(source),
                 "Video demo",
                 "123",
                 output_dir=str(output),
-                reuse_source_video=True,
+                defer_video_move=True,
                 include_thumbnail=True,
             )
 
@@ -112,6 +157,19 @@ class ValidationTests(unittest.TestCase):
             self.assertFalse((Path(project["project_dir"]) / "Video demo.mp4").exists())
             self.assertEqual(Path(project["thumbnail"]).name, "Video demo.thumbnail.jpg")
             self.assertEqual(Path(project["thumbnail"]).read_bytes(), thumbnail.read_bytes())
+
+            with (
+                patch.object(app, "DOUZY_DB", str(directory / "missing.db")),
+                patch.object(app, "replace_source_video_references"),
+            ):
+                app.finalize_project_assets(project, "123")
+
+            self.assertEqual(Path(project["video"]).name, "Video demo.mp4")
+            self.assertEqual(Path(project["video"]).read_bytes(), b"video-data")
+            self.assertEqual(Path(project["thumbnail"]).name, "Video demo.thumbnail.jpg")
+            self.assertEqual((Path(project["project_dir"]) / "Video demo.data.json").read_text(encoding="utf-8"), '{"id":"123"}')
+            self.assertEqual((Path(project["project_dir"]) / "Video demo.music.mp3").read_bytes(), b"music-data")
+            self.assertFalse(source_folder.exists())
 
     def test_thumbnail_download_validates_host_size_and_image_bytes(self):
         class FakeResponse:
@@ -305,6 +363,38 @@ class ValidationTests(unittest.TestCase):
 
 
 class DownloadLookupTests(unittest.TestCase):
+    def test_updates_douzy_history_after_moving_the_video(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            database = directory / "douzy.db"
+            destination = directory / "project.mp4"
+            destination.write_bytes(b"video")
+
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "CREATE TABLE aweme (id INTEGER PRIMARY KEY, aweme_id TEXT, download_time INTEGER, file_path TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO aweme (aweme_id, download_time, file_path) VALUES (?, ?, ?)",
+                    ("target", 101, "old-folder"),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with patch.object(app, "DOUZY_DB", str(database)):
+                app.update_douzy_video_path("target", str(destination))
+
+            connection = sqlite3.connect(database)
+            try:
+                saved_path = connection.execute(
+                    "SELECT file_path FROM aweme WHERE aweme_id = ?", ("target",)
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(saved_path, str(destination))
+
     def test_looks_up_the_requested_video_id_only(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
@@ -984,7 +1074,7 @@ class ApiTests(unittest.TestCase):
                 "123",
                 video_title="Test video",
                 output_dir="",
-                reuse_source_video=True,
+                defer_video_move=False,
                 include_thumbnail=True,
             )
             run_ocr.assert_called_once_with(
