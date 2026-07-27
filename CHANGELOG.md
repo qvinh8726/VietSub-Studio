@@ -4,6 +4,13 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-07-27
+
+### Fixed
+
+- Restored the native desktop window as the default launcher. The pywebview bridge now keeps its WebView module and window references private, preventing recursive bridge inspection from deadlocking the WebView2 UI thread.
+- The browser launcher remains available explicitly with `--browser` as a diagnostic fallback.
+
 ## [1.5.1] - 2026-07-27
 
 ### Fixed

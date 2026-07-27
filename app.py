@@ -62,7 +62,7 @@ MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -3451,8 +3451,10 @@ def run_browser_app():
 
 class DesktopApi:
     def __init__(self, webview_module):
-        self.webview = webview_module
-        self.window = None
+        # pywebview inspects public bridge attributes recursively. Keeping the
+        # module and window private prevents WebView2 startup from deadlocking.
+        self._webview = webview_module
+        self._window = None
 
     def select_output_directory(self, initial_directory=""):
         directory = ""
@@ -3466,8 +3468,8 @@ class DesktopApi:
             directory = get_default_output_directory()
             if not os.path.isdir(directory):
                 directory = os.path.dirname(directory)
-        selected = self.window.create_file_dialog(
-            self.webview.FileDialog.FOLDER,
+        selected = self._window.create_file_dialog(
+            self._webview.FileDialog.FOLDER,
             directory=directory,
             allow_multiple=False,
         )
@@ -3496,7 +3498,7 @@ def run_desktop_app():
             min_size=(960, 680),
             background_color="#f5f1e8",
         )
-        desktop_api.window = window
+        desktop_api._window = window
         webview.start(
             gui="edgechromium",
             debug=False,
@@ -3509,10 +3511,7 @@ def run_desktop_app():
 if __name__ == '__main__':
     if "--server" in sys.argv:
         run_web_server()
-    elif "--desktop" in sys.argv:
-        run_desktop_app()
-    else:
-        # WebView2 can hang before rendering on some Windows/Edge runtime
-        # combinations. The browser UI uses the same local Flask API and avoids
-        # blocking the app at native WebView initialization.
+    elif "--browser" in sys.argv:
         run_browser_app()
+    else:
+        run_desktop_app()
