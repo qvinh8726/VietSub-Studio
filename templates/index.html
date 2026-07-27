@@ -422,6 +422,27 @@
                         <button id="create-shortcut-btn" class="btn-secondary" type="button">Tạo shortcut ngoài Desktop</button>
                         <small id="shortcut-help">Bản EXE sẽ tự tạo shortcut ở lần mở đầu tiên; có thể bấm đây để tạo lại.</small>
                     </div>
+                    <div class="setting-field">
+                        <label for="setting-ocr-speed">Tốc độ OCR</label>
+                        <select id="setting-ocr-speed" class="select-input">
+                            <option value="auto">Theo cấu hình VideOCR (mặc định)</option>
+                            <option value="fast">Nhanh — model mobile, quét lẹ hơn</option>
+                            <option value="accurate">Chính xác — model server, chậm hơn</option>
+                        </select>
+                        <small>Model nhanh phù hợp chữ phụ đề to, rõ nét như video Douyin.</small>
+                    </div>
+                    <div class="setting-field">
+                        <label for="setting-frames-skip">Bỏ khung hình khi OCR</label>
+                        <select id="setting-frames-skip" class="select-input">
+                            <option value="">Theo cấu hình VideOCR (mặc định)</option>
+                            <option value="0">0 — quét mọi khung hình</option>
+                            <option value="1">1 khung</option>
+                            <option value="2">2 khung</option>
+                            <option value="3">3 khung</option>
+                            <option value="5">5 khung</option>
+                        </select>
+                        <small>Bỏ nhiều khung giúp quét nhanh hơn; phụ đề hiện quá ngắn có thể bị sót.</small>
+                    </div>
                     <div class="setting-field"><label for="setting-crop">Crop OCR mặc định</label><input id="setting-crop" class="text-input readonly" readonly></div>
                     <div class="setting-field"><label for="setting-download">Thư mục Douzy</label><input id="setting-download" class="text-input readonly" readonly></div>
                     <div class="diagnostics">
@@ -445,6 +466,8 @@
         let crop = { crop_x: 0, crop_y: 0, crop_width: 1, crop_height: 1 };
         let dragState = null;
         let queueJobs = [];
+        let queueLoadInFlight = false;
+        let lastQueueSignature = '';
         let displayedLogCount = 0;
         let progressJobId = '';
         let resultOpenPath = '';
@@ -731,8 +754,21 @@
         }
 
         async function loadQueue() {
-            try { const data = await fetchJson('/api/queue'); queueJobs = data.jobs || []; renderQueue(); await pollProgress(); }
+            if (queueLoadInFlight) return;
+            queueLoadInFlight = true;
+            try {
+                const [data] = await Promise.all([fetchJson('/api/queue'), pollProgress()]);
+                queueJobs = data.jobs || [];
+                const signature = JSON.stringify(queueJobs);
+                if (signature !== lastQueueSignature) { lastQueueSignature = signature; renderQueue(); }
+            }
             catch (error) { console.warn(error); }
+            finally { queueLoadInFlight = false; }
+        }
+
+        function scheduleQueuePolling() {
+            const busy = queueJobs.some(job => job.status === 'running' || job.status === 'queued');
+            setTimeout(async () => { await loadQueue(); scheduleQueuePolling(); }, busy ? 1000 : 4000);
         }
 
         async function startQueue() {
@@ -831,9 +867,12 @@
                 const data = await fetchJson('/api/settings');
                 byId('setting-notebook').value = data.notebook_url || ''; byId('setting-output').value = data.output_dir || '';
                 byId('setting-output').placeholder = data.default_output_dir || 'Documents\\VietSub Studio';
-                byId('output-help').textContent = `Để trống sẽ lưu tại ${data.default_output_dir}. Mỗi project có folder riêng chứa đủ video, SRT và thumbnail.`;
+                const syncWarning = data.output_dir_synced ? ' ⚠ Thư mục này đang được OneDrive đồng bộ: mỗi video xuất sẽ bị upload lên cloud và có thể chậm hơn — cân nhắc chọn thư mục ngoài OneDrive.' : '';
+                byId('output-help').textContent = `Để trống sẽ lưu tại ${data.default_output_dir}. Mỗi project có folder riêng chứa đủ video, SRT và thumbnail.${syncWarning}`;
                 byId('setting-crop').value = data.crop_coords ? JSON.stringify(data.crop_coords) : 'Toàn khung hình';
                 byId('setting-download').value = data.download_dir || 'Chưa xác định'; byId('ocr-lang').value = data.ocr_lang || 'ch';
+                byId('setting-ocr-speed').value = data.ocr_model_mode || 'auto';
+                byId('setting-frames-skip').value = data.ocr_frames_to_skip == null ? '' : String(data.ocr_frames_to_skip);
                 byId('setting-edge-background').checked = data.edge_background !== false;
                 const shortcutButton = byId('create-shortcut-btn');
                 shortcutButton.disabled = !data.desktop_shortcut_supported;
@@ -852,11 +891,17 @@
             } catch (error) { showToast(error.message, 'error'); }
         }
 
-        async function saveSettings() {
+        let saveSettingsTimer = null;
+        async function saveSettingsNow() {
             try {
-                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, edge_background:byId('setting-edge-background').checked})});
+                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, ocr_model_mode:byId('setting-ocr-speed').value, ocr_frames_to_skip:byId('setting-frames-skip').value === '' ? null : Number(byId('setting-frames-skip').value), edge_background:byId('setting-edge-background').checked})});
                 showToast('Đã lưu thiết lập.');
             } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        function saveSettings() {
+            clearTimeout(saveSettingsTimer);
+            saveSettingsTimer = setTimeout(saveSettingsNow, 250);
         }
 
         async function chooseOutputDirectory() {
@@ -868,7 +913,8 @@
                 const selected = await window.pywebview.api.select_output_directory(byId('setting-output').value.trim());
                 if (!selected) return;
                 byId('setting-output').value = selected;
-                await saveSettings();
+                clearTimeout(saveSettingsTimer);
+                await saveSettingsNow();
             } catch (error) { showToast(error.message || String(error), 'error'); }
         }
 
@@ -892,7 +938,7 @@
 
         function bootApp() {
             loadSettings(); loadHealth(); loadHistory(); loadQueue(); checkEdge(); checkForUpdate();
-            setInterval(loadQueue, 1100); setInterval(checkEdge, 5000);
+            scheduleQueuePolling(); setInterval(checkEdge, 5000);
         }
 
         window.addEventListener('load', () => {
@@ -916,6 +962,7 @@
             byId('start-queue-btn').onclick=startQueue; byId('cancel-btn').onclick=cancelJob; byId('clear-finished-btn').onclick=clearFinished;
             byId('open-result-btn').onclick=openResult;
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
+            byId('setting-ocr-speed').addEventListener('change', saveSettings); byId('setting-frames-skip').addEventListener('change', saveSettings);
             byId('choose-output-btn').onclick=chooseOutputDirectory;
             byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;
             byId('create-shortcut-btn').onclick=createDesktopShortcut;

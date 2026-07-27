@@ -4,6 +4,28 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-27
+
+### Added
+
+- OCR speed options in Settings: choose the fast mobile model or the accurate server model, and skip frames between OCR scans to shorten the longest step of each job.
+- The next queued Douyin video now downloads in the background while the current job is in its OCR or translation step, so sequential queue runs no longer pay the download time between jobs. The prefetch stays invisible: it does not write to the running job's console, is not affected by cancelling the running job, and never runs two Douzy sidecars at once.
+
+### Fixed
+
+- Rapid consecutive settings changes no longer overwrite each other; saves are debounced in the interface and serialized on the server.
+- Invalid saved OCR options now fall back safely, malformed API values return validation errors instead of server errors, and queue handoff waits for background prefetch to stop before another Douzy download starts.
+
+### Changed
+
+- Local MP4 uploads are hard-linked into the project folder instantly instead of being copied a second time, falling back to a normal copy when the destination is on another drive.
+- Settings now warn when the output directory is synced by OneDrive, since cloud sync slows down exporting and re-reading large videos.
+- The app window opens faster: browser automation libraries load on first use instead of at startup.
+- Queue and progress polling now reuse the validation result cached when a job succeeds instead of re-reading and re-parsing every SRT file on each poll, and job serialization moved outside the queue lock so the worker is never blocked by UI polling.
+- The Gemini translation step starts watching for the reply immediately and accepts it after ~3 seconds of stable content once generation stops, removing about 12 seconds of fixed waiting per job.
+- The interface only rebuilds the queue list when its data actually changes, skips overlapping poll requests, and polls every second while jobs are active but every 4 seconds when idle.
+- Short share links resolve as soon as the redirect lands instead of waiting a fixed 2.5 seconds, Edge debug startup is detected within 0.25 seconds, and Douzy download completion is detected within 1 second.
+
 ## [1.4.0] - 2026-07-22
 
 ### Added

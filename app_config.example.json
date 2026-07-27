@@ -1,6 +1,8 @@
 {
   "notebook_url": "",
   "ocr_lang": "ch",
+  "ocr_model_mode": "auto",
+  "ocr_frames_to_skip": null,
   "output_dir": "",
   "crop_coords": null,
   "edge_background": true,
