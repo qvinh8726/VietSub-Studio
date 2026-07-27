@@ -31,6 +31,9 @@ dist_*/
 release/
 VietSub Studio/
 
+# Series Studio is maintained as a separate standalone project
+/Series Studio/
+
 # Logs and temporary files
 *.log
 *.tmp
