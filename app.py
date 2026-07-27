@@ -62,7 +62,7 @@ MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -3429,6 +3429,26 @@ def run_web_server():
     app.run(host="127.0.0.1", port=5000, debug=False)
 
 
+def run_browser_app():
+    """Serve the UI in the user's browser when embedded WebView2 is unavailable."""
+    initialize_queue_state()
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    port = server.server_port
+    url = f"http://127.0.0.1:{port}"
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    log_to_app(f"Mở giao diện trên trình duyệt tại {url}...")
+    try:
+        if not webbrowser.open(url, new=2):
+            raise RuntimeError("Không thể mở trình duyệt mặc định.")
+        # Keep the local service alive while the browser window is in use.
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+
+
 class DesktopApi:
     def __init__(self, webview_module):
         self.webview = webview_module
@@ -3489,5 +3509,10 @@ def run_desktop_app():
 if __name__ == '__main__':
     if "--server" in sys.argv:
         run_web_server()
-    else:
+    elif "--desktop" in sys.argv:
         run_desktop_app()
+    else:
+        # WebView2 can hang before rendering on some Windows/Edge runtime
+        # combinations. The browser UI uses the same local Flask API and avoids
+        # blocking the app at native WebView initialization.
+        run_browser_app()
