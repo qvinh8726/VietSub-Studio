@@ -4,6 +4,12 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-27
+
+### Fixed
+
+- The portable app now opens the local interface in the default browser by default when Windows WebView2 hangs during native window startup. The embedded WebView2 mode remains available with `--desktop` for systems where it works.
+
 ## [1.5.0] - 2026-07-27
 
 ### Added
