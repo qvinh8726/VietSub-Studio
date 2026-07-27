@@ -10,7 +10,7 @@ python -m pip install -r requirements-build.txt
 if errorlevel 1 goto :error
 
 echo Building VietSub Studio...
-python -m PyInstaller --noconfirm --clean --windowed --onedir --name "VietSub Studio" --icon "avatar.ico" --add-data "templates;templates" --add-data "avatar.jpg;." --add-data "avatar.ico;." --collect-all webview app.py
+python -m PyInstaller --noconfirm --clean "VietSub Studio.spec"
 if errorlevel 1 goto :error
 
 echo.

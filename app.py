@@ -1,9 +1,11 @@
 import os
 import sys
 import re
+import copy
 import time
 import uuid
 import sqlite3
+import socket
 import ast
 import shutil
 import subprocess
@@ -13,9 +15,10 @@ import urllib.request
 import json
 import webbrowser
 import hashlib
+import secrets
 import tempfile
 import zipfile
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread, local
 from urllib.parse import urlparse
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
@@ -28,7 +31,11 @@ if getattr(sys, "frozen", False):
     sys.stdout = open(os.devnull, "w", encoding="utf-8")
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
 ICON_PATH = os.path.join(RESOURCE_DIR, "avatar.ico")
-app = Flask(__name__, template_folder=os.path.join(RESOURCE_DIR, "templates"))
+app = Flask(
+    __name__,
+    template_folder=os.path.join(RESOURCE_DIR, "templates"),
+    static_folder=None,
+)
 
 # Paths
 APPDATA = os.environ.get("APPDATA")
@@ -50,18 +57,25 @@ CONFIG_DIR = (
 CONFIG_PATH = os.path.join(CONFIG_DIR, "app_config.json")
 QUEUE_PATH = os.path.join(CONFIG_DIR, "workflow_queue.json")
 LOCAL_VIDEO_DIR = os.path.join(CONFIG_DIR, "local_videos")
+INSTANCE_LOCK_PATH = os.path.join(CONFIG_DIR, "instance.lock")
+LOG_PATH = os.path.join(CONFIG_DIR, "vietsub-studio.log")
 
 SUPPORTED_OCR_LANGS = {"ch", "en", "ja", "ko", "vi"}
 SUPPORTED_OCR_MODEL_MODES = {"auto", "fast", "accurate"}
 MAX_OCR_FRAMES_TO_SKIP = 10
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
 MAX_LOG_LINES = 2_000
+MAX_LOG_FILE_BYTES = 2 * 1024 * 1024
+MAX_LOG_BACKUPS = 2
 MAX_PROJECT_NAME_LENGTH = 100
 PREVIEW_TTL_SECONDS = 6 * 60 * 60
+QUEUE_SCHEMA_VERSION = 2
 MAX_PERSISTED_JOBS = 500
+MAX_IN_MEMORY_JOBS = MAX_PERSISTED_JOBS
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
+MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
 APP_VERSION = "1.5.2"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
@@ -73,6 +87,9 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
+API_TOKEN = secrets.token_urlsafe(32)
+API_TOKEN_HEADER = "X-VietSub-Token"
+app.config["MAX_CONTENT_LENGTH"] = MAX_LOCAL_VIDEO_BYTES + 16 * 1024 * 1024
 
 # Global status state
 progress_status = {
@@ -106,15 +123,23 @@ workflow_jobs = []
 queue_worker_thread = None
 current_job_id = ""
 queue_state_initialized = False
+queue_revision = 0
 update_cache_lock = Lock()
+update_install_lock = Lock()
+operation_admission_lock = Lock()
+shutdown_event = Event()
 update_cache = {"checked_at": 0.0, "status": None}
 config_write_lock = Lock()
+log_file_lock = Lock()
 # Per-thread workflow context: the prefetch thread runs download helpers with its own
 # cancel event, without touching the visible job console or the cancellable process list.
 workflow_context = local()
 prefetch_thread = None
 prefetch_cancel_event = Event()
 prefetch_job_id = ""
+instance_lock_handle = None
+edge_debug_port = 0
+edge_debug_port_lock = Lock()
 
 
 class WorkflowCancelled(RuntimeError):
@@ -220,7 +245,7 @@ def get_update_status(force=False):
             "update_available": is_newer_release(latest_version),
             "release_name": str(payload.get("name") or f"VietSub Studio v{latest_version}"),
             "release_url": release_url,
-            "automatic_update_supported": is_packaged_app() and install_assets_available,
+            "automatic_update_supported": supports_in_place_update() and install_assets_available,
         }
         update_cache.update({"checked_at": now, "status": status})
         return dict(status)
@@ -262,7 +287,8 @@ def update_progress(*, status=None, step=None, error=None, result=None, result_r
             progress_status["result_ready"] = bool(result_ready)
     if current_job_id:
         with queue_state_lock:
-            for job in workflow_jobs:
+            candidate_jobs = copy.deepcopy(workflow_jobs)
+            for job in candidate_jobs:
                 if job["id"] != current_job_id:
                     continue
                 if status is not None:
@@ -275,7 +301,7 @@ def update_progress(*, status=None, step=None, error=None, result=None, result_r
                     job["result"].update(result)
                 if result_ready is not None:
                     job["result_ready"] = bool(result_ready)
-                persist_queue_state_locked()
+                commit_queue_jobs_locked(candidate_jobs)
                 break
 
 
@@ -483,6 +509,73 @@ def request_workflow_cancel():
             pass
     return True
 
+def acquire_instance_lock():
+    global instance_lock_handle
+    if instance_lock_handle is not None:
+        return True
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    handle = open(INSTANCE_LOCK_PATH, "a+b")
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()).encode("ascii"))
+        handle.flush()
+        instance_lock_handle = handle
+        return True
+    except (OSError, BlockingIOError):
+        handle.close()
+        return False
+
+
+def release_instance_lock():
+    global instance_lock_handle
+    handle = instance_lock_handle
+    if handle is None:
+        return
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        handle.close()
+        instance_lock_handle = None
+
+
+def request_app_shutdown():
+    if shutdown_event.is_set():
+        return
+    shutdown_event.set()
+    cancel_event.set()
+    prefetch_cancel_event.set()
+    with active_process_lock:
+        processes = list(active_processes.items())
+    for name, proc in processes:
+        try:
+            stop_process(proc, name)
+        except Exception:
+            pass
+    thread = prefetch_thread
+    if thread and thread.is_alive() and thread is not getattr(workflow_context, "thread", None):
+        thread.join(timeout=5)
+
+
 def load_app_config():
     default_config = {
         "notebook_url": "",
@@ -497,9 +590,12 @@ def load_app_config():
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return {**default_config, **json.load(f)}
-        except Exception:
-            pass
+                saved_config = json.load(f)
+            if not isinstance(saved_config, dict):
+                raise ValueError("Cấu hình phải là một JSON object.")
+            return {**default_config, **saved_config}
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            quarantine_corrupt_file(CONFIG_PATH)
     return default_config
 
 def save_app_config(config):
@@ -516,6 +612,13 @@ def save_app_config(config):
 
 def is_packaged_app():
     return os.name == "nt" and bool(getattr(sys, "frozen", False))
+
+
+def supports_in_place_update():
+    if not is_packaged_app():
+        return False
+    executable_dir = os.path.dirname(os.path.abspath(sys.executable))
+    return not os.path.isdir(os.path.join(executable_dir, "_internal"))
 
 
 def get_windows_known_folder(csidl, label):
@@ -670,8 +773,8 @@ def download_release_asset(url, destination, max_bytes):
 
 
 def prepare_update_executable(payload):
-    if not is_packaged_app():
-        raise RuntimeError("Tự cập nhật chỉ hỗ trợ bản VietSub Studio EXE.")
+    if not supports_in_place_update():
+        raise RuntimeError("Tự cập nhật tại chỗ chỉ hỗ trợ bản portable one-file.")
 
     latest_version = str(payload.get("tag_name", "")).strip().lstrip("v")
     parse_release_version(latest_version)
@@ -774,12 +877,22 @@ Wait-Process -Id $appPid -ErrorAction SilentlyContinue
 $replaced = $false
 for ($attempt = 0; $attempt -lt 40; $attempt++) {
     try {
+        if (-not (Test-Path -LiteralPath $target)) {
+            if (Test-Path -LiteralPath $backup) {
+                Move-Item -LiteralPath $backup -Destination $target -Force
+            } else {
+                throw 'Không còn file ứng dụng gốc để thay thế.'
+            }
+        }
         if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
         Move-Item -LiteralPath $target -Destination $backup -Force
         try {
             Move-Item -LiteralPath $staged -Destination $target -Force
         } catch {
-            Move-Item -LiteralPath $backup -Destination $target -Force
+            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+            if (Test-Path -LiteralPath $backup) {
+                Move-Item -LiteralPath $backup -Destination $target -Force
+            }
             throw
         }
         $replaced = $true
@@ -789,13 +902,18 @@ for ($attempt = 0; $attempt -lt 40; $attempt++) {
     }
 }
 if (-not $replaced) {
+    if (-not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath $backup)) {
+        Move-Item -LiteralPath $backup -Destination $target -Force
+    }
     if (Test-Path -LiteralPath $target) {
         Start-Process -FilePath $target -WorkingDirectory $targetDir
     }
     exit 1
 }
 try {
-    Start-Process -FilePath $target -WorkingDirectory $targetDir
+    $newProcess = Start-Process -FilePath $target -WorkingDirectory $targetDir -PassThru
+    Start-Sleep -Seconds 8
+    if ($newProcess.HasExited) { throw 'Bản cập nhật thoát trước khi khởi động ổn định.' }
 } catch {
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
     if (Test-Path -LiteralPath $backup) {
@@ -804,7 +922,6 @@ try {
     }
     exit 1
 }
-Start-Sleep -Seconds 2
 if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
 if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force }
 """
@@ -849,10 +966,31 @@ def get_douzy_download_dir():
         pass
     return ""
 
+def write_durable_log(message):
+    try:
+        with log_file_lock:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            if os.path.isfile(LOG_PATH) and os.path.getsize(LOG_PATH) >= MAX_LOG_FILE_BYTES:
+                oldest = f"{LOG_PATH}.{MAX_LOG_BACKUPS}"
+                if os.path.exists(oldest):
+                    os.remove(oldest)
+                for index in range(MAX_LOG_BACKUPS - 1, 0, -1):
+                    source = f"{LOG_PATH}.{index}"
+                    if os.path.exists(source):
+                        os.replace(source, f"{LOG_PATH}.{index + 1}")
+                os.replace(LOG_PATH, f"{LOG_PATH}.1")
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(LOG_PATH, "a", encoding="utf-8") as handle:
+                handle.write(f"{timestamp} {message}\n")
+    except OSError:
+        pass
+
+
 def log_to_app(msg, log_type="system"):
     quiet = getattr(workflow_context, "quiet", False)
     prefix = "[PREFETCH] " if quiet else ""
     console_message = f"{prefix}[{log_type.upper()}] {msg}"
+    write_durable_log(console_message)
     if sys.stdout is not None:
         try:
             print(console_message, flush=True)
@@ -878,13 +1016,40 @@ def log_to_app(msg, log_type="system"):
             del progress_status["logs"][:overflow]
             progress_status["log_base_index"] += overflow
 
+def get_edge_debug_port():
+    global edge_debug_port
+    with edge_debug_port_lock:
+        if edge_debug_port:
+            return edge_debug_port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            edge_debug_port = probe.getsockname()[1]
+        return edge_debug_port
+
+
+def edge_debug_url(path=""):
+    return f"http://127.0.0.1:{get_edge_debug_port()}{path}"
+
+
 def check_edge_status():
     try:
-        req = urllib.request.Request("http://127.0.0.1:9222/json/version")
+        req = urllib.request.Request(edge_debug_url("/json/version"))
         with urllib.request.urlopen(req, timeout=1.5) as response:
             return True
     except Exception:
         return False
+
+def resolve_edge_executable():
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        shutil.which("msedge.exe"),
+    ]
+    return next(
+        (os.path.abspath(candidate) for candidate in candidates if candidate and os.path.isfile(candidate)),
+        "",
+    )
+
 
 def ensure_edge_running(notebook_url, background=None):
     check_cancel_requested()
@@ -896,13 +1061,15 @@ def ensure_edge_running(notebook_url, background=None):
         background = bool(load_app_config().get("edge_background", True))
 
     log_to_app("Trình duyệt Edge debug chưa mở. Đang tự động kích hoạt...")
-    edge_bin = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-    if not os.path.exists(edge_bin):
-        edge_bin = "msedge.exe"
+    edge_bin = resolve_edge_executable()
+    if not edge_bin:
+        log_to_app("Không tìm thấy msedge.exe ở vị trí tin cậy.", "error")
+        return False
 
+    debug_port = get_edge_debug_port()
     cmd = [
         edge_bin,
-        "--remote-debugging-port=9222",
+        f"--remote-debugging-port={debug_port}",
         "--remote-debugging-address=127.0.0.1",
         f"--user-data-dir={USER_DATA_DIR_DEBUG}",
     ]
@@ -924,7 +1091,7 @@ def ensure_edge_running(notebook_url, background=None):
             if check_edge_status():
                 log_to_app("Kích hoạt Edge thành công và đã kết nối cổng debug.")
                 return True
-        raise RuntimeError("Trình duyệt đã bật nhưng cổng 9222 không phản hồi.")
+        raise RuntimeError(f"Trình duyệt đã bật nhưng cổng debug {debug_port} không phản hồi.")
     except WorkflowCancelled:
         raise
     except Exception as e:
@@ -1023,7 +1190,7 @@ def show_edge_for_login(notebook_url):
     if not ensure_edge_running(notebook_url, background=False):
         raise RuntimeError("Không thể mở Edge để đăng nhập.")
     with get_sync_playwright()() as playwright:
-        browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
         if not browser.contexts:
             raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
         context = browser.contexts[0]
@@ -1040,7 +1207,17 @@ def show_edge_for_login(notebook_url):
 def queue_process_output(stream, output_queue):
     try:
         for line in iter(stream.readline, ""):
-            output_queue.put(line)
+            try:
+                output_queue.put(line, timeout=0.1)
+            except Full:
+                try:
+                    output_queue.get_nowait()
+                except Empty:
+                    pass
+                try:
+                    output_queue.put_nowait(line)
+                except Full:
+                    pass
     finally:
         stream.close()
 
@@ -1072,33 +1249,39 @@ def start_douzy_sidecar():
     )
     register_active_process("sidecar Douzy", proc)
 
-    output_queue = Queue()
+    output_queue = Queue(maxsize=1_000)
     Thread(target=queue_process_output, args=(proc.stdout, output_queue), daemon=True).start()
     recent_output = []
     deadline = time.monotonic() + 15
     port = None
-    while time.monotonic() < deadline:
-        check_cancel_requested()
-        try:
-            line = output_queue.get(timeout=min(0.25, deadline - time.monotonic()))
-            recent_output.append(line.strip())
-            recent_output = recent_output[-20:]
-            match = re.match(r"^DOUYIN_SIDECAR_READY port=(\d+)", line.strip())
-            if match:
-                port = int(match.group(1))
-                break
-        except Empty:
-            pass
+    try:
+        while time.monotonic() < deadline:
+            check_cancel_requested()
+            try:
+                line = output_queue.get(timeout=min(0.25, deadline - time.monotonic()))
+                recent_output.append(line.strip())
+                recent_output = recent_output[-20:]
+                match = re.match(r"^DOUYIN_SIDECAR_READY port=(\d+)", line.strip())
+                if match:
+                    port = int(match.group(1))
+                    break
+            except Empty:
+                pass
 
-        if proc.poll() is not None:
-            unregister_active_process("sidecar Douzy", proc)
-            details = "\n".join(recent_output)
-            raise RuntimeError(f"Sidecar dừng đột ngột (code {proc.returncode}). {details}")
+            if proc.poll() is not None:
+                details = "\n".join(recent_output)
+                raise RuntimeError(f"Sidecar dừng đột ngột (code {proc.returncode}). {details}")
 
-    if port is None:
-        stop_process(proc, "sidecar Douzy")
+        if port is None:
+            raise TimeoutError("Sidecar Douzy khởi động quá thời gian chờ (15s).")
+    except BaseException:
+        if proc.poll() is None:
+            try:
+                stop_process(proc, "sidecar Douzy")
+            except Exception:
+                pass
         unregister_active_process("sidecar Douzy", proc)
-        raise TimeoutError("Sidecar Douzy khởi động quá thời gian chờ (15s).")
+        raise
 
     log_to_app(f"Sidecar Douzy đã chạy trên port {port} (PID: {proc.pid})")
     return proc, port, token
@@ -1209,8 +1392,19 @@ def resolve_video_file_path(stored_path):
             for name in os.listdir(stored_path)
             if name.lower().endswith(".mp4") and os.path.isfile(os.path.join(stored_path, name))
         ]
-        if mp4_files:
-            return max(mp4_files, key=os.path.getmtime)
+        if len(mp4_files) == 1:
+            return mp4_files[0]
+        matching = [
+            path for path in mp4_files
+            if os.path.splitext(os.path.basename(path))[0] == folder_name
+            or os.path.splitext(os.path.basename(path))[0].startswith(
+                tuple(f"{folder_name}{separator}" for separator in (".", "_", "-"))
+            )
+        ]
+        if len(matching) == 1:
+            return matching[0]
+        if len(matching) > 1:
+            raise FileNotFoundError("Douzy trả về nhiều file MP4 không thể xác định duy nhất.")
     return expected_file
 
 
@@ -1334,13 +1528,25 @@ def download_thumbnail(url, destination_without_extension):
     return destination
 
 
+def validate_local_thumbnail_file(path):
+    size = os.path.getsize(path)
+    if size <= 0 or size > MAX_THUMBNAIL_BYTES:
+        raise ValueError("Thumbnail local trống hoặc vượt quá giới hạn 20 MB.")
+    with open(path, "rb") as handle:
+        header = handle.read(16)
+    detected_extension = thumbnail_extension(header)
+    if not detected_extension:
+        raise ValueError("Thumbnail local không phải ảnh JPG, PNG hoặc WebP hợp lệ.")
+    return detected_extension
+
+
 def prepare_project_thumbnail(source_video, video_id, project_dir, project_name):
     source_thumbnail = find_douzy_thumbnail_file(source_video)
     destination_base = os.path.join(project_dir, project_name + ".thumbnail")
     try:
         if source_thumbnail:
-            extension = os.path.splitext(source_thumbnail)[1].lower()
-            destination = destination_base + (".jpg" if extension == ".jpeg" else extension)
+            detected_extension = validate_local_thumbnail_file(source_thumbnail)
+            destination = destination_base + detected_extension
             shutil.copy2(source_thumbnail, destination)
             log_to_app(f"Đã thêm thumbnail vào bộ kết quả: {destination}")
             return destination
@@ -1437,6 +1643,24 @@ def move_file_safely(source_path, destination_path):
     return destination_path
 
 
+def files_have_same_content(first_path, second_path):
+    if os.path.getsize(first_path) != os.path.getsize(second_path):
+        return False
+    first_hash = hashlib.sha256()
+    second_hash = hashlib.sha256()
+    with open(first_path, "rb") as first, open(second_path, "rb") as second:
+        while True:
+            first_chunk = first.read(1024 * 1024)
+            second_chunk = second.read(1024 * 1024)
+            if first_chunk != second_chunk:
+                return False
+            if not first_chunk:
+                break
+            first_hash.update(first_chunk)
+            second_hash.update(second_chunk)
+    return first_hash.digest() == second_hash.digest()
+
+
 def path_is_within(path, directory):
     if not path or not directory:
         return False
@@ -1493,20 +1717,32 @@ def project_asset_destination(source_path, source_video, project):
 
 def update_douzy_video_path(video_id, destination_video):
     if not video_id or not os.path.isfile(DOUZY_DB):
-        return
+        return False
     try:
         conn = sqlite3.connect(DOUZY_DB, timeout=3)
         try:
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE aweme SET file_path = ? WHERE id = "
                 "(SELECT id FROM aweme WHERE aweme_id = ? ORDER BY download_time DESC LIMIT 1)",
                 (destination_video, video_id),
             )
             conn.commit()
+            if cursor.rowcount != 1:
+                log_to_app("Douzy không có đúng một bản ghi để cập nhật đường dẫn video.", "error")
+                return False
+            row = conn.execute(
+                "SELECT file_path FROM aweme WHERE aweme_id = ? ORDER BY download_time DESC LIMIT 1",
+                (video_id,),
+            ).fetchone()
+            updated = bool(row and os.path.normcase(os.path.abspath(row[0])) == os.path.normcase(os.path.abspath(destination_video)))
+            if not updated:
+                log_to_app("Douzy chưa xác nhận đường dẫn video mới sau khi cập nhật.", "error")
+            return updated
         finally:
             conn.close()
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, TypeError, ValueError) as error:
         log_to_app(f"Không thể cập nhật đường dẫn mới trong lịch sử Douzy: {error}", "error")
+        return False
 
 
 def replace_source_video_references(old_path, new_path):
@@ -1516,11 +1752,12 @@ def replace_source_video_references(old_path, new_path):
             if os.path.normcase(str(preview.get("source_video") or "")) == os.path.normcase(old_path):
                 preview["source_video"] = new_path
     with queue_state_lock:
-        for job in workflow_jobs:
+        candidate_jobs = copy.deepcopy(workflow_jobs)
+        for job in candidate_jobs:
             if os.path.normcase(str(job.get("source_video") or "")) == os.path.normcase(old_path):
                 job["source_video"] = new_path
         try:
-            persist_queue_state_locked()
+            commit_queue_jobs_locked(candidate_jobs)
         except OSError as error:
             log_to_app(f"Chưa thể lưu đường dẫn video mới vào hàng đợi: {error}", "error")
 
@@ -1543,24 +1780,46 @@ def finalize_project_assets(project, video_id=""):
 
     source_dir = os.path.dirname(source_video)
     source_stem = os.path.splitext(os.path.basename(source_video))[0]
-    dedicated_source_dir = os.path.basename(os.path.normpath(source_dir)) == source_stem
     candidates = []
+    source_norm = os.path.normcase(source_video)
     for name in os.listdir(source_dir):
         candidate = os.path.join(source_dir, name)
-        if os.path.normcase(candidate) == os.path.normcase(project["project_dir"]):
+        if not os.path.isfile(candidate):
             continue
+        candidate_norm = os.path.normcase(candidate)
         candidate_stem = os.path.splitext(name)[0]
-        if os.path.isfile(candidate) and (dedicated_source_dir or candidate_stem.startswith(source_stem)):
+        related_name = (
+            candidate_stem == source_stem
+            or candidate_stem.startswith(tuple(f"{source_stem}{separator}" for separator in (".", "_", "-")))
+        )
+        if candidate_norm == source_norm or related_name:
             candidates.append(candidate)
 
+    # Preflight destinations before moving anything to prevent accidental overwrite.
+    planned_destinations = {}
+    for candidate in candidates:
+        destination = os.path.abspath(project_asset_destination(candidate, source_video, project))
+        destination_key = os.path.normcase(destination)
+        previous = planned_destinations.get(destination_key)
+        if previous and os.path.normcase(previous) != os.path.normcase(candidate):
+            raise FileExistsError(f"Hai asset Douzy cùng đích: {os.path.basename(candidate)}")
+        planned_destinations[destination_key] = candidate
+        if os.path.exists(destination) and os.path.normcase(destination) != os.path.normcase(candidate):
+            if not files_have_same_content(candidate, destination):
+                raise FileExistsError(f"Đích asset đã tồn tại và khác nội dung: {destination}")
+
     # Move the large MP4 last so an ancillary-asset error leaves the retry source intact.
-    candidates.sort(key=lambda path: os.path.normcase(path) == os.path.normcase(source_video))
+    candidates.sort(key=lambda path: os.path.normcase(path) == source_norm)
     log_to_app("Đang chuyển video và asset Douzy vào thư mục dự án...")
     moved_video = ""
     for candidate in candidates:
-        destination = project_asset_destination(candidate, source_video, project)
-        moved_path = move_file_safely(candidate, destination)
-        if os.path.normcase(candidate) == os.path.normcase(source_video):
+        destination = os.path.abspath(project_asset_destination(candidate, source_video, project))
+        if os.path.exists(destination) and os.path.normcase(destination) != os.path.normcase(candidate):
+            os.remove(candidate)
+            moved_path = destination
+        else:
+            moved_path = move_file_safely(candidate, destination)
+        if os.path.normcase(candidate) == source_norm:
             moved_video = moved_path
         elif ".thumbnail" in os.path.basename(moved_path).lower():
             project["thumbnail"] = moved_path
@@ -1705,9 +1964,20 @@ def get_saved_crop_coords():
             pass
     return get_videocr_crop_coords()
 
+def resolve_ffprobe_executable():
+    candidate = shutil.which("ffprobe")
+    if not candidate:
+        return ""
+    candidate = os.path.abspath(candidate)
+    return candidate if os.path.isfile(candidate) else ""
+
+
 def get_video_resolution(video_path):
+    ffprobe_path = resolve_ffprobe_executable()
+    if not ffprobe_path:
+        return None
     cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        ffprobe_path, "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0",
         video_path
     ]
@@ -1741,6 +2011,9 @@ def run_videocr(
     video_name_no_ext = os.path.splitext(os.path.basename(video_path))[0]
     output_srt = output_srt or os.path.join(video_dir, video_name_no_ext + ".raw.srt")
     os.makedirs(os.path.dirname(os.path.abspath(output_srt)), exist_ok=True)
+    if os.path.exists(output_srt):
+        os.remove(output_srt)
+    process_started_at = time.time()
     cmd += ["--output", output_srt]
     cmd += ["--lang", ocr_lang]
 
@@ -1810,7 +2083,7 @@ def run_videocr(
     )
     register_active_process("VideOCR", proc)
 
-    output_queue = Queue()
+    output_queue = Queue(maxsize=1_000)
     Thread(target=queue_process_output, args=(proc.stdout, output_queue), daemon=True).start()
     deadline = time.monotonic() + 30 * 60
     try:
@@ -1845,6 +2118,8 @@ def run_videocr(
 
     if not os.path.exists(output_srt):
         raise FileNotFoundError(f"Không tìm thấy file phụ đề thô sau quét: {output_srt}")
+    if os.path.getsize(output_srt) <= 0 or os.path.getmtime(output_srt) < process_started_at - 1:
+        raise RuntimeError("VideOCR không tạo file phụ đề mới hợp lệ cho lượt chạy này.")
 
     log_to_app(f"Quét phụ đề thành công: {output_srt}")
     return output_srt
@@ -1859,7 +2134,7 @@ def resolve_url_via_edge(short_url, notebook_url):
     log_to_app(f"Giải mã URL di động bằng Edge: {short_url}")
     try:
         with get_sync_playwright()() as p:
-            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+            browser = p.chromium.connect_over_cdp(edge_debug_url())
             contexts = browser.contexts
             if not contexts:
                 raise RuntimeError("Không tìm thấy Context trình duyệt.")
@@ -1907,6 +2182,8 @@ def build_translation_prompt(srt_content):
 
 
 def validate_translated_srt(source_srt, translated_srt):
+    validate_srt_structure(source_srt, "SRT gốc")
+    validate_srt_structure(translated_srt, "SRT dịch")
     source_timecodes = SRT_TIMECODE_PATTERN.findall(source_srt)
     translated_timecodes = SRT_TIMECODE_PATTERN.findall(translated_srt)
     if not source_timecodes:
@@ -1930,6 +2207,39 @@ def parse_srt_blocks(srt_content):
         if not text:
             return []
         blocks.append((lines[0].strip(), lines[1].strip(), text))
+    return blocks
+
+
+def srt_timestamp_milliseconds(value):
+    hours, minutes, rest = value.replace(",", ".").split(":")
+    seconds, milliseconds = rest.split(".")
+    return (
+        int(hours) * 3_600_000
+        + int(minutes) * 60_000
+        + int(seconds) * 1_000
+        + int(milliseconds)
+    )
+
+
+def validate_srt_structure(srt_content, label="SRT"):
+    blocks = parse_srt_blocks(srt_content)
+    if not blocks:
+        raise ValueError(f"{label} không có cấu trúc block hợp lệ.")
+    indexes = [int(block[0]) for block in blocks]
+    if any(current <= previous for previous, current in zip(indexes, indexes[1:])):
+        raise ValueError(f"{label} có số thứ tự trùng hoặc không tăng dần.")
+    previous_start = -1
+    for _, timecode, _ in blocks:
+        match = SRT_TIMECODE_PATTERN.fullmatch(timecode)
+        if not match:
+            raise ValueError(f"{label} có mốc thời gian không hợp lệ.")
+        start = srt_timestamp_milliseconds(match.group(1))
+        end = srt_timestamp_milliseconds(match.group(2))
+        if end <= start:
+            raise ValueError(f"{label} có đoạn kết thúc trước hoặc bằng lúc bắt đầu.")
+        if start < previous_start:
+            raise ValueError(f"{label} có mốc bắt đầu không tăng dần.")
+        previous_start = start
     return blocks
 
 
@@ -2061,7 +2371,7 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
 
     log_to_app("Kết nối Playwright vào Edge để thực hiện dịch phụ đề...")
     with get_sync_playwright()() as p:
-        browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        browser = p.chromium.connect_over_cdp(edge_debug_url())
         contexts = browser.contexts
         if not contexts:
             raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
@@ -2154,6 +2464,7 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
                 stop_gemini_generation(gemini_page)
                 raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.")
             if time.monotonic() - start_wait > 300:
+                stop_gemini_generation(gemini_page)
                 raise TimeoutError("Thời gian dịch của Gemini quá lâu (quá 5 phút).")
 
             current_response = find_last_response(gemini_page, response_selectors)
@@ -2288,10 +2599,13 @@ def get_video_preview(preview_id):
 
 
 def create_video_preview(video_url):
-    if workflow_lock.locked():
-        raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
-    if not preview_lock.acquire(blocking=False):
-        raise RuntimeError("Một preview khác đang được chuẩn bị.")
+    with operation_admission_lock:
+        if update_install_lock.locked():
+            raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; không thể tạo preview mới.")
+        if workflow_lock.locked():
+            raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
+        if not preview_lock.acquire(blocking=False):
+            raise RuntimeError("Một preview khác đang được chuẩn bị.")
     cancel_event.clear()
     try:
         config = load_app_config()
@@ -2321,11 +2635,27 @@ def create_video_preview(video_url):
         preview_lock.release()
 
 
+def validate_local_mp4_file(path):
+    size = os.path.getsize(path)
+    if size <= 0:
+        raise ValueError("File video đang trống hoặc không đọc được.")
+    if size > MAX_LOCAL_VIDEO_BYTES:
+        raise ValueError("File MP4 vượt quá giới hạn 8 GiB của ứng dụng.")
+    with open(path, "rb") as handle:
+        header = handle.read(12)
+    if len(header) < 12 or header[4:8] != b"ftyp":
+        raise ValueError("File đã chọn không có cấu trúc MP4 hợp lệ.")
+    return size
+
+
 def create_local_video_preview(upload):
-    if workflow_lock.locked():
-        raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
-    if not preview_lock.acquire(blocking=False):
-        raise RuntimeError("Một preview khác đang được chuẩn bị.")
+    with operation_admission_lock:
+        if update_install_lock.locked():
+            raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; không thể tạo preview mới.")
+        if workflow_lock.locked():
+            raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
+        if not preview_lock.acquire(blocking=False):
+            raise RuntimeError("Một preview khác đang được chuẩn bị.")
     try:
         original_name = os.path.basename((upload.filename or "").replace("\\", "/"))
         extension = os.path.splitext(original_name)[1].lower()
@@ -2338,8 +2668,9 @@ def create_local_video_preview(upload):
         temporary_path = f"{destination}.{uuid.uuid4().hex}.part"
         try:
             upload.save(temporary_path)
-            if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:
+            if not os.path.isfile(temporary_path):
                 raise ValueError("File video đang trống hoặc không đọc được.")
+            validate_local_mp4_file(temporary_path)
             os.replace(temporary_path, destination)
         finally:
             if os.path.exists(temporary_path):
@@ -2421,7 +2752,10 @@ def persisted_job(job):
 def write_queue_file(path, jobs):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     temporary_path = f"{path}.{uuid.uuid4().hex}.tmp"
-    payload = {"version": 1, "jobs": [persisted_job(job) for job in jobs[-MAX_PERSISTED_JOBS:]]}
+    payload = {
+        "version": QUEUE_SCHEMA_VERSION,
+        "jobs": [persisted_job(job) for job in jobs[-MAX_PERSISTED_JOBS:]],
+    }
     try:
         with open(temporary_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False)
@@ -2431,10 +2765,17 @@ def write_queue_file(path, jobs):
             os.remove(temporary_path)
 
 
-def persist_queue_state_locked():
+def persist_queue_state_locked(jobs=None):
     if app.config.get("TESTING"):
         return
-    write_queue_file(QUEUE_PATH, workflow_jobs)
+    write_queue_file(QUEUE_PATH, workflow_jobs if jobs is None else jobs)
+
+
+def commit_queue_jobs_locked(candidate_jobs):
+    global queue_revision
+    persist_queue_state_locked(candidate_jobs)
+    workflow_jobs[:] = candidate_jobs
+    queue_revision += 1
 
 
 def normalize_persisted_job(value):
@@ -2496,6 +2837,19 @@ def normalize_persisted_job(value):
     }
 
 
+def quarantine_corrupt_file(path):
+    if not os.path.isfile(path):
+        return ""
+    quarantined = f"{path}.corrupt-{int(time.time())}"
+    try:
+        os.replace(path, quarantined)
+        log_to_app(f"Đã tách file dữ liệu hỏng để không làm mất dữ liệu: {quarantined}", "error")
+        return quarantined
+    except OSError as error:
+        log_to_app(f"Không thể tách file dữ liệu hỏng: {error}", "error")
+        return ""
+
+
 def load_queue_file(path):
     if not os.path.isfile(path):
         return []
@@ -2503,8 +2857,19 @@ def load_queue_file(path):
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, UnicodeError, json.JSONDecodeError):
+        quarantine_corrupt_file(path)
         return []
-    values = payload.get("jobs", []) if isinstance(payload, dict) else []
+    if not isinstance(payload, dict):
+        quarantine_corrupt_file(path)
+        return []
+    version = payload.get("version", 1)
+    if version not in {1, QUEUE_SCHEMA_VERSION}:
+        quarantine_corrupt_file(path)
+        return []
+    values = payload.get("jobs", [])
+    if not isinstance(values, list):
+        quarantine_corrupt_file(path)
+        return []
     jobs = [normalize_persisted_job(value) for value in values[-MAX_PERSISTED_JOBS:]]
     return [job for job in jobs if job]
 
@@ -2532,14 +2897,48 @@ def remove_managed_source_if_unused(path):
             pass
 
 
+def prune_orphaned_local_videos(referenced_paths=None):
+    if not os.path.isdir(LOCAL_VIDEO_DIR):
+        return 0
+    referenced = {
+        os.path.normcase(os.path.abspath(path))
+        for path in (referenced_paths or [])
+        if path
+    }
+    cutoff = time.time() - PREVIEW_TTL_SECONDS
+    removed = 0
+    for name in os.listdir(LOCAL_VIDEO_DIR):
+        path = os.path.join(LOCAL_VIDEO_DIR, name)
+        try:
+            if (
+                os.path.isfile(path)
+                and name.lower().endswith(".mp4")
+                and os.path.normcase(os.path.abspath(path)) not in referenced
+                and os.path.getmtime(path) < cutoff
+            ):
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def initialize_queue_state():
-    global queue_state_initialized
+    global queue_revision, queue_state_initialized
     with queue_state_lock:
         if queue_state_initialized:
             return
         workflow_jobs[:] = load_queue_file(QUEUE_PATH)
+        queue_revision += 1
         queue_state_initialized = True
-        persist_queue_state_locked()
+        referenced_paths = [job.get("source_video") for job in workflow_jobs]
+        try:
+            persist_queue_state_locked()
+        except OSError as error:
+            log_to_app(f"Chưa thể chuẩn hoá file hàng đợi: {error}", "error")
+    removed = prune_orphaned_local_videos(referenced_paths)
+    if removed:
+        log_to_app(f"Đã dọn {removed} video cache mồ côi quá hạn.")
 
 
 def queue_snapshot():
@@ -2606,8 +3005,13 @@ def enqueue_workflow(
         "finished_at": None,
     }
     with queue_state_lock:
-        workflow_jobs.append(job)
-        persist_queue_state_locked()
+        if len(workflow_jobs) >= MAX_IN_MEMORY_JOBS:
+            raise RuntimeError(
+                f"Hàng đợi đã đạt giới hạn {MAX_IN_MEMORY_JOBS} job. Hãy dọn job đã hoàn tất trước."
+            )
+        candidate_jobs = copy.deepcopy(workflow_jobs)
+        candidate_jobs.append(job)
+        commit_queue_jobs_locked(candidate_jobs)
     if autostart:
         start_workflow_queue()
     return serialize_job(job)
@@ -2616,6 +3020,22 @@ def enqueue_workflow(
 def queue_workflow(video_url, ocr_lang, project_name=None):
     enqueue_workflow(video_url, ocr_lang, project_name, autostart=False)
     return start_workflow_queue()
+
+
+def run_single_workflow(video_url, ocr_lang, project_name=None):
+    source_url = validate_douyin_url(video_url)
+    validate_ocr_lang(ocr_lang)
+    if project_name is not None and not isinstance(project_name, str):
+        raise ValueError("Tên bộ file không hợp lệ.")
+    with operation_admission_lock:
+        if update_install_lock.locked():
+            raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; chưa thể chạy workflow CLI.")
+        if preview_lock.locked() or not workflow_lock.acquire(blocking=False):
+            raise RuntimeError("Một tác vụ VietSub Studio khác đang chạy.")
+    cancel_event.clear()
+    reset_progress()
+    run_workflow_thread(source_url, ocr_lang, project_name)
+    return progress_snapshot()
 
 
 def run_prefetch_worker():
@@ -2661,7 +3081,8 @@ def run_prefetch_worker():
             return
 
         with queue_state_lock:
-            for job in workflow_jobs:
+            candidate_jobs = copy.deepcopy(workflow_jobs)
+            for job in candidate_jobs:
                 if job["id"] == target["id"] and job["status"] == "queued":
                     job["source_url"] = downloaded["source_url"]
                     job["video_id"] = downloaded["video_id"]
@@ -2669,9 +3090,9 @@ def run_prefetch_worker():
                     if not job.get("video_title"):
                         job["video_title"] = downloaded.get("video_title", "")
                     try:
-                        persist_queue_state_locked()
-                    except OSError:
-                        pass
+                        commit_queue_jobs_locked(candidate_jobs)
+                    except OSError as error:
+                        log_to_app(f"Prefetch chưa thể lưu trạng thái hàng đợi: {error}", "error")
                     break
     finally:
         prefetch_job_id = ""
@@ -2704,17 +3125,49 @@ def coordinate_prefetch_before_job(job):
         thread.join()
 
 
+def missing_runtime_dependencies(source_types):
+    source_types = set(source_types or ())
+    missing = []
+    if not os.path.isfile(VIDEOCR_CLI):
+        missing.append("VideOCR")
+    try:
+        validate_notebook_url(load_app_config().get("notebook_url"))
+    except ValueError:
+        missing.append("Gemini Notebook")
+    if not resolve_edge_executable():
+        missing.append("Microsoft Edge")
+    if "douyin" in source_types:
+        if not os.path.isfile(SIDECAR_BIN):
+            missing.append("Douzy sidecar")
+        if not os.path.isfile(DOUZY_CONFIG):
+            missing.append("cấu hình Douzy")
+    return missing
+
+
 def start_workflow_queue():
     global queue_worker_thread
-    with queue_state_lock:
-        has_queued = any(job["status"] == "queued" for job in workflow_jobs)
-        if not has_queued:
-            raise RuntimeError("Hàng đợi chưa có video nào sẵn sàng.")
-        if queue_worker_thread and queue_worker_thread.is_alive():
+    with operation_admission_lock:
+        if update_install_lock.locked():
+            raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; chưa thể chạy hàng đợi.")
+        if preview_lock.locked():
+            raise RuntimeError("Hãy chờ preview hiện tại chuẩn bị xong trước khi chạy hàng đợi.")
+        with queue_state_lock:
+            has_queued = any(job["status"] == "queued" for job in workflow_jobs)
+            if not has_queued:
+                raise RuntimeError("Hàng đợi chưa có video nào sẵn sàng.")
+            queued_sources = {
+                job.get("source_type", "douyin")
+                for job in workflow_jobs
+                if job["status"] == "queued"
+            }
+            missing = [] if app.config.get("TESTING") else missing_runtime_dependencies(queued_sources)
+            if missing:
+                raise RuntimeError("Thiếu thành phần bắt buộc: " + ", ".join(missing) + ".")
+            if queue_worker_thread and queue_worker_thread.is_alive():
+                return queue_worker_thread
+            queue_worker_thread = Thread(target=run_queue_worker, daemon=True)
+            queue_worker_thread.start()
             return queue_worker_thread
-        queue_worker_thread = Thread(target=run_queue_worker, daemon=True)
-        queue_worker_thread.start()
-        return queue_worker_thread
 
 
 def run_queue_worker():
@@ -2730,66 +3183,98 @@ def run_queue_worker():
         # Outside the lock: wait for a prefetch of this exact job, or stop an unrelated one.
         coordinate_prefetch_before_job(picked_snapshot)
         with queue_state_lock:
+            candidate_jobs = copy.deepcopy(workflow_jobs)
             job = next(
                 (
-                    item for item in workflow_jobs
+                    item for item in candidate_jobs
                     if item["id"] == picked_snapshot["id"] and item["status"] == "queued"
                 ),
                 None,
             )
             if not job:
                 continue
-            job["status"] = "running"
-            job["error"] = ""
-            job["needs_edge_login"] = False
-            job["result_ready"] = False
-            job["started_at"] = int(time.time())
+            job.update({
+                "status": "running",
+                "error": "",
+                "needs_edge_login": False,
+                "result_ready": False,
+                "started_at": int(time.time()),
+            })
             current_job_id = job["id"]
-            job_data = dict(job)
-            persist_queue_state_locked()
+            job_data = copy.deepcopy(job)
+            try:
+                commit_queue_jobs_locked(candidate_jobs)
+            except OSError as error:
+                current_job_id = ""
+                log_to_app(f"Không thể ghi trạng thái bắt đầu job: {error}", "error")
+                queue_worker_thread = None
+                return
         workflow_lock.acquire()
         cancel_event.clear()
         reset_progress(job_data["id"])
-        start_prefetch_thread()
-        prepared_video = None
-        if job_data.get("source_video"):
-            prepared_video = {
-                "source_url": job_data["source_url"],
-                "video_id": job_data["video_id"],
-                "source_video": job_data["source_video"],
-                "video_title": job_data.get("video_title", ""),
-                "source_type": job_data.get("source_type", "douyin"),
-            }
-        run_workflow_thread(
-            job_data["source_url"],
-            job_data["ocr_lang"],
-            job_data.get("project_name"),
-            prepared_video=prepared_video,
-            crop_coords=job_data.get("crop_coords"),
-            use_saved_crop=job_data.get("use_saved_crop", True),
-            video_resolution=job_data.get("video_resolution"),
-            resume_project=job_data.get("result"),
-            resume_step=job_data.get("resume_step", "download"),
-        )
-        with queue_state_lock:
-            for item in workflow_jobs:
-                if item["id"] == job_data["id"]:
-                    item["finished_at"] = int(time.time())
-                    break
-            current_job_id = ""
-            persist_queue_state_locked()
+        try:
+            start_prefetch_thread()
+            prepared_video = None
+            if job_data.get("source_video"):
+                prepared_video = {
+                    "source_url": job_data["source_url"],
+                    "video_id": job_data["video_id"],
+                    "source_video": job_data["source_video"],
+                    "video_title": job_data.get("video_title", ""),
+                    "source_type": job_data.get("source_type", "douyin"),
+                }
+            run_workflow_thread(
+                job_data["source_url"],
+                job_data["ocr_lang"],
+                job_data.get("project_name"),
+                prepared_video=prepared_video,
+                crop_coords=job_data.get("crop_coords"),
+                use_saved_crop=job_data.get("use_saved_crop", True),
+                video_resolution=job_data.get("video_resolution"),
+                resume_project=job_data.get("result"),
+                resume_step=job_data.get("resume_step", "download"),
+            )
+        except Exception as error:
+            update_progress(status="error", error=str(error))
+            log_to_app(f"Worker queue gặp lỗi ngoài dự kiến: {error}", "error")
+            with queue_state_lock:
+                candidate_jobs = copy.deepcopy(workflow_jobs)
+                for item in candidate_jobs:
+                    if item["id"] == job_data["id"]:
+                        item.update({"status": "error", "error": str(error), "result_ready": False})
+                        break
+                try:
+                    commit_queue_jobs_locked(candidate_jobs)
+                except OSError as persist_error:
+                    log_to_app(f"Không thể lưu lỗi job: {persist_error}", "error")
+        finally:
+            cancel_event.clear()
+            if workflow_lock.locked():
+                workflow_lock.release()
+            with queue_state_lock:
+                candidate_jobs = copy.deepcopy(workflow_jobs)
+                for item in candidate_jobs:
+                    if item["id"] == job_data["id"]:
+                        item["finished_at"] = int(time.time())
+                        break
+                current_job_id = ""
+                try:
+                    commit_queue_jobs_locked(candidate_jobs)
+                except OSError as error:
+                    log_to_app(f"Không thể lưu thời điểm kết thúc job: {error}", "error")
 
 
 def remove_queued_job(job_id):
     removed = None
     with queue_state_lock:
-        for index, job in enumerate(workflow_jobs):
+        candidate_jobs = copy.deepcopy(workflow_jobs)
+        for index, job in enumerate(candidate_jobs):
             if job["id"] != job_id:
                 continue
-            if job["status"] != "queued":
-                raise RuntimeError("Chỉ có thể xoá video đang chờ trong hàng đợi.")
-            removed = workflow_jobs.pop(index)
-            persist_queue_state_locked()
+            if job["status"] == "running":
+                raise RuntimeError("Không thể xoá job đang chạy; hãy huỷ job trước.")
+            removed = candidate_jobs.pop(index)
+            commit_queue_jobs_locked(candidate_jobs)
             break
     if removed:
         remove_managed_source_if_unused(removed.get("source_video"))
@@ -2800,20 +3285,22 @@ def remove_queued_job(job_id):
 def clear_finished_jobs():
     removed_sources = []
     with queue_state_lock:
-        removable = {"success", "error", "cancelled"}
+        removable = {"success"}
+        candidate_jobs = copy.deepcopy(workflow_jobs)
         removed_sources = [
-            job.get("source_video") for job in workflow_jobs
+            job.get("source_video") for job in candidate_jobs
             if job["status"] in removable and job.get("managed_source")
         ]
-        workflow_jobs[:] = [job for job in workflow_jobs if job["status"] not in removable]
-        persist_queue_state_locked()
+        candidate_jobs = [job for job in candidate_jobs if job["status"] not in removable]
+        commit_queue_jobs_locked(candidate_jobs)
     for source_path in removed_sources:
         remove_managed_source_if_unused(source_path)
 
 
 def retry_queue_job(job_id):
     with queue_state_lock:
-        job = next((item for item in workflow_jobs if item["id"] == job_id), None)
+        candidate_jobs = copy.deepcopy(workflow_jobs)
+        job = next((item for item in candidate_jobs if item["id"] == job_id), None)
         if not job:
             raise ValueError("Không tìm thấy video trong hàng đợi.")
         if job["status"] not in {"error", "cancelled"}:
@@ -2838,7 +3325,7 @@ def retry_queue_job(job_id):
             "started_at": None,
             "finished_at": None,
         })
-        persist_queue_state_locked()
+        commit_queue_jobs_locked(candidate_jobs)
         return serialize_job(job)
 
 
@@ -2846,10 +3333,11 @@ def update_current_job_metadata(**values):
     if not current_job_id:
         return
     with queue_state_lock:
-        for job in workflow_jobs:
+        candidate_jobs = copy.deepcopy(workflow_jobs)
+        for job in candidate_jobs:
             if job["id"] == current_job_id:
                 job.update(values)
-                persist_queue_state_locked()
+                commit_queue_jobs_locked(candidate_jobs)
                 break
 
 
@@ -2960,6 +3448,7 @@ def run_workflow_thread(
         update_progress(result={"translated_srt": translated_srt})
         project["raw_srt"] = raw_srt
         project["translated_srt"] = translated_srt
+        validate_project_result(project)
         project = finalize_project_assets(project, video_id)
         update_progress(result=project)
         validate_project_result(project)
@@ -2976,13 +3465,16 @@ def run_workflow_thread(
         update_progress(status="cancelled", error=str(e))
         log_to_app(str(e), "error")
         if project:
-            write_project_manifest(
-                project,
-                video_id=video_id,
-                source_url=source_url,
-                status="cancelled",
-                error=str(e),
-            )
+            try:
+                write_project_manifest(
+                    project,
+                    video_id=video_id,
+                    source_url=source_url,
+                    status="cancelled",
+                    error=str(e),
+                )
+            except OSError as manifest_error:
+                log_to_app(f"Không thể lưu manifest huỷ job: {manifest_error}", "error")
     except EdgeLoginRequired as e:
         update_progress(status="error", error=str(e))
         update_current_job_metadata(needs_edge_login=True)
@@ -3023,10 +3515,68 @@ def run_workflow_thread(
         if workflow_lock.locked():
             workflow_lock.release()
 
+def local_request_host_allowed():
+    hostname = (request.host or "").rsplit(":", 1)[0].strip("[]").lower()
+    return hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def api_request_authorized():
+    if app.config.get("TESTING"):
+        return True
+    supplied_token = request.headers.get(API_TOKEN_HEADER, "")
+    if not secrets.compare_digest(supplied_token, API_TOKEN):
+        return False
+    origin = request.headers.get("Origin")
+    if origin:
+        parsed_origin = urlparse(origin)
+        if parsed_origin.scheme != "http" or parsed_origin.netloc.lower() != request.host.lower():
+            return False
+    fetch_site = request.headers.get("Sec-Fetch-Site", "")
+    return fetch_site in {"", "none", "same-origin", "same-site"}
+
+
+@app.before_request
+def protect_local_control_plane():
+    if not local_request_host_allowed():
+        return jsonify({"error": "Host cục bộ không hợp lệ."}), 403
+    if app.config.get("TESTING"):
+        return None
+    if not request.path.startswith("/api/") or request.endpoint == "stream_preview_video":
+        return None
+    if not api_request_authorized():
+        return jsonify({"error": "Yêu cầu không được ứng dụng VietSub Studio xác thực."}), 403
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        content_type = (request.content_type or "").lower()
+        if request.endpoint != "prepare_local_preview" and "application/json" not in content_type:
+            return jsonify({"error": "API thay đổi trạng thái yêu cầu JSON body."}), 415
+    return None
+
+
+@app.after_request
+def add_response_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+    )
+    return response
+
+
 # Web routes
 @app.route('/')
 def index():
-    return render_template('index.html', app_version=APP_VERSION)
+    return render_template('index.html', app_version=APP_VERSION, api_token=API_TOKEN)
+
+
+@app.route('/static/<path:filename>')
+def static_asset(filename):
+    if filename not in {"app.js", "style.css"}:
+        return jsonify({"error": "Static asset không tồn tại."}), 404
+    return send_from_directory(os.path.join(RESOURCE_DIR, "static"), filename)
 
 
 @app.route('/avatar.jpg')
@@ -3076,8 +3626,22 @@ def open_update():
 
 @app.route('/api/update/install', methods=['POST'])
 def install_update():
-    if workflow_lock.locked():
-        return jsonify({"error": "Hãy chờ job hiện tại chạy xong rồi cập nhật app."}), 409
+    with operation_admission_lock:
+        if not update_install_lock.acquire(blocking=False):
+            return jsonify({"error": "Một lượt cập nhật khác đang được chuẩn bị."}), 409
+        with queue_state_lock:
+            queue_active = bool(queue_worker_thread and queue_worker_thread.is_alive())
+        if workflow_lock.locked() or preview_lock.locked() or queue_active:
+            update_install_lock.release()
+            return jsonify({"error": "Hãy chờ mọi job và preview hiện tại chạy xong rồi cập nhật app."}), 409
+
+    prefetch_cancel_event.set()
+    if prefetch_thread and prefetch_thread.is_alive():
+        prefetch_thread.join(timeout=10)
+        if prefetch_thread.is_alive():
+            prefetch_cancel_event.clear()
+            update_install_lock.release()
+            return jsonify({"error": "Chưa thể dừng tải trước an toàn để cập nhật."}), 409
 
     update_package = None
     try:
@@ -3092,9 +3656,14 @@ def install_update():
             except OSError:
                 pass
             shutil.rmtree(update_package["update_dir"], ignore_errors=True)
+        prefetch_cancel_event.clear()
+        update_install_lock.release()
         return jsonify({"error": str(error)}), 400
 
     schedule_app_exit()
+    if app.config.get("TESTING"):
+        prefetch_cancel_event.clear()
+        update_install_lock.release()
     return jsonify({
         "status": "installing",
         "version": update_package["version"],
@@ -3145,7 +3714,7 @@ def health():
             "detail": r"Cài VideOCR tại C:\Program Files\VideOCR.",
         },
         "ffprobe": {
-            "ok": bool(shutil.which("ffprobe")),
+            "ok": bool(resolve_ffprobe_executable()),
             "required": False,
             "detail": "Tuỳ chọn; giúp đổi vùng crop OCR chính xác theo độ phân giải video.",
         },
@@ -3155,13 +3724,20 @@ def health():
             "detail": "Dán link Gemini Notebook của bạn trong phần Thiết lập.",
         },
         "edge": {
-            "ok": check_edge_status(),
-            "required": False,
-            "detail": "Edge chạy nền; app chỉ hiện cửa sổ khi cần đăng nhập hoặc kiểm tra Notebook.",
+            "ok": bool(resolve_edge_executable()),
+            "required": True,
+            "connected": check_edge_status(),
+            "detail": "Cần Microsoft Edge; app sẽ tự mở profile debug khi bắt đầu dịch.",
         },
     }
-    ready = all(item["ok"] for item in checks.values() if item["required"])
-    return jsonify({"ready": ready, "checks": checks})
+    ready_local = all(item["ok"] for item in checks.values() if item["required"])
+    ready_douyin = ready_local and checks["douzy_sidecar"]["ok"] and checks["douzy_config"]["ok"]
+    return jsonify({
+        "ready": ready_local,
+        "ready_local": ready_local,
+        "ready_douyin": ready_douyin,
+        "checks": checks,
+    })
 
 
 @app.route('/api/previews', methods=['POST'])
@@ -3205,10 +3781,19 @@ def stream_preview_video(preview_id):
 @app.route('/api/queue', methods=['GET', 'POST'])
 def handle_queue():
     if request.method == 'GET':
+        try:
+            client_revision = int(request.args.get("revision", "-1"))
+        except ValueError:
+            client_revision = -1
+        with queue_state_lock:
+            current_revision = queue_revision
+            active_job_id = current_job_id
+        jobs = None if client_revision == current_revision else queue_snapshot()
         return jsonify({
-            "jobs": queue_snapshot(),
+            "jobs": jobs,
+            "revision": current_revision,
             "running": workflow_lock.locked(),
-            "current_job_id": current_job_id,
+            "current_job_id": active_job_id,
         })
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -3226,6 +3811,8 @@ def handle_queue():
         return jsonify(job), 201
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 409
 
 
 @app.route('/api/queue/start', methods=['POST'])
@@ -3426,7 +4013,10 @@ def open_folder():
 def run_web_server():
     initialize_queue_state()
     log_to_app("Mở local web server tại http://127.0.0.1:5000...")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    try:
+        app.run(host="127.0.0.1", port=5000, debug=False)
+    finally:
+        request_app_shutdown()
 
 
 def run_browser_app():
@@ -3435,8 +4025,6 @@ def run_browser_app():
     server = make_server("127.0.0.1", 0, app, threaded=True)
     port = server.server_port
     url = f"http://127.0.0.1:{port}"
-    server_thread = Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
     log_to_app(f"Mở giao diện trên trình duyệt tại {url}...")
     try:
         if not webbrowser.open(url, new=2):
@@ -3446,7 +4034,19 @@ def run_browser_app():
     except KeyboardInterrupt:
         pass
     finally:
+        request_app_shutdown()
         server.shutdown()
+
+
+def native_window_watchdog(window, ready_event, failed_event, timeout=20):
+    if ready_event.wait(timeout):
+        return
+    failed_event.set()
+    log_to_app("Native WebView không tải giao diện đúng hạn; đang chuyển sang trình duyệt.", "error")
+    try:
+        window.destroy()
+    except Exception:
+        pass
 
 
 class DesktopApi:
@@ -3499,19 +4099,52 @@ def run_desktop_app():
             background_color="#f5f1e8",
         )
         desktop_api._window = window
+        native_ready = Event()
+        native_failed = Event()
+
+        def mark_native_ready(*_args):
+            native_ready.set()
+
+        window.events.loaded += mark_native_ready
+        Thread(
+            target=native_window_watchdog,
+            args=(window, native_ready, native_failed),
+            daemon=True,
+        ).start()
         webview.start(
             gui="edgechromium",
             debug=False,
             icon=ICON_PATH if os.path.isfile(ICON_PATH) else None,
         )
+        if native_failed.is_set():
+            raise RuntimeError("Native WebView không tải được giao diện trong 20 giây.")
     finally:
+        request_app_shutdown()
         server.shutdown()
 
 
+def main():
+    if not acquire_instance_lock():
+        log_to_app("VietSub Studio đang chạy ở một tiến trình khác.", "error")
+        return 2
+    try:
+        if "--server" in sys.argv:
+            run_web_server()
+        elif "--browser" in sys.argv:
+            run_browser_app()
+        else:
+            try:
+                run_desktop_app()
+            except (RuntimeError, OSError) as error:
+                log_to_app(f"Native WebView không khởi động được, chuyển sang trình duyệt: {error}", "error")
+                shutdown_event.clear()
+                cancel_event.clear()
+                prefetch_cancel_event.clear()
+                run_browser_app()
+    finally:
+        release_instance_lock()
+    return 0
+
+
 if __name__ == '__main__':
-    if "--server" in sys.argv:
-        run_web_server()
-    elif "--browser" in sys.argv:
-        run_browser_app()
-    else:
-        run_desktop_app()
+    sys.exit(main())

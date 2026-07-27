@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
 import app
+import automate
 
 
 SOURCE_SRT = """1
@@ -78,6 +79,14 @@ class ValidationTests(unittest.TestCase):
                 os.path.abspath(r"C:\Users\Test\Documents\VietSub Studio"),
             )
 
+    def test_native_window_watchdog_marks_failure_and_destroys_window(self):
+        window = Mock()
+        ready = app.Event()
+        failed = app.Event()
+        app.native_window_watchdog(window, ready, failed, timeout=0)
+        self.assertTrue(failed.is_set())
+        window.destroy.assert_called_once_with()
+
     def test_desktop_folder_picker_returns_the_selected_directory(self):
         class FakeWebview:
             class FileDialog:
@@ -111,6 +120,66 @@ class ValidationTests(unittest.TestCase):
                 self.assertTrue(app.should_move_douzy_source(str(source)))
                 (source_folder / "project.json").write_text("{}", encoding="utf-8")
                 self.assertFalse(app.should_move_douzy_source(str(source)))
+
+    def test_sidecar_startup_cleans_process_when_cancelled(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.stdout = Mock()
+        process.stdout.readline.return_value = ""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            sidecar = Path(temporary_dir) / "sidecar.exe"
+            config = Path(temporary_dir) / "config.yml"
+            sidecar.write_bytes(b"exe")
+            config.write_text("path: test", encoding="utf-8")
+            with (
+                patch.object(app, "SIDECAR_BIN", str(sidecar)),
+                patch.object(app, "DOUZY_CONFIG", str(config)),
+                patch.object(app.subprocess, "Popen", return_value=process),
+                patch.object(
+                    app,
+                    "check_cancel_requested",
+                    side_effect=[None, app.WorkflowCancelled("cancelled")],
+                ),
+                patch.object(app, "stop_process") as stop_process,
+            ):
+                with self.assertRaises(app.WorkflowCancelled):
+                    app.start_douzy_sidecar()
+
+        stop_process.assert_called_once_with(process, "sidecar Douzy")
+        with app.active_process_lock:
+            self.assertNotIn("sidecar Douzy", app.active_processes)
+
+    def test_douzy_asset_matching_does_not_move_prefix_siblings(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            source_folder = directory / "douzy"
+            source_folder.mkdir()
+            source = source_folder / "123.mp4"
+            unrelated = source_folder / "1234.mp4"
+            source.write_bytes(b"video-data")
+            unrelated.write_bytes(b"unrelated")
+            project = app.prepare_project_files(
+                str(source), "Video", "123", output_dir=str(directory / "exports"), defer_video_move=True
+            )
+            with (
+                patch.object(app, "DOUZY_DB", str(directory / "missing.db")),
+                patch.object(app, "replace_source_video_references"),
+            ):
+                app.finalize_project_assets(project, "123")
+
+            self.assertTrue(unrelated.is_file())
+            self.assertEqual(Path(project["video"]).read_bytes(), b"video-data")
+
+    def test_srt_structure_rejects_invalid_order_and_duration(self):
+        invalid_order = SOURCE_SRT.replace("\n2\n00:00:03", "\n1\n00:00:03")
+        invalid_duration = SOURCE_SRT.replace(
+            "00:00:01,000 --> 00:00:02,000",
+            "00:00:02,000 --> 00:00:01,000",
+        )
+        with self.assertRaisesRegex(ValueError, "thứ tự"):
+            app.validate_srt_structure(invalid_order, "SRT test")
+        with self.assertRaisesRegex(ValueError, "kết thúc"):
+            app.validate_srt_structure(invalid_duration, "SRT test")
 
     def test_project_bundle_uses_synchronized_unique_names(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -401,6 +470,7 @@ class ValidationTests(unittest.TestCase):
 
             def fake_popen(cmd, **_kwargs):
                 captured["cmd"] = cmd
+                output_srt.write_text("fresh", encoding="utf-8")
                 process = Mock()
                 process.poll.return_value = 0
                 process.returncode = 0
@@ -690,6 +760,114 @@ class QueuePersistenceTests(unittest.TestCase):
         self.assertEqual(restored[0]["step"], "ocr")
         self.assertIn("App đã đóng", restored[0]["error"])
 
+    def test_queue_mutation_rolls_back_when_persistence_fails(self):
+        with app.queue_state_lock:
+            original_jobs = app.copy.deepcopy(app.workflow_jobs)
+            app.workflow_jobs.clear()
+        try:
+            with patch.object(app, "persist_queue_state_locked", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    app.enqueue_workflow("https://www.douyin.com/video/123", "ch")
+            with app.queue_state_lock:
+                self.assertEqual(app.workflow_jobs, [])
+        finally:
+            with app.queue_state_lock:
+                app.workflow_jobs[:] = original_jobs
+
+    def test_orphaned_local_video_cache_is_pruned_by_age(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            stale = Path(temporary_dir) / "stale.mp4"
+            referenced = Path(temporary_dir) / "referenced.mp4"
+            stale.write_bytes(b"stale")
+            referenced.write_bytes(b"keep")
+            old_time = app.time.time() - app.PREVIEW_TTL_SECONDS - 10
+            os.utime(stale, (old_time, old_time))
+            os.utime(referenced, (old_time, old_time))
+            with patch.object(app, "LOCAL_VIDEO_DIR", temporary_dir):
+                removed = app.prune_orphaned_local_videos([str(referenced)])
+
+            self.assertEqual(removed, 1)
+            self.assertFalse(stale.exists())
+            self.assertTrue(referenced.exists())
+
+    def test_corrupt_queue_is_quarantined(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            queue_path.write_text("{broken", encoding="utf-8")
+            restored = app.load_queue_file(str(queue_path))
+            quarantined = list(Path(temporary_dir).glob("workflow_queue.json.corrupt-*"))
+
+        self.assertEqual(restored, [])
+        self.assertEqual(len(quarantined), 1)
+
+
+class SecurityBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        app.app.config["TESTING"] = False
+        self.client = app.app.test_client()
+
+    def tearDown(self):
+        app.app.config["TESTING"] = False
+
+    def api_headers(self, **overrides):
+        headers = {app.API_TOKEN_HEADER: app.API_TOKEN}
+        headers.update(overrides)
+        return headers
+
+    def test_api_requires_per_launch_token_and_local_host(self):
+        self.assertEqual(self.client.get("/api/progress").status_code, 403)
+        self.assertEqual(
+            self.client.get(
+                "/api/progress",
+                headers=self.api_headers(Host="attacker.example"),
+            ).status_code,
+            403,
+        )
+        response = self.client.get("/api/progress", headers=self.api_headers())
+        self.assertEqual(response.status_code, 200)
+
+    def test_api_rejects_cross_origin_and_simple_mutation(self):
+        cross_origin = self.client.get(
+            "/api/progress",
+            headers=self.api_headers(Origin="https://attacker.example"),
+        )
+        self.assertEqual(cross_origin.status_code, 403)
+        simple_post = self.client.post("/api/cancel", headers=self.api_headers())
+        self.assertEqual(simple_post.status_code, 415)
+
+    def test_security_headers_are_present(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+        self.assertNotIn("script-src 'self' 'unsafe-inline'", response.headers["Content-Security-Policy"])
+        with self.client.get("/static/app.js") as script_response:
+            self.assertEqual(script_response.status_code, 200)
+        with self.client.get("/static/style.css") as style_response:
+            self.assertEqual(style_response.status_code, 200)
+
+
+class CliTests(unittest.TestCase):
+    def test_cli_runs_directly_without_desktop_queue(self):
+        result = {
+            "status": "success",
+            "error": "",
+            "result": {
+                "video": "video.mp4",
+                "raw_srt": "video.raw.srt",
+                "translated_srt": "video.vi.srt",
+            },
+        }
+        with (
+            patch.object(sys, "argv", ["automate.py", "--url", "https://www.douyin.com/video/1"]),
+            patch.object(automate, "run_single_workflow", return_value=result) as direct_run,
+            patch("builtins.print"),
+        ):
+            exit_code = automate.main()
+
+        self.assertEqual(exit_code, 0)
+        direct_run.assert_called_once_with("https://www.douyin.com/video/1", "ch", "")
+
 
 class DesktopShortcutTests(unittest.TestCase):
     def test_packaged_app_creates_a_desktop_shortcut_to_the_current_exe(self):
@@ -739,6 +917,17 @@ class DesktopShortcutTests(unittest.TestCase):
 
 
 class AutomaticUpdateTests(unittest.TestCase):
+    def test_onedir_build_does_not_offer_in_place_update(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            executable = Path(temporary_dir) / "VietSub Studio.exe"
+            executable.write_bytes(b"MZ")
+            (Path(temporary_dir) / "_internal").mkdir()
+            with (
+                patch.object(app, "is_packaged_app", return_value=True),
+                patch.object(app.sys, "executable", str(executable)),
+            ):
+                self.assertFalse(app.supports_in_place_update())
+
     def test_release_zip_is_verified_and_staged_next_to_the_current_exe(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
@@ -992,6 +1181,26 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([job["id"] for job in app.queue_snapshot()], [first["id"], second["id"]])
         self.assertTrue(all(job["status"] == "queued" for job in app.queue_snapshot()))
 
+    def test_queue_revision_skips_unchanged_payloads(self):
+        app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        first = self.client.get("/api/queue").get_json()
+        unchanged = self.client.get(f"/api/queue?revision={first['revision']}").get_json()
+        self.assertIsNone(unchanged["jobs"])
+
+        app.enqueue_workflow("https://www.douyin.com/video/2", "ch")
+        changed = self.client.get(f"/api/queue?revision={first['revision']}").get_json()
+        self.assertEqual(len(changed["jobs"]), 2)
+        self.assertGreater(changed["revision"], first["revision"])
+
+    def test_preview_admission_blocks_queue_start(self):
+        app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        self.assertTrue(app.preview_lock.acquire(blocking=False))
+        try:
+            with self.assertRaisesRegex(RuntimeError, "preview"):
+                app.start_workflow_queue()
+        finally:
+            app.preview_lock.release()
+
     def test_preview_crop_is_attached_to_a_queued_job(self):
         preview_id = "preview-test"
         with app.preview_registry_lock:
@@ -1016,6 +1225,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(job["preview_id"], preview_id)
 
     def test_local_mp4_can_be_previewed_and_queued(self):
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
         with tempfile.TemporaryDirectory() as temporary_dir:
             with (
                 patch.object(app, "LOCAL_VIDEO_DIR", temporary_dir),
@@ -1023,7 +1233,7 @@ class ApiTests(unittest.TestCase):
             ):
                 response = self.client.post(
                     "/api/previews/local",
-                    data={"video": (io.BytesIO(b"local-video"), "sample.mp4")},
+                    data={"video": (io.BytesIO(mp4_bytes), "sample.mp4")},
                     content_type="multipart/form-data",
                 )
                 self.assertEqual(response.status_code, 201)
@@ -1042,7 +1252,7 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(job["source_type"], "local")
                 with app.preview_registry_lock:
                     source_video = app.preview_registry[preview["id"]]["source_video"]
-                self.assertEqual(Path(source_video).read_bytes(), b"local-video")
+                self.assertEqual(Path(source_video).read_bytes(), mp4_bytes)
 
     def test_local_preview_rejects_non_mp4_files(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -1055,6 +1265,17 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("MP4", response.get_json()["error"])
+
+    def test_local_preview_rejects_invalid_mp4_content(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with patch.object(app, "LOCAL_VIDEO_DIR", temporary_dir):
+                response = self.client.post(
+                    "/api/previews/local",
+                    data={"video": (io.BytesIO(b"not-an-mp4"), "sample.mp4")},
+                    content_type="multipart/form-data",
+                )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cấu trúc MP4", response.get_json()["error"])
 
     def test_retry_resumes_from_ocr_or_translation_when_files_exist(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -1104,7 +1325,8 @@ class ApiTests(unittest.TestCase):
             retried = app.retry_queue_job(douyin["id"])
             self.assertEqual(retried["resume_step"], "download")
             with app.queue_state_lock:
-                self.assertEqual(douyin_job["source_video"], "")
+                persisted_douyin = next(job for job in app.workflow_jobs if job["id"] == douyin["id"])
+                self.assertEqual(persisted_douyin["source_video"], "")
             with self.assertRaises(FileNotFoundError):
                 app.retry_queue_job(local["id"])
 
@@ -1188,7 +1410,9 @@ class ApiTests(unittest.TestCase):
                 if app.workflow_lock.locked():
                     app.workflow_lock.release()
 
-            retry_step = app.serialize_job(job)["retry_step"]
+            with app.queue_state_lock:
+                job = next(item for item in app.workflow_jobs if item["id"] == queued["id"])
+                retry_step = app.serialize_job(job)["retry_step"]
 
         self.assertEqual(app.progress_snapshot()["status"], "error")
         self.assertTrue(job["needs_edge_login"])
@@ -1283,8 +1507,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertIn("ready", data)
+        self.assertIn("ready_local", data)
+        self.assertIn("ready_douyin", data)
         self.assertTrue(data["checks"]["videocr"]["required"])
-        self.assertFalse(data["checks"]["edge"]["required"])
+        self.assertTrue(data["checks"]["edge"]["required"])
 
     def test_update_endpoint_reports_a_new_release(self):
         update = {
@@ -1340,6 +1566,17 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("job", response.get_json()["error"])
+
+    def test_update_reservation_blocks_reentry_and_new_queue_start(self):
+        app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        self.assertTrue(app.update_install_lock.acquire(blocking=False))
+        try:
+            response = self.client.post("/api/update/install")
+            self.assertEqual(response.status_code, 409)
+            with self.assertRaisesRegex(RuntimeError, "cập nhật"):
+                app.start_workflow_queue()
+        finally:
+            app.update_install_lock.release()
 
     def test_cancel_endpoint_reports_the_request(self):
         with patch.object(app, "request_workflow_cancel", return_value=True):

@@ -360,12 +360,13 @@ flowchart TD
 
 The queue is intentionally sequential. A later job does not start until the current job finishes, fails, or is cancelled. This protects the shared VideOCR installation, Douzy sidecar, Edge debug profile, and Notebook conversation from concurrent control.
 
-For a Douyin job, the large MP4 remains in Douzy's folder and is referenced by the project. Only the comparatively small SRT, thumbnail, and manifest files are written to the VietSub Studio result folder. For a local upload, the managed MP4 copy remains part of the project because the web upload does not provide a stable original path that the persisted queue can safely reopen.
+For a Douyin job, the original MP4 stays in Douzy while OCR and translation run, then the app moves that exact video and its identity-matched assets into the self-contained project after final validation. For a local upload, the managed MP4 is validated, kept in the app cache while queued, and hard-linked or copied into the project so the persisted job can safely resume.
 
 Main implementation areas:
 
 - `app.py`: validation, process orchestration, Flask API, pywebview desktop launcher, file handling, and integrations.
-- `templates/index.html`: responsive UI, settings, diagnostics, progress, history, and result interactions.
+- `templates/index.html`: semantic HTML structure and server-rendered bootstrap metadata.
+- `static/style.css` and `static/app.js`: responsive styling, frontend state, settings, diagnostics, progress, history, and result interactions.
 - `automate.py`: command-line entry point.
 - `tests/test_app.py`: validation, naming, download lookup, API, cancellation, and workflow tests.
 - `VietSub Studio Portable.spec`: one-file PyInstaller configuration.
@@ -388,7 +389,7 @@ Local API endpoints:
 | `/api/cancel` | POST | Cancel the active workflow and child processes. |
 | `/api/open-folder` | POST | Open only a path produced by the current workflow. |
 
-The Flask server binds to `127.0.0.1`, not to the public network.
+The Flask server binds to `127.0.0.1`, not to the public network. Every control-plane API request uses a per-launch unguessable token; the server also validates local Host, Origin, Fetch Metadata, and state-changing content types. Preview video streaming uses an unguessable preview identifier because native video elements cannot attach the custom API header.
 
 ## Configuration and local data
 
@@ -401,6 +402,8 @@ The Flask server binds to `127.0.0.1`, not to the public network.
 | Douzy config | `%APPDATA%\douyin-downloader-desktop\config.yml` | Same |
 | Douzy history database | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Same |
 | Project output | Selected output directory or `Documents\VietSub Studio` | Same |
+| Durable app log | `vietsub-studio.log` beside `app.py` | `%APPDATA%\VietSub Studio\vietsub-studio.log` |
+| Single-instance lock | `instance.lock` beside `app.py` | `%APPDATA%\VietSub Studio\instance.lock` |
 
 `app_config.json` is ignored by Git because it may contain a private Notebook URL. Use `app_config.example.json` only as a safe reference.
 
@@ -408,13 +411,13 @@ The Flask server binds to `127.0.0.1`, not to the public network.
 
 - Video download and OCR run through locally installed applications.
 - The video itself is not uploaded to this repository or to a VietSub Studio server.
-- Selected local MP4 files are copied only into the app's managed local cache so queued jobs survive a restart.
+- Selected local MP4 files are limited to 8 GiB, checked for an MP4 `ftyp` container header, and copied only into the app's managed local cache so queued jobs survive a restart.
 - Subtitle text is submitted to the user's Gemini Notebook through the user's local Edge session. Review Google's terms and privacy policy before processing sensitive content.
 - The app does not require a Gemini API key.
 - Google credentials remain managed by Edge; VietSub Studio does not read or store the password.
 - A random local bearer token is generated for each Douzy sidecar session.
 - Settings and output files are written atomically to reduce corruption risk.
-- The local API validates hosts, paths, languages, filenames, and result-folder access.
+- The local API uses a fresh per-launch capability token and validates Host, Origin, Fetch Metadata, paths, languages, filenames, upload type/size, and result-folder access.
 - Never share `app_config.json`, Edge profile data, cookies, private Notebook URLs, or logs containing private video links.
 
 See [SECURITY.md](SECURITY.md) before reporting a security issue.
@@ -541,7 +544,7 @@ Yes. Packaged settings live under `%APPDATA%\VietSub Studio`, so moving the EXE 
 
 The release is not signed with a commercial Windows code-signing certificate. Always download from the official GitHub Releases page and verify checksums.
 
-From v1.3.0 onward, the packaged EXE can update itself in place. It accepts only assets from this repository's official GitHub Release URL, verifies both the published ZIP checksum and GitHub asset digest, waits for active jobs to finish, replaces the executable, and reopens the app. If the portable folder is not writable or validation fails, it opens the official release page instead.
+From v1.3.0 onward, the packaged EXE can update itself in place. It accepts only assets from this repository's official GitHub Release URL, requires the published ZIP checksum, checks GitHub digest/size metadata when available, reserves the application so no new preview or queue job can start, replaces the executable with rollback protection, and keeps the old EXE until the new process remains alive through its startup window. If the portable folder is not writable or validation fails, it opens the official release page instead. The community build is still unsigned, so publisher authenticity ultimately depends on the GitHub release account until Authenticode or an independent signing key is added.
 
 ### Why does the first launch take so long?
 
@@ -564,7 +567,7 @@ python -m py_compile app.py automate.py
 python -m unittest discover -s tests -v
 ```
 
-The repository includes a Windows GitHub Actions workflow that runs compilation and unit tests on pushes and pull requests.
+The repository includes a Windows GitHub Actions workflow that compiles the sources, runs unit tests, builds the portable PyInstaller executable, starts the packaged `--server` mode, verifies the UI and static assets, and uploads the smoke-tested artifact. Dependabot also tracks Python and GitHub Actions updates.
 
 ---
 
@@ -892,12 +895,13 @@ flowchart TD
 
 Hàng đợi cố ý chạy tuần tự. Job sau chỉ bắt đầu khi job hiện tại thành công, lỗi hoặc bị huỷ. Cách này bảo vệ bản cài VideOCR, sidecar Douzy, profile Edge debug và cuộc hội thoại Notebook dùng chung khỏi bị nhiều luồng điều khiển cùng lúc.
 
-Với job Douyin, file MP4 lớn vẫn nằm trong thư mục Douzy và dự án chỉ tham chiếu tới nó. Thư mục kết quả VietSub Studio chủ yếu chứa SRT, thumbnail và manifest có dung lượng nhỏ. Với MP4 local, bản sao do app quản lý vẫn thuộc dự án vì upload web không cung cấp một đường dẫn nguồn ổn định để hàng đợi đã lưu có thể mở lại an toàn.
+Với job Douyin, MP4 gốc chỉ ở lại thư mục Douzy trong lúc OCR và dịch; sau khi kiểm tra kết quả cuối, app chuyển đúng video và các asset khớp định danh vào project tự chứa. Với MP4 local, app giới hạn 8 GiB, kiểm tra header container MP4, giữ bản cache trong lúc chờ và hard-link hoặc sao chép vào project để job đã lưu có thể chạy lại an toàn.
 
 Các phần chính:
 
 - `app.py`: kiểm tra đầu vào, điều phối tiến trình, Flask API, cửa sổ pywebview, xử lý file và tích hợp ngoài.
-- `templates/index.html`: UI responsive, thiết lập, chẩn đoán, tiến trình, lịch sử và kết quả.
+- `templates/index.html`: cấu trúc HTML semantic và metadata bootstrap do server render.
+- `static/style.css` và `static/app.js`: giao diện responsive, state frontend, thiết lập, chẩn đoán, tiến trình, lịch sử và kết quả.
 - `automate.py`: entry point dòng lệnh.
 - `tests/test_app.py`: test validation, đặt tên, tìm video, API, huỷ và luồng xử lý.
 - `VietSub Studio Portable.spec`: cấu hình PyInstaller bản một file.
@@ -920,7 +924,7 @@ Các API cục bộ:
 | `/api/cancel` | POST | Huỷ quy trình cùng tiến trình con đang hoạt động. |
 | `/api/open-folder` | POST | Chỉ mở đường dẫn do quy trình hiện tại tạo ra. |
 
-Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng.
+Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng. Mỗi lần mở app tạo một token API ngẫu nhiên; control plane còn kiểm tra Host, Origin, Fetch Metadata và content type của yêu cầu thay đổi trạng thái. Luồng video preview dùng ID ngẫu nhiên vì thẻ video native không thể gắn custom API header.
 
 ## Cấu hình và dữ liệu cục bộ
 
@@ -933,6 +937,8 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng.
 | Cấu hình Douzy | `%APPDATA%\douyin-downloader-desktop\config.yml` | Giống nhau |
 | Database lịch sử Douzy | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Giống nhau |
 | Kết quả dự án | Thư mục đã chọn hoặc `Documents\VietSub Studio` | Giống nhau |
+| Log ứng dụng bền vững | `vietsub-studio.log` cạnh `app.py` | `%APPDATA%\VietSub Studio\vietsub-studio.log` |
+| Khoá một instance | `instance.lock` cạnh `app.py` | `%APPDATA%\VietSub Studio\instance.lock` |
 
 `app_config.json` bị Git bỏ qua vì có thể chứa link Notebook riêng. `app_config.example.json` chỉ là mẫu an toàn.
 
@@ -940,13 +946,13 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng.
 
 - Video được tải và OCR thông qua ứng dụng đã cài cục bộ.
 - File MP4 không bị upload lên repository hay server riêng của VietSub Studio.
-- MP4 được chọn trên máy chỉ được sao chép vào cache cục bộ do app quản lý để hàng đợi sống qua lần khởi động lại.
+- MP4 được chọn trên máy bị giới hạn 8 GiB, được kiểm tra header container `ftyp` rồi mới sao chép vào cache cục bộ do app quản lý để hàng đợi sống qua lần khởi động lại.
 - Nội dung SRT được gửi đến Gemini Notebook bằng phiên Edge của chính người dùng. Hãy đọc điều khoản/quyền riêng tư của Google trước khi xử lý nội dung nhạy cảm.
 - Ứng dụng không cần Gemini API key.
 - Thông tin đăng nhập Google do Edge giữ; VietSub Studio không đọc hoặc lưu mật khẩu.
 - Mỗi phiên sidecar Douzy dùng bearer token cục bộ ngẫu nhiên.
 - Thiết lập và file kết quả được ghi atomic để giảm nguy cơ hỏng.
-- API cục bộ kiểm tra host, đường dẫn, ngôn ngữ, tên file và quyền mở thư mục kết quả.
+- API cục bộ dùng token capability ngẫu nhiên theo mỗi lần mở app và kiểm tra Host, Origin, Fetch Metadata, đường dẫn, ngôn ngữ, tên file, loại/kích thước upload và quyền mở thư mục kết quả.
 - Không chia sẻ `app_config.json`, profile Edge, cookie, link Notebook riêng hoặc log chứa link video riêng tư.
 
 Đọc [SECURITY.md](SECURITY.md) trước khi báo cáo vấn đề bảo mật.
@@ -1073,7 +1079,7 @@ Có. Bản đóng gói lưu thiết lập tại `%APPDATA%\VietSub Studio`, nên
 
 Bản release chưa được ký bằng chứng thư code-signing thương mại. Chỉ tải từ GitHub Releases chính thức và luôn kiểm tra checksum.
 
-Từ v1.3.0, bản EXE có thể tự cập nhật tại chỗ. App chỉ nhận asset từ release chính thức của repository này, kiểm tra cả checksum ZIP đã công bố và digest của GitHub, chờ job đang chạy kết thúc, thay file EXE rồi tự mở lại. Nếu thư mục portable không có quyền ghi hoặc xác minh thất bại, app sẽ mở trang release chính thức để cập nhật thủ công.
+Từ v1.3.0, bản EXE có thể tự cập nhật tại chỗ. App chỉ nhận asset từ release chính thức của repository này, bắt buộc kiểm tra checksum ZIP và kiểm tra digest/kích thước GitHub khi metadata có sẵn. Khi cập nhật bắt đầu, app giữ reservation để không preview hay job mới nào được chạy, thay EXE với cơ chế rollback và chỉ xoá bản cũ sau khi tiến trình mới sống qua cửa sổ khởi động. Nếu thư mục portable không có quyền ghi hoặc xác minh thất bại, app sẽ mở trang release chính thức. Bản cộng đồng vẫn chưa được ký số nên tính xác thực nhà phát hành còn phụ thuộc tài khoản GitHub cho đến khi có Authenticode hoặc khoá ký độc lập.
 
 ### Tại sao lần đầu mở lâu?
 
@@ -1096,7 +1102,7 @@ python -m py_compile app.py automate.py
 python -m unittest discover -s tests -v
 ```
 
-Repository có workflow GitHub Actions chạy compile và unit test trên Windows cho mỗi push và pull request.
+Repository có workflow GitHub Actions compile source, chạy unit test, build EXE portable, khởi động chế độ packaged `--server`, kiểm tra UI/static asset và upload artifact đã smoke-test. Dependabot theo dõi dependency Python và GitHub Actions.
 
 ---
 

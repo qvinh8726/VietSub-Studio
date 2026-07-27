@@ -4,6 +4,22 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+### Security
+
+- Added a per-launch API capability token, local Host/Origin/Fetch-Metadata validation, JSON-only state changes, defensive response headers, and an 8 GiB validated MP4 upload limit.
+- Hardened executable discovery, Douzy asset identity matching, thumbnail validation, updater reservation/rollback, and update startup liveness checks.
+
+### Fixed
+
+- Queue mutations now persist with copy-on-write semantics, the worker converts unexpected exceptions into terminal job errors, corrupt queue/config files are quarantined, the CLI no longer loads or overwrites the desktop queue, and a cross-process lock prevents multiple app/CLI instances from sharing providers and state.
+- Fixed stale preview/auto-name/resolution races, Gemini timeout cleanup, detached sidecar startup cleanup, native shutdown process cleanup, SRT ordering validation, and queue admission beyond the persisted limit.
+
+### Changed
+
+- Edge is now a required health capability with a per-process dynamic CDP port, native startup exceptions/timeouts fall back to browser mode, and the frontend gates each queued source on source-aware health readiness with improved status/accessibility semantics.
+- Extracted inline CSS/JavaScript into packaged static modules, added queue revision polling and bounded provider output buffers, and enabled durable rotating logs.
+- Windows CI now builds and smoke-tests the packaged portable executable and uploads the verified artifact; Dependabot tracks Python and Actions dependencies.
+
 ## [1.5.2] - 2026-07-27
 
 ### Fixed
