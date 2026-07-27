@@ -16,10 +16,9 @@ import hashlib
 import tempfile
 import zipfile
 from queue import Empty, Queue
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, local
 from urllib.parse import urlparse
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
-from playwright.sync_api import sync_playwright
 from werkzeug.serving import make_server
 
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +52,8 @@ QUEUE_PATH = os.path.join(CONFIG_DIR, "workflow_queue.json")
 LOCAL_VIDEO_DIR = os.path.join(CONFIG_DIR, "local_videos")
 
 SUPPORTED_OCR_LANGS = {"ch", "en", "ja", "ko", "vi"}
+SUPPORTED_OCR_MODEL_MODES = {"auto", "fast", "accurate"}
+MAX_OCR_FRAMES_TO_SKIP = 10
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
 MAX_LOG_LINES = 2_000
 MAX_PROJECT_NAME_LENGTH = 100
@@ -61,7 +62,7 @@ MAX_PERSISTED_JOBS = 500
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -81,6 +82,7 @@ progress_status = {
     "log_base_index": 0,
     "error": "",
     "job_id": "",
+    "result_ready": False,
     "result": {
         "project_name": "",
         "project_dir": "",
@@ -106,6 +108,13 @@ current_job_id = ""
 queue_state_initialized = False
 update_cache_lock = Lock()
 update_cache = {"checked_at": 0.0, "status": None}
+config_write_lock = Lock()
+# Per-thread workflow context: the prefetch thread runs download helpers with its own
+# cancel event, without touching the visible job console or the cancellable process list.
+workflow_context = local()
+prefetch_thread = None
+prefetch_cancel_event = Event()
+prefetch_job_id = ""
 
 
 class WorkflowCancelled(RuntimeError):
@@ -226,6 +235,7 @@ def reset_progress(job_id=""):
             "log_base_index": 0,
             "error": "",
             "job_id": job_id,
+            "result_ready": False,
             "result": {
                 "project_name": "",
                 "project_dir": "",
@@ -238,7 +248,7 @@ def reset_progress(job_id=""):
         })
 
 
-def update_progress(*, status=None, step=None, error=None, result=None):
+def update_progress(*, status=None, step=None, error=None, result=None, result_ready=None):
     with status_lock:
         if status is not None:
             progress_status["status"] = status
@@ -248,6 +258,8 @@ def update_progress(*, status=None, step=None, error=None, result=None):
             progress_status["error"] = error
         if result:
             progress_status["result"].update(result)
+        if result_ready is not None:
+            progress_status["result_ready"] = bool(result_ready)
     if current_job_id:
         with queue_state_lock:
             for job in workflow_jobs:
@@ -261,6 +273,8 @@ def update_progress(*, status=None, step=None, error=None, result=None):
                     job["error"] = error
                 if result:
                     job["result"].update(result)
+                if result_ready is not None:
+                    job["result_ready"] = bool(result_ready)
                 persist_queue_state_locked()
                 break
 
@@ -280,10 +294,14 @@ def progress_snapshot(after_log_index=0):
             "next_log_index": progress_status["log_base_index"] + len(progress_status["logs"]),
             "error": progress_status["error"],
             "job_id": progress_status.get("job_id", ""),
+            "result_ready": bool(progress_status.get("result_ready")),
             "result": dict(progress_status["result"])
         }
+    # Validation already ran when the job succeeded; polling only re-checks file presence.
     snapshot["result_ready"] = (
-        snapshot["status"] == "success" and project_result_ready(snapshot["result"])
+        snapshot["status"] == "success"
+        and snapshot["result_ready"]
+        and project_files_present(snapshot["result"])
     )
     return snapshot
 
@@ -303,9 +321,31 @@ def validate_notebook_url(value, allow_empty=False):
 
 
 def validate_ocr_lang(value):
-    if value not in SUPPORTED_OCR_LANGS:
+    if not isinstance(value, str) or value not in SUPPORTED_OCR_LANGS:
         raise ValueError("Ngôn ngữ OCR này chưa được hỗ trợ.")
     return value
+
+
+def validate_ocr_model_mode(value):
+    if value in (None, ""):
+        return "auto"
+    if not isinstance(value, str) or value not in SUPPORTED_OCR_MODEL_MODES:
+        raise ValueError("Chế độ model OCR không hợp lệ.")
+    return value
+
+
+def validate_ocr_frames_to_skip(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Số khung hình bỏ qua phải là số nguyên.")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Số khung hình bỏ qua phải là số nguyên.")
+    if not 0 <= number <= MAX_OCR_FRAMES_TO_SKIP:
+        raise ValueError(f"Số khung hình bỏ qua phải từ 0 đến {MAX_OCR_FRAMES_TO_SKIP}.")
+    return number
 
 
 def validate_output_dir(value):
@@ -410,18 +450,23 @@ def stop_process(proc, name):
 
 
 def register_active_process(name, proc):
+    if getattr(workflow_context, "detached", False):
+        return
     with active_process_lock:
         active_processes[name] = proc
 
 
 def unregister_active_process(name, proc=None):
+    if getattr(workflow_context, "detached", False):
+        return
     with active_process_lock:
         if proc is None or active_processes.get(name) is proc:
             active_processes.pop(name, None)
 
 
 def check_cancel_requested():
-    if cancel_event.is_set():
+    event = getattr(workflow_context, "cancel_event", None) or cancel_event
+    if event.is_set():
         raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.")
 
 
@@ -442,6 +487,8 @@ def load_app_config():
     default_config = {
         "notebook_url": "",
         "ocr_lang": "ch",
+        "ocr_model_mode": "auto",
+        "ocr_frames_to_skip": None,
         "output_dir": "",
         "crop_coords": None,
         "edge_background": True,
@@ -497,6 +544,16 @@ def get_desktop_directory():
 def get_documents_directory():
     # CSIDL_PERSONAL follows the user's redirected Documents directory.
     return get_windows_known_folder(0x0005, "Documents")
+
+
+def is_cloud_synced_path(path):
+    if not path:
+        return False
+    for env_name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        root = os.environ.get(env_name)
+        if root and path_is_within(path, root):
+            return True
+    return "onedrive" in os.path.normcase(os.path.abspath(path))
 
 
 def get_default_output_directory():
@@ -793,7 +850,9 @@ def get_douzy_download_dir():
     return ""
 
 def log_to_app(msg, log_type="system"):
-    console_message = f"[{log_type.upper()}] {msg}"
+    quiet = getattr(workflow_context, "quiet", False)
+    prefix = "[PREFETCH] " if quiet else ""
+    console_message = f"{prefix}[{log_type.upper()}] {msg}"
     if sys.stdout is not None:
         try:
             print(console_message, flush=True)
@@ -805,6 +864,8 @@ def log_to_app(msg, log_type="system"):
                 print(safe_message, flush=True)
             except (OSError, UnicodeError):
                 pass
+    if quiet:
+        return
     with status_lock:
         if log_type == "system":
             progress_status["logs"].append(f"[*] {msg}")
@@ -857,9 +918,9 @@ def ensure_edge_running(notebook_url, background=None):
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         subprocess.Popen(cmd, creationflags=creation_flags)
         # Wait for port to bind
-        for _ in range(10):
+        for _ in range(40):
             check_cancel_requested()
-            time.sleep(1.0)
+            time.sleep(0.25)
             if check_edge_status():
                 log_to_app("Kích hoạt Edge thành công và đã kết nối cổng debug.")
                 return True
@@ -951,11 +1012,17 @@ def wait_for_gemini_prompt(page, timeout_seconds=15):
         page.wait_for_timeout(500)
 
 
+def get_sync_playwright():
+    # Imported lazily so app startup does not pay the playwright import cost.
+    from playwright.sync_api import sync_playwright
+    return sync_playwright
+
+
 def show_edge_for_login(notebook_url):
     notebook_url = validate_notebook_url(notebook_url)
     if not ensure_edge_running(notebook_url, background=False):
         raise RuntimeError("Không thể mở Edge để đăng nhập.")
-    with sync_playwright() as playwright:
+    with get_sync_playwright()() as playwright:
         browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
         if not browser.contexts:
             raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
@@ -1091,7 +1158,7 @@ def poll_download_job(port, token, job_id):
             time.sleep(2)
             continue
 
-        time.sleep(2.5)
+        time.sleep(1.0)
 
 def get_downloaded_video_file(start_time_epoch, video_id, allow_existing=False):
     log_to_app("Truy vấn đường dẫn lưu video từ cơ sở dữ liệu...")
@@ -1320,6 +1387,16 @@ def allocate_project_directory(output_root, project_name):
     raise FileExistsError("Có quá nhiều bộ file trùng tên trong thư mục kết quả.")
 
 
+def try_hardlink_video(source_path, destination_path):
+    # An app-managed upload is immutable, so a same-volume hard link replaces a
+    # full data copy with an instant metadata operation.
+    try:
+        os.link(source_path, destination_path)
+        return True
+    except OSError:
+        return False
+
+
 def copy_file_atomic(source_path, destination_path):
     temporary_path = f"{destination_path}.{uuid.uuid4().hex}.part"
     total_size = max(os.path.getsize(source_path), 1)
@@ -1532,6 +1609,8 @@ def prepare_project_files(
         check_cancel_requested()
         if defer_video_move:
             log_to_app("Dùng video tại Douzy trong lúc xử lý; sẽ chuyển vào dự án sau khi dịch xong.")
+        elif is_managed_local_video(source_video) and try_hardlink_video(source_video, video_path):
+            log_to_app("Đã liên kết video local vào thư mục kết quả, không cần sao chép lại.")
         else:
             log_to_app("Đang sao chép video vào thư mục kết quả...")
             copy_file_atomic(source_video, video_path)
@@ -1696,6 +1775,25 @@ def run_videocr(
                 elif line.startswith("--normalize_to_simplified_chinese"):
                     normalize_to_simplified = line.split("=", 1)[1].strip().lower()
 
+    app_config = load_app_config()
+    try:
+        model_mode = validate_ocr_model_mode(app_config.get("ocr_model_mode"))
+    except ValueError:
+        model_mode = "auto"
+    if model_mode == "fast":
+        use_server_model = "false"
+        log_to_app("Dùng model OCR nhanh (mobile) theo Thiết lập.")
+    elif model_mode == "accurate":
+        use_server_model = "true"
+        log_to_app("Dùng model OCR chính xác (server) theo Thiết lập.")
+    try:
+        frames_to_skip = validate_ocr_frames_to_skip(app_config.get("ocr_frames_to_skip"))
+    except ValueError:
+        frames_to_skip = None
+    if frames_to_skip is not None:
+        cmd += ["--frames_to_skip", str(frames_to_skip)]
+        log_to_app(f"OCR bỏ qua {frames_to_skip} khung hình giữa mỗi lần quét.")
+
     cmd += ["--use_gpu", use_gpu]
     cmd += ["--use_server_model", use_server_model]
     cmd += ["--normalize_to_simplified_chinese", normalize_to_simplified]
@@ -1760,7 +1858,7 @@ def resolve_url_via_edge(short_url, notebook_url):
 
     log_to_app(f"Giải mã URL di động bằng Edge: {short_url}")
     try:
-        with sync_playwright() as p:
+        with get_sync_playwright()() as p:
             browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
             contexts = browser.contexts
             if not contexts:
@@ -1769,8 +1867,13 @@ def resolve_url_via_edge(short_url, notebook_url):
             page = context.new_page()
             try:
                 page.goto(short_url, wait_until="commit", timeout=15000)
-                page.wait_for_timeout(2500)
-                check_cancel_requested()
+                # Poll for the redirect instead of a fixed wait; give slow chains up to 5s.
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    check_cancel_requested()
+                    if re.search(r"/(?:video|note)/\d+", urlparse(page.url).path):
+                        break
+                    page.wait_for_timeout(250)
                 resolved_url = page.url
                 log_to_app(f"Trình duyệt giải mã thành: {resolved_url}")
                 return resolved_url
@@ -1888,6 +1991,16 @@ def project_result_ready(result):
         return False
 
 
+def project_files_present(result):
+    # Cheap stat-only check for polling hot paths; full validation runs once at job success.
+    if not isinstance(result, dict):
+        return False
+    return all(
+        os.path.isfile(str(result.get(key) or ""))
+        for key in ("video", "raw_srt", "translated_srt")
+    )
+
+
 def find_last_response(page, selectors):
     for selector in selectors:
         locator = page.locator(selector)
@@ -1947,7 +2060,7 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
         raise RuntimeError("Trình duyệt Microsoft Edge chưa được chạy ở chế độ debug.")
 
     log_to_app("Kết nối Playwright vào Edge để thực hiện dịch phụ đề...")
-    with sync_playwright() as p:
+    with get_sync_playwright()() as p:
         browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
         contexts = browser.contexts
         if not contexts:
@@ -2033,10 +2146,6 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
         submit_btn.click()
 
         log_to_app("Chờ phản hồi dịch thuật hoàn tất...")
-        for _ in range(10):
-            check_cancel_requested()
-            time.sleep(0.5)
-
         start_wait = time.monotonic()
         last_length = 0
         stable_count = 0
@@ -2055,9 +2164,10 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
                     length = len(text)
                     if is_gemini_generating(gemini_page):
                         stable_count = 0
+                        last_length = length
                     elif text and text != previous_response_text and length == last_length:
                         stable_count += 1
-                        if stable_count >= 5:  # 10 seconds stability
+                        if stable_count >= 3:  # ~3 seconds without growth once generation stopped
                             log_to_app("Dịch thuật hoàn tất (Nội dung chữ đã dừng cập nhật).")
                             break
                     else:
@@ -2066,7 +2176,7 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
                 except Exception:
                     pass
 
-            time.sleep(2)
+            time.sleep(1)
 
         # Extract content
         last_response = find_last_response(gemini_page, response_selectors)
@@ -2081,9 +2191,7 @@ def translate_srt_via_gemini_edge(srt_path, notebook_url, output_srt=None):
 
         if code_blocks.count() > 0:
             log_to_app("Tìm thấy khối mã code. Tiến hành trích xuất...")
-            translated_srt = ""
-            for k in range(code_blocks.count()):
-                translated_srt += code_blocks.nth(k).inner_text() + "\n"
+            translated_srt = "\n".join(code_blocks.all_inner_texts()) + "\n"
         else:
             log_to_app("Trích xuất văn bản thô từ hội thoại...")
             translated_srt = last_response.inner_text()
@@ -2291,7 +2399,9 @@ def serialize_job(job):
         get_job_retry_step(job) if job.get("status") in {"error", "cancelled"} else None
     )
     serialized["result_ready"] = (
-        job.get("status") == "success" and project_result_ready(serialized.get("result"))
+        job.get("status") == "success"
+        and bool(job.get("result_ready"))
+        and project_files_present(serialized.get("result"))
     )
     return serialized
 
@@ -2299,7 +2409,7 @@ def serialize_job(job):
 PERSISTED_JOB_KEYS = (
     "id", "source_url", "video_id", "video_title", "source_video", "project_name",
     "ocr_lang", "crop_coords", "video_resolution", "preview_id", "use_saved_crop",
-    "source_type", "managed_source", "status", "step", "error", "result",
+    "source_type", "managed_source", "status", "step", "error", "result", "result_ready",
     "needs_edge_login", "resume_step", "created_at", "started_at", "finished_at",
 )
 
@@ -2352,6 +2462,11 @@ def normalize_persisted_job(value):
         status = "error"
         error = "Video local không còn tồn tại. Hãy chọn lại file MP4."
 
+    result_ready = bool(value.get("result_ready", False))
+    if status == "success" and "result_ready" not in value:
+        # Queues persisted by older versions lack the flag; validate once at load time.
+        result_ready = project_result_ready(result)
+
     return {
         "id": str(value.get("id") or uuid.uuid4().hex),
         "source_url": str(value.get("source_url") or ""),
@@ -2372,6 +2487,7 @@ def normalize_persisted_job(value):
         "step": value.get("step") if value.get("step") in {"resolve", "download", "ocr", "translate", "done"} else "resolve",
         "error": error,
         "result": dict(result),
+        "result_ready": result_ready if status == "success" else False,
         "needs_edge_login": bool(value.get("needs_edge_login", False)),
         "resume_step": value.get("resume_step") if value.get("resume_step") in {"download", "ocr", "translate"} else "download",
         "created_at": value.get("created_at") or int(time.time()),
@@ -2427,8 +2543,11 @@ def initialize_queue_state():
 
 
 def queue_snapshot():
+    # Copy under the lock, then serialize outside it so polling file checks
+    # never block the queue worker's progress updates.
     with queue_state_lock:
-        return [serialize_job(job) for job in workflow_jobs]
+        jobs = [{**job, "result": dict(job.get("result") or {})} for job in workflow_jobs]
+    return [serialize_job(job) for job in jobs]
 
 
 def enqueue_workflow(
@@ -2479,6 +2598,7 @@ def enqueue_workflow(
         "step": "resolve",
         "error": "",
         "result": {},
+        "result_ready": False,
         "needs_edge_login": False,
         "resume_step": "download",
         "created_at": int(time.time()),
@@ -2498,6 +2618,92 @@ def queue_workflow(video_url, ocr_lang, project_name=None):
     return start_workflow_queue()
 
 
+def run_prefetch_worker():
+    global prefetch_job_id
+    workflow_context.quiet = True
+    workflow_context.detached = True
+    workflow_context.cancel_event = prefetch_cancel_event
+    try:
+        # Wait until the running job is past its download step so two Douzy
+        # sidecars never run at the same time.
+        while not prefetch_cancel_event.is_set():
+            with status_lock:
+                status = progress_status["status"]
+                step = progress_status["step"]
+            if status != "running":
+                return
+            if step in {"ocr", "translate"}:
+                break
+            time.sleep(2)
+        if prefetch_cancel_event.is_set():
+            return
+
+        with queue_state_lock:
+            target = next(
+                (
+                    dict(job) for job in workflow_jobs
+                    if job["status"] == "queued"
+                    and not job.get("source_video")
+                    and job.get("source_type", "douyin") == "douyin"
+                ),
+                None,
+            )
+        if not target:
+            return
+        prefetch_job_id = target["id"]
+        try:
+            notebook_url = validate_notebook_url(load_app_config().get("notebook_url"))
+            downloaded = download_video_source(target["source_url"], notebook_url)
+        except WorkflowCancelled:
+            return
+        except Exception:
+            # Best effort only: the queue worker downloads normally on failure.
+            return
+
+        with queue_state_lock:
+            for job in workflow_jobs:
+                if job["id"] == target["id"] and job["status"] == "queued":
+                    job["source_url"] = downloaded["source_url"]
+                    job["video_id"] = downloaded["video_id"]
+                    job["source_video"] = downloaded["source_video"]
+                    if not job.get("video_title"):
+                        job["video_title"] = downloaded.get("video_title", "")
+                    try:
+                        persist_queue_state_locked()
+                    except OSError:
+                        pass
+                    break
+    finally:
+        prefetch_job_id = ""
+        workflow_context.quiet = False
+        workflow_context.detached = False
+        workflow_context.cancel_event = None
+
+
+def start_prefetch_thread():
+    global prefetch_thread
+    if app.config.get("TESTING"):
+        return
+    if prefetch_thread and prefetch_thread.is_alive():
+        return
+    prefetch_cancel_event.clear()
+    prefetch_thread = Thread(target=run_prefetch_worker, daemon=True)
+    prefetch_thread.start()
+
+
+def coordinate_prefetch_before_job(job):
+    thread = prefetch_thread
+    if not thread or not thread.is_alive():
+        return
+    if prefetch_job_id == job.get("id"):
+        # The prefetch is fetching exactly this job; let it finish and reuse the file.
+        thread.join()
+    elif not job.get("source_video"):
+        # This job needs its own sidecar download; stop the unrelated prefetch first.
+        prefetch_cancel_event.set()
+        thread.join()
+
+
 def start_workflow_queue():
     global queue_worker_thread
     with queue_state_lock:
@@ -2515,14 +2721,28 @@ def run_queue_worker():
     global current_job_id, queue_worker_thread
     while True:
         with queue_state_lock:
-            job = next((item for item in workflow_jobs if item["status"] == "queued"), None)
-            if not job:
+            picked = next((item for item in workflow_jobs if item["status"] == "queued"), None)
+            if not picked:
                 current_job_id = ""
                 queue_worker_thread = None
                 return
+            picked_snapshot = {"id": picked["id"], "source_video": picked.get("source_video", "")}
+        # Outside the lock: wait for a prefetch of this exact job, or stop an unrelated one.
+        coordinate_prefetch_before_job(picked_snapshot)
+        with queue_state_lock:
+            job = next(
+                (
+                    item for item in workflow_jobs
+                    if item["id"] == picked_snapshot["id"] and item["status"] == "queued"
+                ),
+                None,
+            )
+            if not job:
+                continue
             job["status"] = "running"
             job["error"] = ""
             job["needs_edge_login"] = False
+            job["result_ready"] = False
             job["started_at"] = int(time.time())
             current_job_id = job["id"]
             job_data = dict(job)
@@ -2530,6 +2750,7 @@ def run_queue_worker():
         workflow_lock.acquire()
         cancel_event.clear()
         reset_progress(job_data["id"])
+        start_prefetch_thread()
         prepared_video = None
         if job_data.get("source_video"):
             prepared_video = {
@@ -2611,6 +2832,7 @@ def retry_queue_job(job_id):
             "status": "queued",
             "step": resume_step if resume_step != "download" else "resolve",
             "error": "",
+            "result_ready": False,
             "needs_edge_login": False,
             "resume_step": resume_step,
             "started_at": None,
@@ -2748,7 +2970,7 @@ def run_workflow_thread(
             status="success",
         )
 
-        update_progress(status="success", step="done")
+        update_progress(status="success", step="done", result_ready=True)
         log_to_app("Success! Hoàn thành toàn bộ quy trình.")
     except WorkflowCancelled as e:
         update_progress(status="cancelled", error=str(e))
@@ -2884,9 +3106,10 @@ def install_update():
 def create_shortcut():
     try:
         shortcut_path = create_desktop_shortcut()
-        config = load_app_config()
-        config["desktop_shortcut_initialized"] = True
-        save_app_config(config)
+        with config_write_lock:
+            config = load_app_config()
+            config["desktop_shortcut_initialized"] = True
+            save_app_config(config)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         return jsonify({"error": str(error)}), 400
     return jsonify({"ok": True, "path": shortcut_path})
@@ -3041,37 +3264,60 @@ def clear_queue_finished():
     clear_finished_jobs()
     return jsonify({"ok": True})
 
+def apply_settings_update(data):
+    config = load_app_config()
+    try:
+        if "notebook_url" in data:
+            config["notebook_url"] = validate_notebook_url(
+                data["notebook_url"], allow_empty=True
+            )
+        if "ocr_lang" in data:
+            config["ocr_lang"] = validate_ocr_lang(data["ocr_lang"])
+        if "ocr_model_mode" in data:
+            config["ocr_model_mode"] = validate_ocr_model_mode(data["ocr_model_mode"])
+        if "ocr_frames_to_skip" in data:
+            config["ocr_frames_to_skip"] = validate_ocr_frames_to_skip(data["ocr_frames_to_skip"])
+        if "output_dir" in data:
+            config["output_dir"] = validate_output_dir(data["output_dir"])
+        if "crop_coords" in data:
+            config["crop_coords"] = validate_crop_coords(data["crop_coords"])
+        if "edge_background" in data:
+            if not isinstance(data["edge_background"], bool):
+                raise ValueError("Tuỳ chọn chạy Edge ẩn không hợp lệ.")
+            config["edge_background"] = data["edge_background"]
+        save_app_config(config)
+    except (OSError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "config": config})
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def handle_settings():
     if request.method == 'POST':
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"error": "JSON body is required"}), 400
-        config = load_app_config()
-        try:
-            if "notebook_url" in data:
-                config["notebook_url"] = validate_notebook_url(
-                    data["notebook_url"], allow_empty=True
-                )
-            if "ocr_lang" in data:
-                config["ocr_lang"] = validate_ocr_lang(data["ocr_lang"])
-            if "output_dir" in data:
-                config["output_dir"] = validate_output_dir(data["output_dir"])
-            if "crop_coords" in data:
-                config["crop_coords"] = validate_crop_coords(data["crop_coords"])
-            if "edge_background" in data:
-                if not isinstance(data["edge_background"], bool):
-                    raise ValueError("Tuỳ chọn chạy Edge ẩn không hợp lệ.")
-                config["edge_background"] = data["edge_background"]
-            save_app_config(config)
-        except (OSError, ValueError) as e:
-            return jsonify({"error": str(e)}), 400
-        return jsonify({"ok": True, "config": config})
+        # Serialize read-modify-write so concurrent saves cannot drop each other's fields.
+        with config_write_lock:
+            return apply_settings_update(data)
     else:
         # GET request
         config = load_app_config()
+        try:
+            ocr_model_mode = validate_ocr_model_mode(config.get("ocr_model_mode"))
+        except ValueError:
+            ocr_model_mode = "auto"
+        try:
+            ocr_frames_to_skip = validate_ocr_frames_to_skip(config.get("ocr_frames_to_skip"))
+        except ValueError:
+            ocr_frames_to_skip = None
         crop = get_saved_crop_coords()
         down_dir = get_douzy_download_dir()
+        try:
+            effective_output_dir = validate_output_dir(config.get("output_dir", ""))
+        except ValueError:
+            effective_output_dir = ""
+        effective_output_dir = effective_output_dir or get_default_output_directory()
         shortcut_supported = is_packaged_app()
         shortcut_exists = False
         if shortcut_supported:
@@ -3084,8 +3330,11 @@ def handle_settings():
             "download_dir": down_dir,
             "notebook_url": config.get("notebook_url"),
             "ocr_lang": config.get("ocr_lang"),
+            "ocr_model_mode": ocr_model_mode,
+            "ocr_frames_to_skip": ocr_frames_to_skip,
             "output_dir": config.get("output_dir", ""),
             "default_output_dir": get_default_output_directory(),
+            "output_dir_synced": is_cloud_synced_path(effective_output_dir),
             "edge_background": bool(config.get("edge_background", True)),
             "desktop_shortcut_supported": shortcut_supported,
             "desktop_shortcut_exists": shortcut_exists,

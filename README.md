@@ -28,9 +28,9 @@
 >
 > File EXE portable chứa VietSub Studio nhưng **không** đóng gói Douzy, VideOCR, Microsoft Edge, tài khoản Google hoặc Gemini Notebook. Mỗi máy vẫn phải chuẩn bị các thành phần đó.
 >
-> Douyin videos are processed from the MP4 downloaded by Douzy, then that MP4 and its related assets are moved into the selected project folder after the Vietnamese SRT passes validation. This keeps one full-size video copy while making every completed project self-contained. Local MP4 files keep a managed-copy workflow because browser uploads do not expose the original filesystem path safely.
+> Douyin videos are processed from the MP4 downloaded by Douzy, then that MP4 and its related assets are moved into the selected project folder after the Vietnamese SRT passes validation. This keeps one full-size video copy while making every completed project self-contained. Local MP4 files are first copied into app-managed storage because browser uploads do not expose the original filesystem path safely, then hard-linked into the project on the same drive or copied as a fallback.
 >
-> Video Douyin được xử lý từ file MP4 do Douzy tải; sau khi SRT tiếng Việt vượt qua kiểm tra, app chuyển MP4 và các asset liên quan vào thư mục project đã chọn. Nhờ vậy chỉ có một bản video dung lượng lớn nhưng mỗi project hoàn tất vẫn tự chứa đầy đủ file. MP4 chọn từ máy vẫn dùng bản sao do app quản lý vì trình duyệt không cung cấp đường dẫn file gốc một cách an toàn.
+> Video Douyin được xử lý từ file MP4 do Douzy tải; sau khi SRT tiếng Việt vượt qua kiểm tra, app chuyển MP4 và các asset liên quan vào thư mục project đã chọn. Nhờ vậy chỉ có một bản video dung lượng lớn nhưng mỗi project hoàn tất vẫn tự chứa đầy đủ file. MP4 chọn từ máy được chép vào vùng app quản lý vì trình duyệt không cung cấp đường dẫn file gốc an toàn, sau đó được hard-link vào project nếu cùng ổ đĩa hoặc fallback sang sao chép.
 
 ---
 
@@ -67,8 +67,8 @@ The complete workflow is:
 2. Resolve short Douyin share links, reject mix/profile/playlist URLs, and identify the exact source video.
 3. For Douyin, ask the installed Douzy sidecar to download the video or reuse an existing cache record. For a local MP4, store a managed upload copy and skip Douzy completely.
 4. Stream the prepared video into the in-app preview and let the user drag or resize the OCR rectangle over the exact subtitle region.
-5. Save the crop, OCR language, project name, source metadata, and video resolution as an independent queue job.
-6. Run jobs sequentially so Douzy, VideOCR, Gemini, and the Edge debug profile are never driven concurrently by multiple videos.
+5. Save the crop, OCR language, speed options, project name, source metadata, and video resolution as an independent queue job.
+6. Run OCR and Gemini sequentially for one active video. While that video is in OCR or translation, prefetch the next queued Douyin download without ever running two Douzy sidecars together.
 7. Process the original Douzy MP4 in place, then move it and the related Douzy assets into the project folder only after translation succeeds.
 8. Ask the installed VideOCR CLI to scan only the selected area and write the original-language `.raw.srt` file.
 9. Connect Playwright to a dedicated Microsoft Edge debug profile, submit the raw SRT to the user's Gemini Notebook, and collect the translated response.
@@ -101,6 +101,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Reads Douzy's recorded title, video path, metadata, and optional cover image.
 - Moves the original Douzy MP4, cover, metadata, music, and other per-video assets into the completed project folder without leaving a second full-size copy.
 - Copies a local MP4 into managed app storage so it remains available to the persisted queue.
+- Hard-links the managed local MP4 into the completed project on the same drive, with a full-copy fallback across drives or unsupported filesystems.
 
 ### OCR preview and recognition
 
@@ -108,13 +109,14 @@ The project is designed around the parts of long-form subtitle work that become 
 - Provides a visible, draggable, and resizable crop rectangle for the burned-in subtitle area.
 - Stores crop coordinates per queue item and can reuse a saved default crop.
 - Supports Chinese, English, Japanese, Korean, and Vietnamese OCR modes.
+- Lets users choose the fast mobile OCR model, the accurate server model, or the existing VideOCR configuration, plus an optional frame-skip interval.
 - Uses FFprobe when available to convert preview coordinates accurately to the source resolution.
 - Calls the locally installed VideOCR CLI and writes raw OCR output to a dedicated `.raw.srt` file.
 
 ### Sequential queue and recovery
 
 - Lets users prepare multiple Douyin and local MP4 jobs before processing starts.
-- Uses one sequential worker: only one video controls Douzy, VideOCR, and Gemini at a time.
+- Uses one sequential OCR/Gemini worker and prefetches at most one future Douyin download after the active job leaves its download step.
 - Persists queued, running, successful, failed, and cancelled job metadata across app restarts.
 - Supports removing waiting jobs, cancelling the active job, and clearing finished jobs.
 - Retries from the earliest reusable stage: video preparation, OCR, or translation.
@@ -149,6 +151,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Includes a dependency health panel for Douzy, VideOCR, FFprobe, Notebook settings, and Edge.
 - Shows recent Douzy history and can reload a previous video quickly.
 - Supports a native Windows folder picker and a configurable output directory independent from Douzy.
+- Warns when the effective project output directory is inside OneDrive, where large exports may be slowed by cloud synchronization.
 - Creates or recreates a Desktop shortcut for the packaged EXE.
 - Keeps the Edge window minimized during normal translation while retaining a reliable visible fallback.
 - Ships as a portable one-file Windows EXE with a custom icon.
@@ -177,7 +180,7 @@ Product Review/
 └── project.json
 ```
 
-- A completed Douyin project contains the original MP4 moved from Douzy. Local MP4 uploads are copied into the same self-contained layout.
+- A completed Douyin project contains the original MP4 moved from Douzy. Local MP4 uploads use a same-drive hard link into the self-contained layout, with a normal copy as fallback.
 - `Product Review.thumbnail.jpg`: the Douyin thumbnail copied from Douzy or downloaded from its saved metadata when available; PNG and WebP are also supported.
 - `Product Review.raw.srt`: OCR output in the selected source language.
 - `Product Review.vi.srt`: translated Vietnamese subtitle with source timestamps preserved.
@@ -598,8 +601,8 @@ Toàn bộ quy trình gồm:
 2. Giải mã link share ngắn, từ chối link mix/profile/playlist và xác định đúng một video nguồn.
 3. Với Douyin, yêu cầu sidecar Douzy đã cài trên máy tải video hoặc dùng lại bản ghi cache. Với MP4 local, app lưu một bản upload do app quản lý và bỏ qua Douzy hoàn toàn.
 4. Phát video đã chuẩn bị trong khung preview của app để người dùng kéo/đổi kích thước vùng OCR đúng vị trí phụ đề.
-5. Lưu crop, ngôn ngữ OCR, tên dự án, metadata nguồn và độ phân giải thành một job độc lập trong hàng đợi.
-6. Chạy tuần tự để Douzy, VideOCR, Gemini và profile Edge debug không bị nhiều video điều khiển cùng lúc.
+5. Lưu crop, ngôn ngữ OCR, tuỳ chọn tốc độ, tên dự án, metadata nguồn và độ phân giải thành một job độc lập trong hàng đợi.
+6. Chỉ cho một video chạy OCR/Gemini tại một thời điểm. Khi video đó đã sang bước OCR hoặc dịch, app tải trước video Douyin kế tiếp nhưng không bao giờ chạy hai sidecar Douzy cùng lúc.
 7. Với video Douyin, xử lý trực tiếp MP4 gốc tại Douzy rồi chỉ chuyển MP4 và các asset liên quan vào folder project sau khi dịch thành công.
 8. Gọi VideOCR CLI quét đúng vùng đã chọn và ghi phụ đề ngôn ngữ gốc vào file `.raw.srt`.
 9. Kết nối Playwright với profile Edge debug riêng, gửi sub OCR vào Gemini Notebook của người dùng và lấy phản hồi dịch.
@@ -632,6 +635,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Đọc tiêu đề, đường dẫn video, metadata và ảnh cover từ dữ liệu Douzy.
 - Chuyển MP4 gốc, cover, metadata, nhạc và các asset riêng của video từ Douzy vào folder project hoàn tất mà không tạo bản sao video dung lượng lớn thứ hai.
 - Sao chép MP4 local vào vùng app quản lý để job vẫn tồn tại sau khi đóng/mở ứng dụng.
+- Hard-link MP4 local do app quản lý vào project nếu cùng ổ đĩa; nếu khác ổ hoặc filesystem không hỗ trợ thì tự fallback sang sao chép đầy đủ.
 
 ### Preview vùng OCR và nhận dạng
 
@@ -639,13 +643,14 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Có khung crop trực quan, kéo và đổi kích thước được để bao đúng vùng phụ đề dính trong hình.
 - Lưu crop riêng cho từng job và có thể dùng lại crop mặc định.
 - Hỗ trợ OCR tiếng Trung, Anh, Nhật, Hàn và Việt.
+- Cho phép chọn model OCR mobile nhanh, model server chính xác hoặc giữ cấu hình VideOCR hiện có, kèm mức bỏ qua khung hình tuỳ chọn.
 - Dùng FFprobe nếu có để quy đổi crop từ kích thước preview sang độ phân giải video nguồn chính xác hơn.
 - Gọi VideOCR CLI đã cài trên máy và ghi kết quả nhận dạng vào file `.raw.srt` riêng.
 
 ### Hàng đợi tuần tự và khôi phục lỗi
 
 - Cho phép chuẩn bị nhiều job Douyin và MP4 local trước khi bắt đầu chạy.
-- Chỉ có một worker tuần tự: mỗi thời điểm chỉ một video dùng Douzy, VideOCR và Gemini.
+- Chỉ có một worker OCR/Gemini tuần tự và tối đa một lượt tải trước Douyin sau khi job hiện tại rời bước download.
 - Lưu metadata của job chờ, đang chạy, thành công, lỗi và đã huỷ qua lần đóng/mở app.
 - Hỗ trợ xoá job đang chờ, huỷ job hiện tại và dọn các job đã kết thúc.
 - Chạy lại từ bước sớm nhất còn tận dụng được: chuẩn bị video, OCR hoặc dịch.
@@ -680,6 +685,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Bảng kiểm tra Douzy, VideOCR, FFprobe, Notebook và Edge kèm hướng dẫn sửa từng mục.
 - Hiển thị lịch sử Douzy và nạp lại video gần đây nhanh chóng.
 - Có hộp thoại Windows để chọn thư mục lưu riêng, hoàn toàn độc lập với thư mục tải Douzy.
+- Cảnh báo nếu thư mục project thực tế nằm trong OneDrive vì đồng bộ cloud có thể làm chậm video dung lượng lớn.
 - Tự tạo hoặc tạo lại shortcut ngoài Desktop cho bản EXE.
 - Giữ Edge thu nhỏ trong luồng dịch bình thường nhưng vẫn có fallback hiện cửa sổ đáng tin cậy.
 - Đóng gói thành một file EXE Windows portable với icon riêng.
@@ -708,7 +714,7 @@ Review sản phẩm/
 └── project.json
 ```
 
-- Project Douyin hoàn tất chứa MP4 gốc đã được chuyển khỏi thư mục Douzy. MP4 chọn từ máy vẫn được sao chép vào cùng bố cục project tự chứa.
+- Project Douyin hoàn tất chứa MP4 gốc đã được chuyển khỏi thư mục Douzy. MP4 chọn từ máy được hard-link vào bố cục project tự chứa nếu cùng ổ đĩa, nếu không sẽ được sao chép bình thường.
 - `Review sản phẩm.thumbnail.jpg`: thumbnail Douyin lấy từ Douzy hoặc tải từ metadata đã lưu nếu có; app cũng hỗ trợ PNG và WebP.
 - `Review sản phẩm.raw.srt`: phụ đề OCR theo ngôn ngữ gốc đã chọn.
 - `Review sản phẩm.vi.srt`: phụ đề tiếng Việt, giữ mốc thời gian nguồn.

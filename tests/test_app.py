@@ -1,5 +1,6 @@
 import io
 import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -361,6 +362,193 @@ class ValidationTests(unittest.TestCase):
 
             self.assertFalse(app.serialize_job(job)["result_ready"])
 
+    def test_ocr_speed_settings_are_validated(self):
+        self.assertEqual(app.validate_ocr_model_mode(None), "auto")
+        self.assertEqual(app.validate_ocr_model_mode(""), "auto")
+        self.assertEqual(app.validate_ocr_model_mode("fast"), "fast")
+        self.assertEqual(app.validate_ocr_model_mode("accurate"), "accurate")
+        with self.assertRaises(ValueError):
+            app.validate_ocr_model_mode("turbo")
+        with self.assertRaises(ValueError):
+            app.validate_ocr_model_mode([])
+
+        self.assertIsNone(app.validate_ocr_frames_to_skip(None))
+        self.assertIsNone(app.validate_ocr_frames_to_skip(""))
+        self.assertEqual(app.validate_ocr_frames_to_skip(3), 3)
+        self.assertEqual(app.validate_ocr_frames_to_skip("2"), 2)
+        with self.assertRaises(ValueError):
+            app.validate_ocr_frames_to_skip(-1)
+        with self.assertRaises(ValueError):
+            app.validate_ocr_frames_to_skip(99)
+        with self.assertRaises(ValueError):
+            app.validate_ocr_frames_to_skip("nhanh")
+        with self.assertRaises(ValueError):
+            app.validate_ocr_frames_to_skip(True)
+
+    def test_run_videocr_applies_speed_settings_from_app_config(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            cli = directory / "videocr-cli.exe"
+            cli.write_bytes(b"exe")
+            video = directory / "video.mp4"
+            video.write_bytes(b"video")
+            output_srt = directory / "video.raw.srt"
+            output_srt.write_text("stub", encoding="utf-8")
+
+            captured = {}
+
+            def fake_popen(cmd, **_kwargs):
+                captured["cmd"] = cmd
+                process = Mock()
+                process.poll.return_value = 0
+                process.returncode = 0
+                process.stdout = io.StringIO("")
+                return process
+
+            with (
+                patch.object(app, "VIDEOCR_CLI", str(cli)),
+                patch.object(app, "VIDEOCR_CONFIG", str(directory / "missing.ini")),
+                patch.object(app, "load_app_config", return_value={
+                    "ocr_model_mode": "fast",
+                    "ocr_frames_to_skip": 2,
+                }),
+                patch.object(app, "get_saved_crop_coords", return_value=None),
+                patch.object(app, "get_video_resolution", return_value=None),
+                patch.object(app.subprocess, "Popen", side_effect=fake_popen),
+            ):
+                result = app.run_videocr(str(video), ocr_lang="ch", output_srt=str(output_srt))
+
+            self.assertEqual(result, str(output_srt))
+            cmd = captured["cmd"]
+            self.assertEqual(cmd[cmd.index("--use_server_model") + 1], "false")
+            self.assertEqual(cmd[cmd.index("--frames_to_skip") + 1], "2")
+
+    def test_managed_local_videos_are_hardlinked_into_the_project(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            local_dir = directory / "local_videos"
+            local_dir.mkdir()
+            source = local_dir / "abc.mp4"
+            source.write_bytes(b"video-bytes")
+
+            with patch.object(app, "LOCAL_VIDEO_DIR", str(local_dir)):
+                project = app.prepare_project_files(
+                    str(source),
+                    "Video local",
+                    "local-abc",
+                    output_dir=str(directory / "out"),
+                    defer_video_move=False,
+                    include_thumbnail=False,
+                )
+
+            video_path = Path(project["video"])
+            self.assertTrue(video_path.is_file())
+            self.assertEqual(video_path.read_bytes(), b"video-bytes")
+            self.assertEqual(os.stat(video_path).st_nlink, 2)
+
+    def test_hardlink_failure_falls_back_to_a_full_copy(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            local_dir = directory / "local_videos"
+            local_dir.mkdir()
+            source = local_dir / "abc.mp4"
+            source.write_bytes(b"video-bytes")
+
+            with (
+                patch.object(app, "LOCAL_VIDEO_DIR", str(local_dir)),
+                patch.object(app.os, "link", side_effect=OSError("no links")),
+            ):
+                project = app.prepare_project_files(
+                    str(source),
+                    "Video local",
+                    "local-abc",
+                    output_dir=str(directory / "out"),
+                    defer_video_move=False,
+                    include_thumbnail=False,
+                )
+
+            video_path = Path(project["video"])
+            self.assertTrue(video_path.is_file())
+            self.assertEqual(video_path.read_bytes(), b"video-bytes")
+            self.assertEqual(os.stat(video_path).st_nlink, 1)
+
+    def test_cloud_synced_output_paths_are_detected(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            onedrive_root = os.path.join(temporary_dir, "OneDrive")
+            inside = os.path.join(onedrive_root, "Documents", "VietSub Studio")
+            outside = os.path.join(temporary_dir, "Videos")
+
+            with patch.dict(os.environ, {"OneDrive": onedrive_root}):
+                self.assertTrue(app.is_cloud_synced_path(inside))
+
+            cleaned = {
+                key: value for key, value in os.environ.items()
+                if not key.lower().startswith("onedrive")
+            }
+            with patch.dict(os.environ, cleaned, clear=True):
+                self.assertTrue(app.is_cloud_synced_path(inside))  # tên đường dẫn vẫn chứa OneDrive
+                self.assertFalse(app.is_cloud_synced_path(outside))
+
+    def test_success_job_trusts_the_cached_flag_but_rechecks_file_presence(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            translated_srt.write_text(TRANSLATED_SRT, encoding="utf-8")
+            job = {
+                "id": "job-success",
+                "status": "success",
+                "step": "done",
+                "result_ready": True,
+                "result": {
+                    "project_dir": str(directory),
+                    "video": str(video),
+                    "raw_srt": str(raw_srt),
+                    "translated_srt": str(translated_srt),
+                },
+            }
+
+            with patch.object(app, "project_result_ready") as validate:
+                self.assertTrue(app.serialize_job(job)["result_ready"])
+                validate.assert_not_called()
+
+            job["result_ready"] = False
+            self.assertFalse(app.serialize_job(job)["result_ready"])
+
+            job["result_ready"] = True
+            translated_srt.unlink()
+            self.assertFalse(app.serialize_job(job)["result_ready"])
+
+    def test_legacy_persisted_success_jobs_validate_once_at_load(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            translated_srt.write_text(TRANSLATED_SRT, encoding="utf-8")
+            legacy_value = {
+                "id": "legacy-success",
+                "status": "success",
+                "step": "done",
+                "result": {
+                    "project_dir": str(directory),
+                    "video": str(video),
+                    "raw_srt": str(raw_srt),
+                    "translated_srt": str(translated_srt),
+                },
+            }
+
+            job = app.normalize_persisted_job(legacy_value)
+            self.assertTrue(job["result_ready"])
+
+            job_with_flag = app.normalize_persisted_job({**legacy_value, "result_ready": False})
+            self.assertFalse(job_with_flag["result_ready"])
+
 
 class DownloadLookupTests(unittest.TestCase):
     def test_updates_douzy_history_after_moving_the_video(self):
@@ -641,6 +829,159 @@ class ApiTests(unittest.TestCase):
                 response = self.client.post("/api/settings", json={"notebook_url": ""})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(app.load_app_config()["notebook_url"], "")
+
+    def test_settings_persist_and_validate_ocr_speed_options(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = str(Path(temporary_dir) / "app_config.json")
+            with patch.object(app, "CONFIG_PATH", config_path):
+                response = self.client.post(
+                    "/api/settings",
+                    json={"ocr_model_mode": "fast", "ocr_frames_to_skip": 2},
+                )
+                self.assertEqual(response.status_code, 200)
+                config = app.load_app_config()
+                self.assertEqual(config["ocr_model_mode"], "fast")
+                self.assertEqual(config["ocr_frames_to_skip"], 2)
+
+                settings = self.client.get("/api/settings").get_json()
+                self.assertEqual(settings["ocr_model_mode"], "fast")
+                self.assertEqual(settings["ocr_frames_to_skip"], 2)
+
+                self.assertEqual(
+                    self.client.post("/api/settings", json={"ocr_model_mode": "turbo"}).status_code,
+                    400,
+                )
+                self.assertEqual(
+                    self.client.post("/api/settings", json={"ocr_frames_to_skip": 99}).status_code,
+                    400,
+                )
+                self.assertEqual(
+                    self.client.post("/api/settings", json={"ocr_model_mode": []}).status_code,
+                    400,
+                )
+
+    def test_settings_fall_back_when_saved_ocr_options_are_invalid(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            config_path.write_text(
+                json.dumps({"ocr_model_mode": "turbo", "ocr_frames_to_skip": True}),
+                encoding="utf-8",
+            )
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                response = self.client.get("/api/settings")
+
+            self.assertEqual(response.status_code, 200)
+            settings = response.get_json()
+            self.assertEqual(settings["ocr_model_mode"], "auto")
+            self.assertIsNone(settings["ocr_frames_to_skip"])
+
+    def test_prefetch_context_isolates_cancel_logging_and_processes(self):
+        app.workflow_context.cancel_event = app.Event()
+        app.workflow_context.quiet = True
+        app.workflow_context.detached = True
+        try:
+            app.cancel_event.set()
+            app.check_cancel_requested()  # cancelling the visible job must not stop the prefetch
+            app.workflow_context.cancel_event.set()
+            with self.assertRaises(app.WorkflowCancelled):
+                app.check_cancel_requested()
+
+            with app.status_lock:
+                logs_before = len(app.progress_status["logs"])
+            app.log_to_app("prefetch chạy ngầm")
+            with app.status_lock:
+                self.assertEqual(len(app.progress_status["logs"]), logs_before)
+
+            app.register_active_process("prefetch process", Mock())
+            with app.active_process_lock:
+                self.assertNotIn("prefetch process", app.active_processes)
+        finally:
+            app.workflow_context.cancel_event = None
+            app.workflow_context.quiet = False
+            app.workflow_context.detached = False
+            app.cancel_event.clear()
+
+    def test_prefetch_downloads_the_next_queued_video_during_ocr(self):
+        job = app.enqueue_workflow("https://www.douyin.com/video/9", "ch")
+        app.reset_progress("running-job")
+        app.update_progress(status="running", step="ocr")
+        try:
+            with (
+                patch.object(app, "load_app_config", return_value={
+                    "notebook_url": "https://gemini.google.com/notebook/test-id",
+                }),
+                patch.object(app, "download_video_source", return_value={
+                    "source_url": "https://www.douyin.com/video/9",
+                    "video_id": "9",
+                    "source_video": "cached.mp4",
+                    "video_title": "Video 9",
+                }) as download,
+            ):
+                app.run_prefetch_worker()
+
+            download.assert_called_once()
+            with app.queue_state_lock:
+                stored = next(item for item in app.workflow_jobs if item["id"] == job["id"])
+                self.assertEqual(stored["source_video"], "cached.mp4")
+                self.assertEqual(stored["video_id"], "9")
+                self.assertEqual(stored["status"], "queued")
+        finally:
+            app.update_progress(status="idle")
+            app.prefetch_cancel_event.clear()
+
+    def test_prefetch_ignores_prepared_and_local_queue_entries(self):
+        preview_id = "prefetch-preview"
+        with app.preview_registry_lock:
+            app.preview_registry[preview_id] = {
+                "id": preview_id,
+                "created_at": app.time.time(),
+                "source_url": "https://www.douyin.com/video/1",
+                "video_id": "1",
+                "video_title": "Demo",
+                "source_video": "video.mp4",
+                "crop_coords": None,
+            }
+        app.enqueue_workflow("https://www.douyin.com/video/1", "ch", preview_id=preview_id)
+        app.reset_progress("running-job")
+        app.update_progress(status="running", step="translate")
+        try:
+            with patch.object(app, "download_video_source") as download:
+                app.run_prefetch_worker()
+            download.assert_not_called()
+        finally:
+            app.update_progress(status="idle")
+            app.prefetch_cancel_event.clear()
+
+    def test_queue_worker_coordinates_and_restarts_the_prefetch(self):
+        job = app.enqueue_workflow("https://www.douyin.com/video/5", "ch")
+
+        def finish(video_url, *_args, **_kwargs):
+            app.update_progress(status="success", step="done")
+            app.workflow_lock.release()
+
+        with (
+            patch.object(app, "coordinate_prefetch_before_job") as coordinate,
+            patch.object(app, "start_prefetch_thread") as start_prefetch,
+            patch.object(app, "run_workflow_thread", side_effect=finish),
+        ):
+            app.run_queue_worker()
+
+        coordinate.assert_called_once()
+        self.assertEqual(coordinate.call_args.args[0]["id"], job["id"])
+        start_prefetch.assert_called_once()
+
+    def test_queue_waits_until_prefetch_stops_before_starting_another_download(self):
+        thread = Mock()
+        thread.is_alive.return_value = True
+        with (
+            patch.object(app, "prefetch_thread", thread),
+            patch.object(app, "prefetch_job_id", "different-job"),
+        ):
+            app.coordinate_prefetch_before_job({"id": "next-job", "source_video": ""})
+
+        self.assertTrue(app.prefetch_cancel_event.is_set())
+        thread.join.assert_called_once_with()
+        app.prefetch_cancel_event.clear()
 
     def test_multiple_workflows_can_be_queued_in_order(self):
         first = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
