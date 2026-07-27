@@ -85,17 +85,19 @@ class ValidationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_dir:
             api = app.DesktopApi(FakeWebview)
-            api.window = Mock()
-            api.window.create_file_dialog.return_value = (temporary_dir,)
+            api._window = Mock()
+            api._window.create_file_dialog.return_value = (temporary_dir,)
 
             selected = api.select_output_directory(temporary_dir)
 
             self.assertEqual(selected, os.path.abspath(temporary_dir))
-            api.window.create_file_dialog.assert_called_once_with(
+            api._window.create_file_dialog.assert_called_once_with(
                 20,
                 directory=os.path.abspath(temporary_dir),
                 allow_multiple=False,
             )
+            self.assertFalse(hasattr(api, "webview"))
+            self.assertFalse(hasattr(api, "window"))
 
     def test_only_fresh_douzy_downloads_are_moved(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
