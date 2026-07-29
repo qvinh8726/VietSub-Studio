@@ -5,7 +5,6 @@ import copy
 import time
 import uuid
 import sqlite3
-import socket
 import ast
 import shutil
 import subprocess
@@ -41,6 +40,26 @@ app = Flask(
 APPDATA = os.environ.get("APPDATA")
 LOCALAPPDATA = os.environ.get("LOCALAPPDATA")
 
+
+def get_windows_directory():
+    if os.name != "nt":
+        return ""
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(32_768)
+    length = ctypes.windll.kernel32.GetWindowsDirectoryW(buffer, len(buffer))
+    return buffer.value if 0 < length < len(buffer) else r"C:\Windows"
+
+
+WINDOWS_DIRECTORY = get_windows_directory()
+POWERSHELL_EXE = os.path.join(
+    WINDOWS_DIRECTORY,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+)
+
 SIDECAR_BIN = os.path.join(LOCALAPPDATA, "Programs", "Douzy", "resources", "sidecar", "win32-x64", "douyin-dl-sidecar.exe")
 DOUZY_CONFIG = os.path.join(APPDATA, "douyin-downloader-desktop", "config.yml")
 DOUZY_DB = os.path.join(APPDATA, "douyin-downloader-desktop", "dy_downloader.db")
@@ -49,6 +68,7 @@ VIDEOCR_CLI = r"C:\Program Files\VideOCR\videocr-cli.exe"
 VIDEOCR_CONFIG = os.path.join(APPDATA, "VideOCR", "videocr_gui_config.ini")
 
 USER_DATA_DIR_DEBUG = os.path.join(LOCALAPPDATA, "Microsoft", "Edge", "User Data Debug")
+EDGE_DEBUG_PORT = 9222
 CONFIG_DIR = (
     os.path.join(APPDATA, "VietSub Studio")
     if getattr(sys, "frozen", False) and APPDATA
@@ -138,8 +158,6 @@ prefetch_thread = None
 prefetch_cancel_event = Event()
 prefetch_job_id = ""
 instance_lock_handle = None
-edge_debug_port = 0
-edge_debug_port_lock = Lock()
 
 
 class WorkflowCancelled(RuntimeError):
@@ -147,6 +165,10 @@ class WorkflowCancelled(RuntimeError):
 
 
 class EdgeLoginRequired(RuntimeError):
+    pass
+
+
+class QueuePersistenceError(OSError):
     pass
 
 
@@ -273,6 +295,20 @@ def reset_progress(job_id=""):
         })
 
 
+def mark_current_job_persistence_error(error):
+    message = f"Không thể lưu trạng thái hàng đợi: {error}"
+    with queue_state_lock:
+        candidate_jobs = copy.deepcopy(workflow_jobs)
+        for job in candidate_jobs:
+            if job["id"] == current_job_id:
+                job.update({"status": "error", "error": message, "result_ready": False})
+                break
+        replace_queue_jobs_locked(candidate_jobs)
+    with status_lock:
+        progress_status.update({"status": "error", "error": message, "result_ready": False})
+    return QueuePersistenceError(message)
+
+
 def update_progress(*, status=None, step=None, error=None, result=None, result_ready=None):
     with status_lock:
         if status is not None:
@@ -286,23 +322,26 @@ def update_progress(*, status=None, step=None, error=None, result=None, result_r
         if result_ready is not None:
             progress_status["result_ready"] = bool(result_ready)
     if current_job_id:
-        with queue_state_lock:
-            candidate_jobs = copy.deepcopy(workflow_jobs)
-            for job in candidate_jobs:
-                if job["id"] != current_job_id:
-                    continue
-                if status is not None:
-                    job["status"] = status
-                if step is not None:
-                    job["step"] = step
-                if error is not None:
-                    job["error"] = error
-                if result:
-                    job["result"].update(result)
-                if result_ready is not None:
-                    job["result_ready"] = bool(result_ready)
-                commit_queue_jobs_locked(candidate_jobs)
-                break
+        try:
+            with queue_state_lock:
+                candidate_jobs = copy.deepcopy(workflow_jobs)
+                for job in candidate_jobs:
+                    if job["id"] != current_job_id:
+                        continue
+                    if status is not None:
+                        job["status"] = status
+                    if step is not None:
+                        job["step"] = step
+                    if error is not None:
+                        job["error"] = error
+                    if result:
+                        job["result"].update(result)
+                    if result_ready is not None:
+                        job["result_ready"] = bool(result_ready)
+                    commit_queue_jobs_locked(candidate_jobs, retain_on_failure=True)
+                    break
+        except QueuePersistenceError as persist_error:
+            raise mark_current_job_persistence_error(persist_error) from persist_error
 
 
 def progress_snapshot(after_log_index=0):
@@ -704,7 +743,7 @@ def create_desktop_shortcut():
     )
     completed = subprocess.run(
         [
-            "powershell.exe",
+            POWERSHELL_EXE,
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
@@ -931,7 +970,7 @@ if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -
     )
     return subprocess.Popen(
         [
-            "powershell.exe",
+            POWERSHELL_EXE,
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
@@ -1017,36 +1056,156 @@ def log_to_app(msg, log_type="system"):
             progress_status["log_base_index"] += overflow
 
 def get_edge_debug_port():
-    global edge_debug_port
-    with edge_debug_port_lock:
-        if edge_debug_port:
-            return edge_debug_port
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", 0))
-            edge_debug_port = probe.getsockname()[1]
-        return edge_debug_port
+    return EDGE_DEBUG_PORT
 
 
 def edge_debug_url(path=""):
     return f"http://127.0.0.1:{get_edge_debug_port()}{path}"
 
 
+def is_valid_edge_debug_payload(payload):
+    if not isinstance(payload, dict):
+        return False
+    browser = str(payload.get("Browser") or "").lower()
+    websocket_url = str(payload.get("webSocketDebuggerUrl") or "")
+    try:
+        parsed_websocket = urlparse(websocket_url)
+        websocket_port = parsed_websocket.port
+    except ValueError:
+        return False
+    return (
+        (browser.startswith("edg/") or browser.startswith("edge/"))
+        and parsed_websocket.scheme == "ws"
+        and parsed_websocket.hostname == "127.0.0.1"
+        and websocket_port == get_edge_debug_port()
+        and parsed_websocket.username is None
+        and parsed_websocket.password is None
+        and not parsed_websocket.query
+        and not parsed_websocket.fragment
+        and re.fullmatch(r"/devtools/browser/[^/]+", parsed_websocket.path) is not None
+    )
+
+
+def split_windows_command_line(command_line):
+    if os.name != "nt" or not command_line:
+        return []
+    import ctypes
+
+    argument_count = ctypes.c_int()
+    command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+    command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+    command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    arguments = command_line_to_argv(command_line, ctypes.byref(argument_count))
+    if not arguments:
+        return []
+    try:
+        return [arguments[index] for index in range(argument_count.value)]
+    finally:
+        local_free = ctypes.windll.kernel32.LocalFree
+        local_free.argtypes = [ctypes.c_void_p]
+        local_free.restype = ctypes.c_void_p
+        local_free(ctypes.cast(arguments, ctypes.c_void_p))
+
+
+def edge_command_line_uses_profile(command_line):
+    profile_values = []
+    arguments = split_windows_command_line(command_line)
+    index = 1
+    while index < len(arguments):
+        argument = arguments[index]
+        lowered = argument.lower()
+        if lowered == "--user-data-dir":
+            if index + 1 >= len(arguments):
+                return False
+            profile_values.append(arguments[index + 1])
+            index += 2
+            continue
+        if lowered.startswith("--user-data-dir="):
+            profile_values.append(argument.split("=", 1)[1])
+        index += 1
+    if len(profile_values) != 1 or not profile_values[0]:
+        return False
+    actual_profile = os.path.abspath(os.path.normpath(profile_values[0]))
+    expected_profile = os.path.abspath(os.path.normpath(USER_DATA_DIR_DEBUG))
+    return os.path.normcase(actual_profile) == os.path.normcase(expected_profile)
+
+
+def edge_debug_owner_uses_profile():
+    if os.name != "nt":
+        return False
+    debug_port = get_edge_debug_port()
+    powershell_script = (
+        f"$connection = Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 "
+        f"-LocalPort {debug_port} -ErrorAction SilentlyContinue | Select-Object -First 1; "
+        "if (-not $connection) { exit 1 }; "
+        "$process = Get-CimInstance Win32_Process -Filter "
+        "(\"ProcessId=\" + $connection.OwningProcess) -ErrorAction SilentlyContinue; "
+        "if (-not $process.CommandLine) { exit 1 }; "
+        "[PSCustomObject]@{ Name = $process.Name; ExecutablePath = $process.ExecutablePath; "
+        "CommandLine = $process.CommandLine } | ConvertTo-Json -Compress"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                POWERSHELL_EXE,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                powershell_script,
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        metadata = json.loads(completed.stdout or "")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+    if not isinstance(metadata, dict):
+        return False
+    expected_executable = resolve_edge_executable()
+    if not expected_executable:
+        return False
+    expected_executable = os.path.abspath(expected_executable)
+    actual_executable = os.path.abspath(str(metadata.get("ExecutablePath") or ""))
+    return (
+        completed.returncode == 0
+        and str(metadata.get("Name") or "").lower() == "msedge.exe"
+        and os.path.normcase(actual_executable) == os.path.normcase(expected_executable)
+        and edge_command_line_uses_profile(metadata.get("CommandLine"))
+    )
+
+
 def check_edge_status():
     try:
         req = urllib.request.Request(edge_debug_url("/json/version"))
         with urllib.request.urlopen(req, timeout=1.5) as response:
-            return True
+            payload = json.load(response)
+        return is_valid_edge_debug_payload(payload) and edge_debug_owner_uses_profile()
     except Exception:
         return False
 
-def resolve_edge_executable():
+def edge_executable_candidates():
     candidates = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        shutil.which("msedge.exe"),
     ]
+    if LOCALAPPDATA:
+        candidates.append(
+            os.path.join(LOCALAPPDATA, "Microsoft", "Edge", "Application", "msedge.exe")
+        )
+    return candidates
+
+
+def resolve_edge_executable():
     return next(
-        (os.path.abspath(candidate) for candidate in candidates if candidate and os.path.isfile(candidate)),
+        (
+            os.path.abspath(candidate)
+            for candidate in edge_executable_candidates()
+            if os.path.isfile(candidate)
+        ),
         "",
     )
 
@@ -2771,11 +2930,22 @@ def persist_queue_state_locked(jobs=None):
     write_queue_file(QUEUE_PATH, workflow_jobs if jobs is None else jobs)
 
 
-def commit_queue_jobs_locked(candidate_jobs):
+def replace_queue_jobs_locked(candidate_jobs):
     global queue_revision
-    persist_queue_state_locked(candidate_jobs)
     workflow_jobs[:] = candidate_jobs
     queue_revision += 1
+
+
+def commit_queue_jobs_locked(candidate_jobs, *, retain_on_failure=False):
+    try:
+        persist_queue_state_locked(candidate_jobs)
+    except (OSError, UnicodeError) as error:
+        if retain_on_failure:
+            replace_queue_jobs_locked(candidate_jobs)
+        if isinstance(error, QueuePersistenceError):
+            raise
+        raise QueuePersistenceError(str(error)) from error
+    replace_queue_jobs_locked(candidate_jobs)
 
 
 def normalize_persisted_job(value):
@@ -3212,6 +3382,7 @@ def run_queue_worker():
         workflow_lock.acquire()
         cancel_event.clear()
         reset_progress(job_data["id"])
+        stop_worker = False
         try:
             start_prefetch_thread()
             prepared_video = None
@@ -3234,19 +3405,16 @@ def run_queue_worker():
                 resume_project=job_data.get("result"),
                 resume_step=job_data.get("resume_step", "download"),
             )
+        except QueuePersistenceError as error:
+            stop_worker = True
+            log_to_app(str(error), "error")
         except Exception as error:
-            update_progress(status="error", error=str(error))
+            try:
+                update_progress(status="error", error=str(error))
+            except QueuePersistenceError as persist_error:
+                error = persist_error
+                stop_worker = True
             log_to_app(f"Worker queue gặp lỗi ngoài dự kiến: {error}", "error")
-            with queue_state_lock:
-                candidate_jobs = copy.deepcopy(workflow_jobs)
-                for item in candidate_jobs:
-                    if item["id"] == job_data["id"]:
-                        item.update({"status": "error", "error": str(error), "result_ready": False})
-                        break
-                try:
-                    commit_queue_jobs_locked(candidate_jobs)
-                except OSError as persist_error:
-                    log_to_app(f"Không thể lưu lỗi job: {persist_error}", "error")
         finally:
             cancel_event.clear()
             if workflow_lock.locked():
@@ -3258,10 +3426,17 @@ def run_queue_worker():
                         item["finished_at"] = int(time.time())
                         break
                 current_job_id = ""
-                try:
-                    commit_queue_jobs_locked(candidate_jobs)
-                except OSError as error:
-                    log_to_app(f"Không thể lưu thời điểm kết thúc job: {error}", "error")
+                if stop_worker:
+                    replace_queue_jobs_locked(candidate_jobs)
+                else:
+                    try:
+                        commit_queue_jobs_locked(candidate_jobs, retain_on_failure=True)
+                    except OSError as error:
+                        stop_worker = True
+                        log_to_app(f"Không thể lưu thời điểm kết thúc job: {error}", "error")
+        if stop_worker:
+            queue_worker_thread = None
+            return
 
 
 def remove_queued_job(job_id):
@@ -3461,6 +3636,8 @@ def run_workflow_thread(
 
         update_progress(status="success", step="done", result_ready=True)
         log_to_app("Success! Hoàn thành toàn bộ quy trình.")
+    except QueuePersistenceError:
+        raise
     except WorkflowCancelled as e:
         update_progress(status="cancelled", error=str(e))
         log_to_app(str(e), "error")
@@ -3477,7 +3654,10 @@ def run_workflow_thread(
                 log_to_app(f"Không thể lưu manifest huỷ job: {manifest_error}", "error")
     except EdgeLoginRequired as e:
         update_progress(status="error", error=str(e))
-        update_current_job_metadata(needs_edge_login=True)
+        try:
+            update_current_job_metadata(needs_edge_login=True)
+        except QueuePersistenceError as persist_error:
+            raise mark_current_job_persistence_error(persist_error) from persist_error
         log_to_app(str(e), "error")
         if project:
             try:
@@ -4035,7 +4215,7 @@ def run_browser_app():
         pass
     finally:
         request_app_shutdown()
-        server.shutdown()
+        server.server_close()
 
 
 def native_window_watchdog(window, ready_event, failed_event, timeout=20):
@@ -4121,6 +4301,7 @@ def run_desktop_app():
     finally:
         request_app_shutdown()
         server.shutdown()
+        server.server_close()
 
 
 def main():
@@ -4135,7 +4316,7 @@ def main():
         else:
             try:
                 run_desktop_app()
-            except (RuntimeError, OSError) as error:
+            except Exception as error:
                 log_to_app(f"Native WebView không khởi động được, chuyển sang trình duyệt: {error}", "error")
                 shutdown_event.clear()
                 cancel_event.clear()

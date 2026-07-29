@@ -108,6 +108,253 @@ class ValidationTests(unittest.TestCase):
             self.assertFalse(hasattr(api, "webview"))
             self.assertFalse(hasattr(api, "window"))
 
+    def test_edge_debug_port_is_stable_across_app_sessions(self):
+        self.assertEqual(app.get_edge_debug_port(), 9222)
+        self.assertEqual(app.edge_debug_url("/json/version"), "http://127.0.0.1:9222/json/version")
+
+    def test_edge_start_uses_the_stable_profile_port(self):
+        process = Mock()
+        with (
+            patch.object(app, "check_edge_status", side_effect=[False, False, True]),
+            patch.object(app, "resolve_edge_executable", return_value=r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            patch.object(app.subprocess, "Popen", return_value=process) as popen,
+            patch.object(app.time, "sleep"),
+        ):
+            started = app.ensure_edge_running(
+                "https://gemini.google.com/notebook/test-id",
+                background=False,
+            )
+
+        self.assertTrue(started)
+        command = popen.call_args.args[0]
+        self.assertIn("--remote-debugging-port=9222", command)
+        self.assertIn(f"--user-data-dir={app.USER_DATA_DIR_DEBUG}", command)
+
+    def test_edge_status_requires_a_real_local_edge_cdp_payload(self):
+        invalid_payload = {"Browser": "plain-http-server"}
+        valid_payload = {
+            "Browser": "Edg/128.0.0.0",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/session",
+        }
+        invalid_cdp_payloads = [
+            {**valid_payload, "Browser": "Chrome/128.0.0.0"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://127.0.0.1:not-a-port/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://example.test:9222/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://localhost:9222/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://[::1]:9222/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "wss://127.0.0.1:9222/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "http://127.0.0.1:9222/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/session/extra"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/session?token=x"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://user@127.0.0.1:9222/devtools/browser/session"},
+            {**valid_payload, "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/session"},
+        ]
+        for payload in invalid_cdp_payloads:
+            with self.subTest(payload=payload):
+                self.assertFalse(app.is_valid_edge_debug_payload(payload))
+        self.assertTrue(app.is_valid_edge_debug_payload(valid_payload))
+        with (
+            patch.object(app, "edge_debug_owner_uses_profile", return_value=True),
+            patch.object(
+                app.urllib.request,
+                "urlopen",
+                return_value=io.BytesIO(json.dumps(invalid_payload).encode()),
+            ),
+        ):
+            self.assertFalse(app.check_edge_status())
+        with (
+            patch.object(app, "edge_debug_owner_uses_profile", return_value=True),
+            patch.object(
+                app.urllib.request,
+                "urlopen",
+                return_value=io.BytesIO(json.dumps(valid_payload).encode()),
+            ),
+        ):
+            self.assertTrue(app.check_edge_status())
+
+    def test_edge_debug_owner_requires_the_dedicated_profile(self):
+        expected_command = (
+            f'"msedge.exe" --user-data-dir="{app.USER_DATA_DIR_DEBUG}" '
+            "--remote-debugging-port=9222"
+        )
+        metadata = {
+            "Name": "msedge.exe",
+            "ExecutablePath": r"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+            "CommandLine": expected_command,
+        }
+        with (
+            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
+            patch.object(
+                app.subprocess,
+                "run",
+                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
+            ) as run,
+        ):
+            self.assertTrue(app.edge_debug_owner_uses_profile())
+        self.assertEqual(run.call_args.args[0][0], app.POWERSHELL_EXE)
+        self.assertTrue(os.path.isabs(app.POWERSHELL_EXE))
+
+        metadata["CommandLine"] = f'"msedge.exe" "--user-data-dir={app.USER_DATA_DIR_DEBUG}"'
+        with (
+            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
+            patch.object(
+                app.subprocess,
+                "run",
+                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
+            ),
+        ):
+            self.assertTrue(app.edge_debug_owner_uses_profile())
+
+        metadata["CommandLine"] = f'"msedge.exe" --user-data-dir="{app.USER_DATA_DIR_DEBUG} Backup"'
+        with (
+            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
+            patch.object(
+                app.subprocess,
+                "run",
+                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
+            ),
+        ):
+            self.assertFalse(app.edge_debug_owner_uses_profile())
+
+        metadata["CommandLine"] = (
+            f'"msedge.exe" "--ignored=--user-data-dir={app.USER_DATA_DIR_DEBUG}" '
+            f'"--user-data-dir={app.USER_DATA_DIR_DEBUG} Backup"'
+        )
+        with (
+            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
+            patch.object(
+                app.subprocess,
+                "run",
+                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
+            ),
+        ):
+            self.assertFalse(app.edge_debug_owner_uses_profile())
+
+        metadata["CommandLine"] = f'{expected_command} "--user-data-dir={app.USER_DATA_DIR_DEBUG}"'
+        with (
+            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
+            patch.object(
+                app.subprocess,
+                "run",
+                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
+            ),
+        ):
+            self.assertFalse(app.edge_debug_owner_uses_profile())
+
+        metadata["CommandLine"] = expected_command
+        metadata["Name"] = "python.exe"
+        with (
+            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
+            patch.object(
+                app.subprocess,
+                "run",
+                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
+            ),
+        ):
+            self.assertFalse(app.edge_debug_owner_uses_profile())
+
+        metadata["Name"] = "msedge.exe"
+        trusted_executable = metadata["ExecutablePath"]
+        metadata["ExecutablePath"] = r"C:\\Temp\\msedge.exe"
+        with (
+            patch.object(app, "resolve_edge_executable", return_value=trusted_executable),
+            patch.object(
+                app.subprocess,
+                "run",
+                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
+            ),
+        ):
+            self.assertFalse(app.edge_debug_owner_uses_profile())
+
+    def test_edge_resolver_does_not_trust_path_fallback(self):
+        with (
+            patch.object(app.os.path, "isfile", return_value=False),
+            patch.object(app.shutil, "which", return_value=r"C:\\Temp\\msedge.exe") as which,
+        ):
+            self.assertEqual(app.resolve_edge_executable(), "")
+        which.assert_not_called()
+
+    def test_edge_resolver_accepts_the_known_per_user_installation(self):
+        per_user_edge = os.path.join(
+            app.LOCALAPPDATA,
+            "Microsoft",
+            "Edge",
+            "Application",
+            "msedge.exe",
+        )
+        with patch.object(
+            app.os.path,
+            "isfile",
+            side_effect=lambda path: os.path.normcase(path) == os.path.normcase(per_user_edge),
+        ):
+            self.assertEqual(app.resolve_edge_executable(), os.path.abspath(per_user_edge))
+
+    def test_edge_start_reuses_an_existing_debug_endpoint(self):
+        with (
+            patch.object(app, "check_edge_status", return_value=True),
+            patch.object(app.subprocess, "Popen") as popen,
+        ):
+            self.assertTrue(
+                app.ensure_edge_running(
+                    "https://gemini.google.com/notebook/test-id",
+                    background=False,
+                )
+            )
+        popen.assert_not_called()
+
+    def test_browser_fallback_closes_an_unstarted_server(self):
+        server = Mock(server_port=4321)
+        with (
+            patch.object(app, "initialize_queue_state"),
+            patch.object(app, "make_server", return_value=server),
+            patch.object(app.webbrowser, "open", return_value=False),
+            patch.object(app, "request_app_shutdown"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Không thể mở trình duyệt"):
+                app.run_browser_app()
+
+        server.serve_forever.assert_not_called()
+        server.shutdown.assert_not_called()
+        server.server_close.assert_called_once_with()
+
+    def test_browser_fallback_closes_after_the_serve_loop_exits(self):
+        server = Mock(server_port=4321)
+        server.serve_forever.side_effect = KeyboardInterrupt
+        with (
+            patch.object(app, "initialize_queue_state"),
+            patch.object(app, "make_server", return_value=server),
+            patch.object(app.webbrowser, "open", return_value=True),
+            patch.object(app, "request_app_shutdown"),
+        ):
+            app.run_browser_app()
+
+        server.serve_forever.assert_called_once_with()
+        server.shutdown.assert_not_called()
+        server.server_close.assert_called_once_with()
+
+    def test_main_falls_back_for_pywebview_startup_exceptions(self):
+        from webview.errors import WebViewException
+
+        with (
+            patch.object(sys, "argv", ["app.py"]),
+            patch.object(app, "acquire_instance_lock", return_value=True),
+            patch.object(
+                app,
+                "run_desktop_app",
+                side_effect=WebViewException("Main window failed to load"),
+            ),
+            patch.object(app, "run_browser_app") as browser_fallback,
+            patch.object(app, "release_instance_lock") as release_lock,
+            patch.object(app, "log_to_app"),
+        ):
+            exit_code = app.main()
+
+        self.assertEqual(exit_code, 0)
+        browser_fallback.assert_called_once_with()
+        release_lock.assert_called_once_with()
+
     def test_only_fresh_douzy_downloads_are_moved(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             download_root = Path(temporary_dir) / "douzy"
@@ -858,13 +1105,18 @@ class CliTests(unittest.TestCase):
                 "translated_srt": "video.vi.srt",
             },
         }
-        with (
-            patch.object(sys, "argv", ["automate.py", "--url", "https://www.douyin.com/video/1"]),
-            patch.object(automate, "run_single_workflow", return_value=result) as direct_run,
-            patch("builtins.print"),
-        ):
-            exit_code = automate.main()
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            lock_path = str(Path(temporary_dir) / "instance.lock")
+            with (
+                patch.object(app, "INSTANCE_LOCK_PATH", lock_path),
+                patch.object(sys, "argv", ["automate.py", "--url", "https://www.douyin.com/video/1"]),
+                patch.object(automate, "run_single_workflow", return_value=result) as direct_run,
+                patch("builtins.print"),
+            ):
+                exit_code = automate.main()
 
+            self.assertTrue(Path(lock_path).is_file())
+        self.assertIsNone(app.instance_lock_handle)
         self.assertEqual(exit_code, 0)
         direct_run.assert_called_once_with("https://www.douyin.com/video/1", "ch", "")
 
@@ -1486,6 +1738,68 @@ class ApiTests(unittest.TestCase):
             ["https://www.douyin.com/video/1", "https://www.douyin.com/video/2"],
         )
         self.assertTrue(all(job["status"] == "success" for job in app.queue_snapshot()))
+
+    def test_run_workflow_propagates_queue_persistence_errors(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                patch.object(app, "load_app_config", return_value={
+                    "notebook_url": "https://gemini.google.com/notebook/test-id",
+                    "output_dir": temporary_dir,
+                }),
+                patch.object(
+                    app,
+                    "update_progress",
+                    side_effect=app.QueuePersistenceError("disk full"),
+                ),
+            ):
+                with self.assertRaisesRegex(app.QueuePersistenceError, "disk full"):
+                    app.run_workflow_thread(
+                        "https://www.douyin.com/video/1",
+                        "ch",
+                    )
+
+    def assert_queue_worker_recovers_from_persistence_error(self, persistence_error):
+        first = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        second = app.enqueue_workflow("https://www.douyin.com/video/2", "en")
+        persist_calls = 0
+
+        def fail_after_start(_jobs=None):
+            nonlocal persist_calls
+            persist_calls += 1
+            if persist_calls == 2:
+                raise persistence_error
+
+        def fail_during_progress(*_args, **_kwargs):
+            app.update_progress(status="success", step="done")
+
+        with (
+            patch.object(app, "persist_queue_state_locked", side_effect=fail_after_start),
+            patch.object(app, "start_prefetch_thread"),
+            patch.object(
+                app,
+                "run_workflow_thread",
+                side_effect=fail_during_progress,
+            ) as run_workflow,
+        ):
+            app.run_queue_worker()
+
+        run_workflow.assert_called_once()
+        jobs = {job["id"]: job for job in app.queue_snapshot()}
+        self.assertEqual(jobs[first["id"]]["status"], "error")
+        self.assertFalse(jobs[first["id"]]["result_ready"])
+        self.assertIn("Không thể lưu trạng thái hàng đợi", jobs[first["id"]]["error"])
+        self.assertEqual(jobs[second["id"]]["status"], "queued")
+        self.assertEqual(app.current_job_id, "")
+        self.assertIsNone(app.queue_worker_thread)
+        self.assertFalse(app.workflow_lock.locked())
+
+    def test_queue_worker_recovers_when_progress_persistence_fails(self):
+        self.assert_queue_worker_recovers_from_persistence_error(OSError("disk full"))
+
+    def test_queue_worker_recovers_when_queue_encoding_fails(self):
+        self.assert_queue_worker_recovers_from_persistence_error(
+            UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogate not allowed")
+        )
 
     def test_process_passes_the_requested_project_name(self):
         with patch.object(app, "queue_workflow") as queue:

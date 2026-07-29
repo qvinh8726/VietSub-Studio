@@ -294,6 +294,12 @@ python app.py --server
 
 Then open `http://127.0.0.1:5000`.
 
+To let the app choose a free local port and open the default browser automatically (the same fallback used when native WebView startup fails), run:
+
+```powershell
+python app.py --browser
+```
+
 ## Command-line usage
 
 `automate.py` runs the same workflow without the graphical interface:
@@ -830,6 +836,12 @@ python app.py --server
 ```
 
 Sau đó mở `http://127.0.0.1:5000`.
+
+Để app tự chọn cổng local trống và tự mở trình duyệt mặc định (cùng cơ chế dự phòng khi WebView native không khởi động được), chạy:
+
+```powershell
+python app.py --browser
+```
 
 ## Dùng dòng lệnh
 

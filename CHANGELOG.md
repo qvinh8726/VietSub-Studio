@@ -16,7 +16,7 @@ All notable changes to VietSub Studio are documented here.
 
 ### Changed
 
-- Edge is now a required health capability with a per-process dynamic CDP port, native startup exceptions/timeouts fall back to browser mode, and the frontend gates each queued source on source-aware health readiness with improved status/accessibility semantics.
+- Edge is now a required health capability on the stable loopback CDP port `9222`, allowing the dedicated profile to reconnect across app restarts; native startup exceptions/timeouts fall back to browser mode, and the frontend gates each queued source on source-aware health readiness with improved status/accessibility semantics.
 - Extracted inline CSS/JavaScript into packaged static modules, added queue revision polling and bounded provider output buffers, and enabled durable rotating logs.
 - Windows CI now builds and smoke-tests the packaged portable executable and uploads the verified artifact; Dependabot tracks Python and Actions dependencies.
 
