@@ -4,6 +4,8 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-08-04
+
 ### Security
 
 - Added a per-launch API capability token, local Host/Origin/Fetch-Metadata validation, JSON-only state changes, defensive response headers, and an 8 GiB validated MP4 upload limit.
