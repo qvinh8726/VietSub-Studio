@@ -192,8 +192,17 @@
         .result-path span { overflow-wrap: anywhere; }
 
         .settings-grid { display: grid; gap: 12px; }
+        .provider-settings { display: grid; gap: 12px; padding: 12px; border: 1px solid #d8cbb9; border-radius: 14px; background: rgba(242, 236, 224, .55); }
+        .provider-settings[hidden] { display: none; }
         .setting-field label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 850; }
         .setting-field small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+        .setting-field small code { font: 9px var(--mono); }
+        .translation-instructions { min-height: 220px; font: 10px/1.5 var(--mono); }
+        .translation-instructions-footer { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+        .translation-instructions-footer small { flex: 1; }
+        .translation-instructions-footer .btn-ghost { flex: 0 0 auto; margin-top: 5px; white-space: nowrap; }
+        .api-key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+        .api-key-row .btn-ghost { min-height: 43px; white-space: nowrap; }
         .path-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
         .path-picker .btn-secondary { white-space: nowrap; }
         .toggle-setting { display: flex !important; align-items: flex-start; gap: 10px; padding: 11px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.5); cursor: pointer; }

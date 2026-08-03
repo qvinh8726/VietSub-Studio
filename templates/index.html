@@ -145,13 +145,50 @@
             <div class="panel control-card">
                 <div class="section-head"><h3>Thiết lập & chẩn đoán</h3><span>Tự lưu thay đổi</span></div>
                 <div id="settings-panel" class="settings-grid">
-                    <div class="setting-field"><label for="setting-notebook">Notebook Gemini</label><input id="setting-notebook" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/..."><small>Tự lưu khi rời ô.</small></div>
+                    <div class="setting-field">
+                        <label for="setting-translation-provider">Cách dịch phụ đề</label>
+                        <select id="setting-translation-provider" class="select-input">
+                            <option value="notebook">Gemini Notebook qua Edge</option>
+                            <option value="deepseek">DeepSeek API</option>
+                            <option value="openrouter">OpenRouter</option>
+                            <option value="custom">API OpenAI-compatible khác</option>
+                        </select>
+                        <small>API ổn định hơn cho video dài; Notebook vẫn được giữ làm phương án dự phòng.</small>
+                    </div>
+                    <div class="setting-field">
+                        <label for="setting-translation-instructions">Cách dịch mong muốn</label>
+                        <textarea id="setting-translation-instructions" class="translation-instructions" rows="9" spellcheck="false" placeholder="Đang nạp prompt dịch mặc định…"></textarea>
+                        <div class="translation-instructions-footer">
+                            <small>Mặc định là prompt dịch ban đầu. App luôn ghim riêng yêu cầu giữ timestamp và xuất đúng một block code <code>srt</code>.</small>
+                            <button id="reset-translation-instructions-btn" class="btn-ghost" type="button">Khôi phục mặc định</button>
+                        </div>
+                    </div>
+                    <div id="notebook-settings" class="provider-settings">
+                        <div class="setting-field"><label for="setting-notebook">Notebook Gemini</label><input id="setting-notebook" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/..."><small>Tự lưu khi rời ô.</small></div>
+                    </div>
+                    <div id="api-translation-settings" class="provider-settings" hidden>
+                        <div class="setting-field">
+                            <label for="setting-api-base-url">API Base URL</label>
+                            <input id="setting-api-base-url" class="text-input" type="url" placeholder="https://api.example.com/v1">
+                            <small>Hỗ trợ endpoint OpenAI-compatible <code>/chat/completions</code>; app tự nối phần đường dẫn này.</small>
+                        </div>
+                        <div class="setting-field">
+                            <label for="setting-api-model">Model</label>
+                            <input id="setting-api-model" class="text-input" placeholder="deepseek-v4-pro">
+                        </div>
+                        <div class="setting-field">
+                            <label for="setting-api-key">API key</label>
+                            <div class="api-key-row"><input id="setting-api-key" class="text-input" type="password" autocomplete="off" placeholder="Nhập API key"><button id="clear-api-key-btn" class="btn-ghost" type="button">Xoá key</button></div>
+                            <small id="api-key-help">Key được mã hoá bằng tài khoản Windows hiện tại và không trả về giao diện.</small>
+                        </div>
+                        <button id="test-api-btn" class="btn-secondary" type="button">Kiểm tra kết nối API</button>
+                    </div>
                     <div class="setting-field">
                         <label for="setting-output">Thư mục lưu project</label>
                         <div class="path-picker"><input id="setting-output" class="text-input" placeholder="Để trống = Documents\VietSub Studio"><button id="choose-output-btn" class="btn-secondary" type="button">Chọn thư mục…</button></div>
                         <small id="output-help">Mỗi tên project sẽ có một folder riêng chứa video, sub gốc, sub Việt, thumbnail và các asset Douzy.</small>
                     </div>
-                    <div class="setting-field">
+                    <div id="edge-settings" class="setting-field">
                         <label class="toggle-setting" for="setting-edge-background">
                             <input id="setting-edge-background" type="checkbox" checked>
                             <span><strong>Chạy Edge ẩn</strong><small>Edge vẫn render đầy đủ nhưng không giành focus. Khi Google hết phiên, app sẽ hiện Edge để đăng nhập lại.</small></span>

@@ -20,6 +20,10 @@
         let toastTimer = null;
         let automaticUpdateSupported = false;
         let pollFailureCount = 0;
+        let translationProviderPresets = {};
+        let translationApiKeySet = false;
+        let lastTranslationProvider = 'notebook';
+        let defaultTranslationInstructions = '';
 
         function showToast(message, type = 'success') {
             clearTimeout(toastTimer);
@@ -462,10 +466,51 @@
             catch (_) {}
         }
 
+        function updateApiKeyHelp() {
+            const help = byId('api-key-help');
+            help.textContent = translationApiKeySet
+                ? 'API key đã được mã hoá bằng tài khoản Windows hiện tại. Để trống ô này sẽ giữ nguyên key.'
+                : 'Chưa lưu API key. DeepSeek và OpenRouter bắt buộc phải có key.';
+            byId('clear-api-key-btn').disabled = !translationApiKeySet;
+            byId('setting-api-key').placeholder = translationApiKeySet ? 'API key đã lưu' : 'Nhập API key';
+        }
+
+        function updateTranslationProviderUI(applyPreset = false) {
+            const provider = byId('setting-translation-provider').value;
+            const usesNotebook = provider === 'notebook';
+            byId('notebook-settings').hidden = !usesNotebook;
+            byId('edge-settings').hidden = !usesNotebook;
+            byId('api-translation-settings').hidden = usesNotebook;
+            if (applyPreset && !usesNotebook) {
+                const previousPreset = translationProviderPresets[lastTranslationProvider] || {};
+                const nextPreset = translationProviderPresets[provider] || {};
+                const baseInput = byId('setting-api-base-url');
+                const modelInput = byId('setting-api-model');
+                if (!baseInput.value.trim() || baseInput.value.trim() === (previousPreset.base_url || '')) {
+                    baseInput.value = nextPreset.base_url || '';
+                }
+                if (!modelInput.value.trim() || modelInput.value.trim() === (previousPreset.model || '')) {
+                    modelInput.value = nextPreset.model || '';
+                }
+            }
+            lastTranslationProvider = provider;
+        }
+
         async function loadSettings() {
             try {
                 const data = await fetchJson('/api/settings');
                 byId('setting-notebook').value = data.notebook_url || ''; byId('setting-output').value = data.output_dir || '';
+                translationProviderPresets = data.translation_provider_presets || {};
+                byId('setting-translation-provider').value = data.translation_provider || 'notebook';
+                lastTranslationProvider = byId('setting-translation-provider').value;
+                byId('setting-api-base-url').value = data.translation_api_base_url || '';
+                byId('setting-api-model').value = data.translation_api_model || '';
+                defaultTranslationInstructions = data.translation_default_instructions || '';
+                byId('setting-translation-instructions').value = data.translation_instructions || defaultTranslationInstructions;
+                byId('setting-api-key').value = '';
+                translationApiKeySet = Boolean(data.translation_api_key_set);
+                updateTranslationProviderUI(false);
+                updateApiKeyHelp();
                 byId('setting-output').placeholder = data.default_output_dir || 'Documents\\VietSub Studio';
                 const syncWarning = data.output_dir_synced ? ' ⚠ Thư mục này đang được OneDrive đồng bộ: mỗi video xuất sẽ bị upload lên cloud và có thể chậm hơn — cân nhắc chọn thư mục ngoài OneDrive.' : '';
                 byId('output-help').textContent = `Để trống sẽ lưu tại ${data.default_output_dir}. Mỗi project có folder riêng chứa đủ video, SRT và thumbnail.${syncWarning}`;
@@ -492,16 +537,63 @@
         }
 
         let saveSettingsTimer = null;
-        async function saveSettingsNow() {
+        async function saveSettingsNow(options = {}) {
             try {
-                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, ocr_model_mode:byId('setting-ocr-speed').value, ocr_frames_to_skip:byId('setting-frames-skip').value === '' ? null : Number(byId('setting-frames-skip').value), edge_background:byId('setting-edge-background').checked})});
-                showToast('Đã lưu thiết lập.');
-            } catch (error) { showToast(error.message, 'error'); }
+                const provider = byId('setting-translation-provider').value;
+                const payload = {translation_provider:provider, translation_instructions:byId('setting-translation-instructions').value.trim(), notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, ocr_model_mode:byId('setting-ocr-speed').value, ocr_frames_to_skip:byId('setting-frames-skip').value === '' ? null : Number(byId('setting-frames-skip').value), edge_background:byId('setting-edge-background').checked};
+                if (provider !== 'notebook') {
+                    payload.translation_api_base_url = byId('setting-api-base-url').value.trim();
+                    payload.translation_api_model = byId('setting-api-model').value.trim();
+                    const apiKey = byId('setting-api-key').value.trim();
+                    if (apiKey) payload.translation_api_key = apiKey;
+                }
+                if (options.clearApiKey) payload.translation_api_key = null;
+                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+                if (payload.translation_api_key) {
+                    translationApiKeySet = true;
+                    byId('setting-api-key').value = '';
+                } else if (options.clearApiKey) {
+                    translationApiKeySet = false;
+                }
+                updateApiKeyHelp();
+                if (!options.silent) showToast('Đã lưu thiết lập.');
+                loadHealth();
+            } catch (error) {
+                showToast(error.message, 'error');
+                if (options.throwOnError) throw error;
+            }
         }
 
         function saveSettings() {
             clearTimeout(saveSettingsTimer);
             saveSettingsTimer = setTimeout(saveSettingsNow, 250);
+        }
+
+        async function resetTranslationInstructions() {
+            byId('setting-translation-instructions').value = defaultTranslationInstructions;
+            clearTimeout(saveSettingsTimer);
+            await saveSettingsNow();
+        }
+
+        async function testTranslationApi() {
+            const button = byId('test-api-btn');
+            button.disabled = true;
+            button.textContent = 'Đang kiểm tra…';
+            try {
+                await saveSettingsNow({silent:true, throwOnError:true});
+                const data = await fetchJson('/api/translation/test', {method:'POST'});
+                showToast(`${data.provider} · ${data.model}: kết nối OK`);
+            } catch (error) {
+                showToast(error.message, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Kiểm tra kết nối API';
+            }
+        }
+
+        async function clearTranslationApiKey() {
+            if (!translationApiKeySet || !window.confirm('Xoá API key đã lưu trên máy này?')) return;
+            await saveSettingsNow({clearApiKey:true});
         }
 
         async function chooseOutputDirectory() {
@@ -524,7 +616,7 @@
                 const data = await fetchJson('/api/health'); list.replaceChildren();
                 healthReadiness = {local: Boolean(data.ready_local), douyin: Boolean(data.ready_douyin)};
                 renderQueue();
-                const labels = {douzy_sidecar:'Douzy sidecar',douzy_config:'Cấu hình Douzy',douzy_database:'Database Douzy',videocr:'VideOCR',ffprobe:'FFprobe',notebook:'Gemini Notebook',edge:'Microsoft Edge'};
+                const labels = {douzy_sidecar:'Douzy sidecar',douzy_config:'Cấu hình Douzy',douzy_database:'Database Douzy',videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',edge:'Microsoft Edge'};
                 Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; const strong=document.createElement('strong'); strong.textContent=`${labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
             } catch (error) { healthReadiness = {local: false, douyin: false}; renderQueue(); list.textContent = error.message; }
         }
@@ -575,7 +667,12 @@
             byId('save-crop-btn').onclick=saveDefaultCrop;
             byId('start-queue-btn').onclick=startQueue; byId('cancel-btn').onclick=cancelJob; byId('clear-finished-btn').onclick=clearFinished;
             byId('open-result-btn').onclick=openResult;
+            byId('setting-translation-provider').addEventListener('change', () => { updateTranslationProviderUI(true); saveSettings(); });
+            byId('setting-translation-instructions').addEventListener('change', saveSettings);
+            byId('reset-translation-instructions-btn').onclick=resetTranslationInstructions;
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
+            byId('setting-api-base-url').addEventListener('change', saveSettings); byId('setting-api-model').addEventListener('change', saveSettings); byId('setting-api-key').addEventListener('change', saveSettings);
+            byId('test-api-btn').onclick=testTranslationApi; byId('clear-api-key-btn').onclick=clearTranslationApiKey;
             byId('setting-ocr-speed').addEventListener('change', saveSettings); byId('setting-frames-skip').addEventListener('change', saveSettings);
             byId('choose-output-btn').onclick=chooseOutputDirectory;
             byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;

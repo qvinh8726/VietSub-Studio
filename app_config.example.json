@@ -1,5 +1,10 @@
 {
   "notebook_url": "",
+  "translation_provider": "notebook",
+  "translation_api_base_url": "",
+  "translation_api_model": "",
+  "translation_api_key_protected": "",
+  "translation_instructions": "",
   "ocr_lang": "ch",
   "ocr_model_mode": "auto",
   "ocr_frames_to_skip": null,

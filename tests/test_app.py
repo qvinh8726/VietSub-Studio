@@ -603,6 +603,48 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.validate_translated_srt(SOURCE_SRT, invalid)
 
+    def test_translation_rejects_chinese_echo_and_bilingual_output(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,000\n\u4f60\u597d\u4e16\u754c\uff0c\u8fd9\u662f\u6d4b\u8bd5\u5b57\u5e55\u3002\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\n\u6211\u4eec\u73b0\u5728\u51fa\u53d1\u3002\n"
+        )
+        bilingual = (
+            "1\n00:00:01,000 --> 00:00:02,000\n\u4f60\u597d\u4e16\u754c。 Xin chao the gioi.\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\n\u6211\u4eec\u73b0\u5728\u51fa\u53d1\u3002 Chung ta di thoi.\n"
+        )
+        for invalid in (source, bilingual):
+            with self.assertRaisesRegex(ValueError, "tiếng Trung"):
+                app.validate_translated_srt(source, invalid)
+
+    def test_translation_cache_fingerprint_changes_with_model_and_instructions(self):
+        runtime = {
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-chat",
+        }
+        first = app.translation_cache_fingerprint(runtime)
+        runtime["model"] = "deepseek-reasoner"
+        self.assertNotEqual(first, app.translation_cache_fingerprint(runtime))
+        runtime["model"] = "deepseek-chat"
+        runtime["translation_instructions"] = "Dịch ngắn gọn, dứt khoát."
+        self.assertNotEqual(first, app.translation_cache_fingerprint(runtime))
+
+    def test_translation_prompt_includes_glossary_and_srt_contract(self):
+        prompt = app.build_translation_prompt(SOURCE_SRT)
+        self.assertIn("Saeed (赛伊德)", prompt)
+        self.assertIn("HA AVK CITY", prompt)
+        self.assertIn("```srt", prompt)
+        self.assertIn(SOURCE_SRT, prompt)
+
+        custom_prompt = app.build_translation_prompt(
+            SOURCE_SRT,
+            "Dịch theo giọng hành động gọn, mạnh và tự nhiên.",
+        )
+        self.assertIn("Dịch theo giọng hành động gọn, mạnh và tự nhiên.", custom_prompt)
+        self.assertIn("Giữ nguyên số thứ tự và timestamp", custom_prompt)
+        self.assertIn("Đặt toàn bộ SRT đã dịch trong đúng một block code srt", custom_prompt)
+        self.assertIn(SOURCE_SRT, custom_prompt)
+
     def test_translation_restores_source_timestamps_when_blocks_match(self):
         changed_timecodes = TRANSLATED_SRT.replace("00:00:04,000", "00:00:05,000")
         normalized = app.normalize_translated_srt(SOURCE_SRT, changed_timecodes)
@@ -610,6 +652,252 @@ class ValidationTests(unittest.TestCase):
             app.SRT_TIMECODE_PATTERN.findall(normalized),
             app.SRT_TIMECODE_PATTERN.findall(SOURCE_SRT),
         )
+
+    def test_translation_chunks_only_after_45_minutes_and_preserves_blocks(self):
+        short_srt = "1\n00:44:59,000 --> 00:45:00,000\nShort\n"
+        chunks, is_long_video = app.split_srt_for_translation(short_srt)
+        self.assertFalse(is_long_video)
+        self.assertEqual(chunks, [short_srt])
+
+        long_srt = (
+            "1\n00:01:00,000 --> 00:01:01,000\nOne\n\n"
+            "2\n00:31:00,000 --> 00:31:01,000\nTwo\n\n"
+            "3\n01:01:00,000 --> 01:01:01,000\nThree\n"
+        )
+        chunks, is_long_video = app.split_srt_for_translation(long_srt)
+        self.assertTrue(is_long_video)
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(
+            [block for chunk in chunks for block in app.parse_srt_blocks(chunk)],
+            app.parse_srt_blocks(long_srt),
+        )
+
+        sparse_long_srt = (
+            "1\n00:01:00,000 --> 00:01:01,000\nOne\n\n"
+            "2\n00:31:00,000 --> 00:31:01,000\nTwo\n"
+        )
+        chunks, is_long_video = app.split_srt_for_translation(
+            sparse_long_srt,
+            video_duration_seconds=46 * 60,
+        )
+        self.assertTrue(is_long_video)
+        self.assertEqual(len(chunks), 2)
+
+    def test_translation_api_configuration_validates_providers_and_urls(self):
+        self.assertEqual(app.validate_translation_provider(None), "notebook")
+        self.assertEqual(
+            app.validate_translation_api_base_url("", "deepseek"),
+            "https://api.deepseek.com",
+        )
+        self.assertEqual(
+            app.validate_translation_api_base_url("http://127.0.0.1:11434/v1", "custom"),
+            "http://127.0.0.1:11434/v1",
+        )
+        self.assertEqual(
+            app.validate_translation_api_model("", "openrouter"),
+            "deepseek/deepseek-chat",
+        )
+        with self.assertRaises(ValueError):
+            app.validate_translation_provider("unknown")
+        with self.assertRaises(ValueError):
+            app.validate_translation_api_base_url("http://example.test/v1", "custom")
+        with self.assertRaises(ValueError):
+            app.validate_translation_api_model([], "custom")
+
+    def test_openai_compatible_api_sends_auth_model_and_messages(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({
+                    "choices": [{
+                        "message": {"content": "OK"},
+                        "finish_reason": "stop",
+                    }]
+                }).encode("utf-8")
+
+        def fake_urlopen(request_object, timeout):
+            captured["url"] = request_object.full_url
+            captured["headers"] = dict(request_object.header_items())
+            captured["body"] = json.loads(request_object.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        runtime_config = {
+            "provider": "openrouter",
+            "label": "OpenRouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "deepseek/deepseek-chat",
+            "api_key": "sk-test",
+        }
+        with patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = app.call_openai_compatible_api(
+                runtime_config,
+                [{"role": "user", "content": "Ping"}],
+                max_tokens=16,
+            )
+
+        self.assertEqual(result, "OK")
+        self.assertEqual(captured["url"], "https://openrouter.ai/api/v1/chat/completions")
+        self.assertEqual(captured["body"]["model"], "deepseek/deepseek-chat")
+        self.assertEqual(captured["body"]["max_tokens"], 16)
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer sk-test")
+        self.assertEqual(captured["headers"]["X-title"], "VietSub Studio")
+
+    def test_deepseek_requests_disable_thinking_for_srt_output(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({
+                    "choices": [{
+                        "message": {"content": "OK"},
+                        "finish_reason": "stop",
+                    }]
+                }).encode("utf-8")
+
+        def fake_urlopen(request_object, timeout):
+            captured["body"] = json.loads(request_object.data.decode("utf-8"))
+            return FakeResponse()
+
+        runtime_config = {
+            "provider": "deepseek",
+            "label": "DeepSeek API",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-pro",
+            "api_key": "sk-test",
+        }
+        with patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen):
+            app.call_openai_compatible_api(
+                runtime_config,
+                [{"role": "user", "content": "Ping"}],
+                max_tokens=32_768,
+            )
+
+        self.assertEqual(captured["body"]["thinking"], {"type": "disabled"})
+        self.assertEqual(captured["body"]["response_format"], {"type": "text"})
+        self.assertEqual(captured["body"]["max_tokens"], 32_768)
+
+    def test_openai_compatible_api_reads_sse_streams(self):
+        captured = {}
+
+        class StreamingResponse:
+            headers = {"Content-Type": "text/event-stream"}
+
+            def __init__(self):
+                self.lines = iter([
+                    b'data: {"choices":[{"delta":{"content":"Xin "}}]}\n',
+                    b'data: {"choices":[{"delta":{"content":"chao"}}]}\n',
+                    b"data: [DONE]\n",
+                    b"",
+                ])
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def readline(self):
+                return next(self.lines)
+
+        def fake_urlopen(request_object, timeout):
+            captured["body"] = json.loads(request_object.data.decode("utf-8"))
+            return StreamingResponse()
+
+        runtime_config = {
+            "provider": "custom",
+            "label": "Custom API",
+            "base_url": "http://127.0.0.1:20128/v1",
+            "model": "test-model",
+            "api_key": "",
+        }
+        with patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = app.call_openai_compatible_api(
+                runtime_config,
+                [{"role": "user", "content": "Ping"}],
+                max_tokens=16,
+                stream=True,
+            )
+
+        self.assertEqual(result, "Xin chao")
+        self.assertTrue(captured["body"]["stream"])
+
+    def test_api_translation_resumes_from_completed_chunks(self):
+        long_srt = (
+            "1\n00:01:00,000 --> 00:01:01,000\nOne\n\n"
+            "2\n00:31:00,000 --> 00:31:01,000\nTwo\n\n"
+            "3\n01:01:00,000 --> 01:01:01,000\nThree\n"
+        )
+
+        def translated_chunk(source_chunk):
+            return app.format_srt_blocks([
+                (index, timecode, f"VI {text}")
+                for index, timecode, text in app.parse_srt_blocks(source_chunk)
+            ])
+
+        runtime_config = {
+            "provider": "deepseek",
+            "label": "DeepSeek API",
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-chat",
+            "api_key": "sk-test",
+        }
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            raw_srt = directory / "video.raw.srt"
+            output_srt = directory / "video.vi.srt"
+            raw_srt.write_text(long_srt, encoding="utf-8")
+            first_run_indexes = []
+
+            def fail_second(_runtime, source_chunk, chunk_index, _chunk_count):
+                first_run_indexes.append(chunk_index)
+                if chunk_index == 2:
+                    raise RuntimeError("temporary failure")
+                return translated_chunk(source_chunk)
+
+            with patch.object(app, "translate_api_chunk", side_effect=fail_second):
+                with self.assertRaises(RuntimeError):
+                    app.translate_srt_via_api(
+                        str(raw_srt),
+                        runtime_config,
+                        output_srt=str(output_srt),
+                    )
+
+            self.assertEqual(first_run_indexes, [1, 2])
+            self.assertTrue(Path(str(output_srt) + ".parts").is_dir())
+            resumed_indexes = []
+
+            def finish_remaining(_runtime, source_chunk, chunk_index, _chunk_count):
+                resumed_indexes.append(chunk_index)
+                return translated_chunk(source_chunk)
+
+            with patch.object(app, "translate_api_chunk", side_effect=finish_remaining):
+                result = app.translate_srt_via_api(
+                    str(raw_srt),
+                    runtime_config,
+                    output_srt=str(output_srt),
+                )
+
+            self.assertEqual(result, str(output_srt))
+            self.assertEqual(resumed_indexes, [2, 3])
+            self.assertFalse(Path(str(output_srt) + ".parts").exists())
+            app.validate_translated_srt(
+                long_srt,
+                output_srt.read_text(encoding="utf-8"),
+            )
 
     def test_edge_login_detection_ignores_hidden_or_generic_google_links(self):
         hidden_sign_in = self.FakeElement(visible=False)
@@ -733,6 +1021,7 @@ class ValidationTests(unittest.TestCase):
                 }),
                 patch.object(app, "get_saved_crop_coords", return_value=None),
                 patch.object(app, "get_video_resolution", return_value=None),
+                patch.object(app, "get_video_duration_seconds", return_value=44 * 60),
                 patch.object(app.subprocess, "Popen", side_effect=fake_popen),
             ):
                 result = app.run_videocr(str(video), ocr_lang="ch", output_srt=str(output_srt))
@@ -741,6 +1030,121 @@ class ValidationTests(unittest.TestCase):
             cmd = captured["cmd"]
             self.assertEqual(cmd[cmd.index("--use_server_model") + 1], "false")
             self.assertEqual(cmd[cmd.index("--frames_to_skip") + 1], "2")
+
+    def test_run_videocr_chunks_long_video_and_repairs_a_crashing_segment(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            cli = directory / "videocr-cli.exe"
+            cli.write_bytes(b"exe")
+            video = directory / "long.mp4"
+            video.write_bytes(b"video")
+            output_srt = directory / "long.raw.srt"
+            executed_commands = []
+
+            def fake_execute(cmd, target, *, allow_empty=False):
+                executed_commands.append(list(cmd))
+                target_path = Path(target)
+                if target_path.name.endswith(".normalized.srt"):
+                    is_last_chunk = "chunk-003" in target_path.name
+                    timecode = (
+                        "00:00:00,000 --> 00:00:00,500"
+                        if is_last_chunk
+                        else "00:00:02,000 --> 00:00:03,000"
+                    )
+                    target_path.write_text(
+                        f"1\n{timecode}\n{'C' if is_last_chunk else 'B'}\n",
+                        encoding="utf-8",
+                    )
+                    return str(target_path)
+                start = cmd[cmd.index("--time_start") + 1]
+                if start == "00:10:00":
+                    raise app.VideoOCRProcessError(3221225477)
+                timestamp = "00:00:01" if start == "00:00:00" else "00:20:00"
+                target_path.write_text(
+                    f"1\n{timestamp},000 --> {timestamp},500\n"
+                    f"{'A' if start == '00:00:00' else 'C'}\n",
+                    encoding="utf-8",
+                )
+                return str(target_path)
+
+            def fake_transcode(_video, target, *_args, **_kwargs):
+                Path(target).write_bytes(b"normalized")
+                return target
+
+            with (
+                patch.object(app, "VIDEOCR_CLI", str(cli)),
+                patch.object(app, "VIDEOCR_CONFIG", str(directory / "missing.ini")),
+                patch.object(app, "load_app_config", return_value={}),
+                patch.object(app, "VIDEOCR_CHUNK_THRESHOLD_SECONDS", 900),
+                patch.object(app, "get_video_duration_seconds", return_value=1201),
+                patch.object(app, "execute_videocr_command", side_effect=fake_execute),
+                patch.object(app, "transcode_videocr_chunk", side_effect=fake_transcode) as transcode,
+            ):
+                result = app.run_videocr(
+                    str(video),
+                    ocr_lang="ch",
+                    output_srt=str(output_srt),
+                    crop_coords={
+                        "crop_x": 0.1,
+                        "crop_y": 0.8,
+                        "crop_width": 0.8,
+                        "crop_height": 0.1,
+                    },
+                    use_saved_crop=False,
+                    video_resolution={"width": 1280, "height": 720},
+                )
+
+            self.assertEqual(result, str(output_srt))
+            self.assertEqual(transcode.call_count, 2)
+            blocks = app.parse_srt_blocks(output_srt.read_text(encoding="utf-8"))
+            self.assertEqual([block[2] for block in blocks], ["A", "B", "C"])
+            self.assertEqual(blocks[1][1], "00:10:02,000 --> 00:10:03,000")
+            self.assertEqual(
+                [
+                    cmd[cmd.index("--time_start") + 1]
+                    for cmd in executed_commands
+                    if "--time_start" in cmd
+                ],
+                ["00:00:00", "00:10:00"],
+            )
+
+    def test_videocr_normalization_filter_tracks_resolution_changes(self):
+        video_filter = app.build_videocr_normalization_filter(
+            {
+                "crop_x": 0.093458,
+                "crop_y": 0.807271,
+                "crop_width": 0.810946,
+                "crop_height": 0.128928,
+            },
+            (119, 581, 1038, 92),
+            (1280, 720),
+        )
+
+        self.assertIn("iw*0.810946000", video_filter)
+        self.assertIn("ih*0.128928000", video_filter)
+        self.assertIn("scale=1038:92", video_filter)
+
+    def test_videocr_access_violation_has_a_readable_error(self):
+        error = app.VideoOCRProcessError(3221225477)
+        self.assertIn("0xC0000005", str(error))
+        self.assertIn("access violation", str(error))
+
+    def test_merged_videocr_srt_deduplicates_chunk_boundary_text(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_srt = Path(temporary_dir) / "merged.srt"
+            app.write_merged_videocr_srt(
+                [
+                    {"start": 599_000, "end": 600_050, "text": "Same"},
+                    {"start": 600_000, "end": 601_000, "text": "Same"},
+                    {"start": 602_000, "end": 603_000, "text": "Next"},
+                ],
+                str(output_srt),
+            )
+
+            blocks = app.parse_srt_blocks(output_srt.read_text(encoding="utf-8"))
+            self.assertEqual(len(blocks), 2)
+            self.assertEqual(blocks[0][1], "00:09:59,000 --> 00:10:01,000")
+            self.assertEqual(blocks[0][2], "Same")
 
     def test_managed_local_videos_are_hardlinked_into_the_project(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -867,6 +1271,35 @@ class ValidationTests(unittest.TestCase):
 
             job_with_flag = app.normalize_persisted_job({**legacy_value, "result_ready": False})
             self.assertFalse(job_with_flag["result_ready"])
+
+    def test_persisted_false_positive_success_becomes_translation_retry(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            chinese = (
+                "1\n00:00:01,000 --> 00:00:02,000\n\u4f60\u597d\u4e16\u754c\uff0c\u8fd9\u662f\u6d4b\u8bd5\u5b57\u5e55\u3002\n"
+            )
+            raw_srt.write_text(chinese, encoding="utf-8")
+            translated_srt.write_text(chinese, encoding="utf-8")
+            job = app.normalize_persisted_job({
+                "id": "false-success",
+                "status": "success",
+                "step": "done",
+                "result_ready": True,
+                "result": {
+                    "project_dir": str(directory),
+                    "video": str(video),
+                    "raw_srt": str(raw_srt),
+                    "translated_srt": str(translated_srt),
+                },
+            })
+
+        self.assertEqual(job["status"], "error")
+        self.assertFalse(job["result_ready"])
+        self.assertEqual(job["resume_step"], "translate")
 
 
 class DownloadLookupTests(unittest.TestCase):
@@ -1303,6 +1736,94 @@ class ApiTests(unittest.TestCase):
                     400,
                 )
 
+    def test_settings_store_api_key_encrypted_and_never_return_it(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                response = self.client.post(
+                    "/api/settings",
+                    json={
+                        "translation_provider": "deepseek",
+                        "translation_api_base_url": "",
+                        "translation_api_model": "",
+                        "translation_api_key": "sk-secret-value",
+                    },
+                )
+                settings = self.client.get("/api/settings").get_json()
+                saved_text = config_path.read_text(encoding="utf-8")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("sk-secret-value", saved_text)
+                self.assertEqual(settings["translation_provider"], "deepseek")
+                self.assertEqual(settings["translation_api_base_url"], "https://api.deepseek.com")
+                self.assertEqual(settings["translation_api_model"], "deepseek-v4-pro")
+                self.assertTrue(settings["translation_api_key_set"])
+                self.assertNotIn("translation_api_key", settings)
+
+                cleared = self.client.post(
+                    "/api/settings",
+                    json={"translation_api_key": None},
+                )
+                self.assertEqual(cleared.status_code, 200)
+                self.assertFalse(
+                    self.client.get("/api/settings").get_json()["translation_api_key_set"]
+                )
+
+    def test_settings_expose_default_and_store_translation_instructions(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                defaults = self.client.get("/api/settings").get_json()
+                self.assertEqual(
+                    defaults["translation_instructions"],
+                    app.TRANSLATION_GLOSSARY_PROMPT,
+                )
+                self.assertEqual(
+                    defaults["translation_default_instructions"],
+                    app.TRANSLATION_GLOSSARY_PROMPT,
+                )
+
+                custom = "Dịch tự nhiên, câu ngắn, ưu tiên đúng sắc thái nhân vật."
+                response = self.client.post(
+                    "/api/settings",
+                    json={"translation_instructions": custom},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    self.client.get("/api/settings").get_json()["translation_instructions"],
+                    custom,
+                )
+                self.assertEqual(
+                    app.get_translation_runtime_config()["translation_instructions"],
+                    custom,
+                )
+
+                self.assertEqual(
+                    self.client.post(
+                        "/api/settings",
+                        json={"translation_instructions": []},
+                    ).status_code,
+                    400,
+                )
+
+    def test_translation_api_test_endpoint_uses_saved_provider(self):
+        runtime_config = {
+            "provider": "openrouter",
+            "label": "OpenRouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "deepseek/deepseek-chat",
+            "api_key": "sk-test",
+        }
+        with (
+            patch.object(app, "get_translation_runtime_config", return_value=runtime_config),
+            patch.object(app, "call_openai_compatible_api", return_value="OK") as call_api,
+        ):
+            response = self.client.post("/api/translation/test")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["provider"], "OpenRouter")
+        self.assertEqual(call_api.call_args.kwargs["max_tokens"], 16)
+
     def test_settings_fall_back_when_saved_ocr_options_are_invalid(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             config_path = Path(temporary_dir) / "app_config.json"
@@ -1719,6 +2240,65 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(snapshot["result_ready"])
         self.assertIn("sub Việt", snapshot["error"])
 
+    def test_workflow_uses_api_translation_provider_without_notebook(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            project = {
+                "project_name": "Project",
+                "project_dir": str(directory),
+                "video": str(video),
+                "source_video": str(video),
+                "raw_srt": str(raw_srt),
+                "translated_srt": str(translated_srt),
+            }
+            runtime_config = {
+                "provider": "deepseek",
+                "label": "DeepSeek API",
+                "base_url": "https://api.deepseek.com/v1",
+                "model": "deepseek-chat",
+                "api_key": "sk-test",
+            }
+
+            self.assertTrue(app.workflow_lock.acquire(blocking=False))
+            app.reset_progress("api-translation")
+            with (
+                patch.object(app, "load_app_config", return_value={"output_dir": ""}),
+                patch.object(app, "get_translation_runtime_config", return_value=runtime_config),
+                patch.object(app, "write_project_manifest"),
+                patch.object(app, "validate_project_result", return_value=True),
+                patch.object(app, "finalize_project_assets", return_value=project),
+                patch.object(
+                    app,
+                    "translate_srt_via_api",
+                    return_value=str(translated_srt),
+                ) as translate_api,
+                patch.object(app, "translate_srt_via_gemini_edge") as translate_notebook,
+            ):
+                app.run_workflow_thread(
+                    "https://www.douyin.com/video/1",
+                    "ch",
+                    prepared_video={
+                        "source_url": "https://www.douyin.com/video/1",
+                        "video_id": "1",
+                        "source_video": str(video),
+                    },
+                    resume_project=project,
+                    resume_step="translate",
+                )
+
+            translate_api.assert_called_once_with(
+                str(raw_srt),
+                runtime_config,
+                output_srt=str(translated_srt),
+            )
+            translate_notebook.assert_not_called()
+            self.assertEqual(app.progress_snapshot()["status"], "success")
+
     def test_queue_worker_runs_jobs_one_after_another(self):
         app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
         app.enqueue_workflow("https://www.douyin.com/video/2", "en")
@@ -1825,6 +2405,22 @@ class ApiTests(unittest.TestCase):
         self.assertIn("ready_douyin", data)
         self.assertTrue(data["checks"]["videocr"]["required"])
         self.assertTrue(data["checks"]["edge"]["required"])
+        self.assertFalse(data["checks"]["ffmpeg"]["required"])
+
+    def test_api_translation_health_does_not_require_notebook_or_edge(self):
+        config = {
+            "translation_provider": "openrouter",
+            "translation_api_base_url": "https://openrouter.ai/api/v1",
+            "translation_api_model": "deepseek/deepseek-chat",
+            "translation_api_key": "sk-test",
+            "notebook_url": "",
+        }
+        with patch.object(app, "load_app_config", return_value=config):
+            data = self.client.get("/api/health").get_json()
+
+        self.assertTrue(data["checks"]["translation"]["ok"])
+        self.assertFalse(data["checks"]["notebook"]["required"])
+        self.assertFalse(data["checks"]["edge"]["required"])
 
     def test_update_endpoint_reports_a_new_release(self):
         update = {
@@ -1983,6 +2579,7 @@ class ApiTests(unittest.TestCase):
                 "raw.srt",
                 "https://gemini.google.com/notebook/test-id",
                 output_srt="project/Test video.vi.srt",
+                translation_instructions=app.TRANSLATION_GLOSSARY_PROMPT,
             )
             self.assertEqual(app.progress_snapshot()["status"], "success")
         finally:

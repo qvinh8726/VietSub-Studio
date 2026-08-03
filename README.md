@@ -5,8 +5,8 @@
 <h1 align="center">VietSub Studio</h1>
 
 <p align="center">
-  An open-source Windows desktop workflow that turns Douyin videos or local MP4 files into timestamp-safe Vietnamese subtitle projects: preview the exact OCR region, queue multiple videos, extract text with VideOCR, translate through your own Gemini Notebook session, validate the SRT, and keep every intermediate result recoverable.<br>
-  Công cụ desktop Windows mã nguồn mở biến video Douyin hoặc MP4 trên máy thành dự án phụ đề Việt giữ nguyên timestamp: xem/chỉnh chính xác vùng OCR, xếp nhiều video vào hàng đợi, nhận chữ bằng VideOCR, dịch qua Gemini Notebook của chính bạn, kiểm tra SRT và giữ lại file trung gian để có thể chạy tiếp khi gặp lỗi.
+  An open-source Windows desktop workflow that turns Douyin videos or local MP4 files into timestamp-safe Vietnamese subtitle projects: preview the exact OCR region, queue multiple videos, extract text with VideOCR, translate through Gemini Notebook or a configured API, validate the SRT, and keep every intermediate result recoverable.<br>
+  Công cụ desktop Windows mã nguồn mở biến video Douyin hoặc MP4 trên máy thành dự án phụ đề Việt giữ nguyên timestamp: xem/chỉnh chính xác vùng OCR, xếp nhiều video vào hàng đợi, nhận chữ bằng VideOCR, dịch qua Gemini Notebook hoặc API đã cấu hình, kiểm tra SRT và giữ lại file trung gian để có thể chạy tiếp khi gặp lỗi.
 </p>
 
 <p align="center">
@@ -24,9 +24,9 @@
 </p>
 
 > [!IMPORTANT]
-> The portable EXE contains VietSub Studio, but it does **not** bundle Douzy, VideOCR, Microsoft Edge, a Google account, or a Gemini Notebook. Those are external prerequisites on every computer.
+> The portable EXE contains VietSub Studio, but it does **not** bundle Douzy, VideOCR, Microsoft Edge, a Google account, a Gemini Notebook, or an external API account. Those are external prerequisites depending on the selected source and translation provider.
 >
-> File EXE portable chứa VietSub Studio nhưng **không** đóng gói Douzy, VideOCR, Microsoft Edge, tài khoản Google hoặc Gemini Notebook. Mỗi máy vẫn phải chuẩn bị các thành phần đó.
+> File EXE portable chứa VietSub Studio nhưng **không** đóng gói Douzy, VideOCR, Microsoft Edge, tài khoản Google, Gemini Notebook hoặc tài khoản API ngoài. Thành phần cần có tuỳ nguồn video và provider dịch đã chọn.
 >
 > Douyin videos are processed from the MP4 downloaded by Douzy, then that MP4 and its related assets are moved into the selected project folder after the Vietnamese SRT passes validation. This keeps one full-size video copy while making every completed project self-contained. Local MP4 files are first copied into app-managed storage because browser uploads do not expose the original filesystem path safely, then hard-linked into the project on the same drive or copied as a fallback.
 >
@@ -68,14 +68,14 @@ The complete workflow is:
 3. For Douyin, ask the installed Douzy sidecar to download the video or reuse an existing cache record. For a local MP4, store a managed upload copy and skip Douzy completely.
 4. Stream the prepared video into the in-app preview and let the user drag or resize the OCR rectangle over the exact subtitle region.
 5. Save the crop, OCR language, speed options, project name, source metadata, and video resolution as an independent queue job.
-6. Run OCR and Gemini sequentially for one active video. While that video is in OCR or translation, prefetch the next queued Douyin download without ever running two Douzy sidecars together.
+6. Run OCR and the selected translator sequentially for one active video. While that video is in OCR or translation, prefetch the next queued Douyin download without ever running two Douzy sidecars together.
 7. Process the original Douzy MP4 in place, then move it and the related Douzy assets into the project folder only after translation succeeds.
 8. Ask the installed VideOCR CLI to scan only the selected area and write the original-language `.raw.srt` file.
-9. Connect Playwright to a dedicated Microsoft Edge debug profile, submit the raw SRT to the user's Gemini Notebook, and collect the translated response.
-10. Restore source timecodes when Gemini rewrites compatible subtitle blocks, then reject incomplete translations, missing blocks, changed indexes, or invalid timestamps.
+9. Connect to the selected translator: Playwright for Gemini Notebook or an OpenAI-compatible `/chat/completions` API for DeepSeek/OpenRouter/custom endpoints.
+10. Restore source timecodes when the translator rewrites compatible subtitle blocks, then reject incomplete translations, missing blocks, changed indexes, or invalid timestamps.
 11. Write the Vietnamese `.vi.srt`, optional Douyin thumbnail, and `project.json` manifest. A job is marked successful only when the video reference and both subtitle files pass validation.
 
-The application runs as a Flask service bound only to `127.0.0.1` and is presented as a native desktop window through pywebview/WebView2. Queue data, settings, downloaded media, OCR output, and browser sessions stay on the user's computer. Only the subtitle text intentionally submitted to Gemini leaves the local machine.
+The application runs as a Flask service bound only to `127.0.0.1` and is presented as a native desktop window through pywebview/WebView2. Queue data, settings, downloaded media, OCR output, and browser sessions stay on the user's computer. Only the subtitle text intentionally submitted to the selected Notebook/API provider leaves the local machine.
 
 ## Why this project exists
 
@@ -111,6 +111,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Supports Chinese, English, Japanese, Korean, and Vietnamese OCR modes.
 - Lets users choose the fast mobile OCR model, the accurate server model, or the existing VideOCR configuration, plus an optional frame-skip interval.
 - Uses FFprobe when available to convert preview coordinates accurately to the source resolution.
+- Scans long videos in 10-minute chunks, merges the raw SRT with original timestamps, and uses FFmpeg to normalize mixed-resolution segments that crash VideOCR.
 - Calls the locally installed VideOCR CLI and writes raw OCR output to a dedicated `.raw.srt` file.
 
 ### Sequential queue and recovery
@@ -123,14 +124,16 @@ The project is designed around the parts of long-form subtitle work that become 
 - Keeps incomplete project folders accessible without presenting them as successful results.
 - Restores progress and incremental logs after a UI reload.
 
-### Gemini Notebook and Edge automation
+### Translation providers and Edge automation
 
-- Uses the user's own Gemini Notebook URL and Google session; no API key is stored by the project.
+- Supports Gemini Notebook through Edge, direct DeepSeek API, OpenRouter, and other OpenAI-compatible chat APIs.
+- Uses the user's own Gemini Notebook URL and Google session when Notebook mode is selected; API keys are optional in that mode and encrypted when an API provider is selected.
 - Connects through Playwright to a dedicated Edge profile exposed only on `127.0.0.1:9222`.
 - Starts Edge minimized by default while disabling background throttling that could stall automation.
 - Waits for the actual Notebook chat interface before deciding that login is required.
 - Shows Edge only when Google authentication expires or the Notebook needs manual inspection.
 - Provides an explicit **Open Edge login** action for failed jobs.
+- Sends subtitles from videos up to 45 minutes in one Gemini request; longer subtitle files are split into timestamp-preserving chunks and merged after translation.
 - Cancels active Gemini generation when the workflow is stopped.
 
 ### Subtitle integrity and result management
@@ -148,7 +151,7 @@ The project is designed around the parts of long-form subtitle work that become 
 ### Desktop experience and diagnostics
 
 - Provides a responsive pywebview desktop interface backed by a local Flask API.
-- Includes a dependency health panel for Douzy, VideOCR, FFprobe, Notebook settings, and Edge.
+- Includes a dependency health panel for Douzy, VideOCR, FFmpeg/FFprobe, Notebook settings, and Edge.
 - Shows recent Douzy history and can reload a previous video quickly.
 - Supports a native Windows folder picker and a configurable output directory independent from Douzy.
 - Warns when the effective project output directory is inside OneDrive, where large exports may be slowed by cloud synchronization.
@@ -194,13 +197,14 @@ When a project folder already exists, the next project becomes `Product Review (
 | Component | Required | Expected location or behavior | Why it is needed |
 |---|---:|---|---|
 | Windows 10/11 x64 | Yes | Desktop Windows session | The current integrations and packaged build are Windows-specific. |
-| Microsoft Edge | Yes | Normal Edge installation | Gemini automation uses Edge's Chromium debugging interface. |
+| Microsoft Edge | Notebook mode or short Douyin links | Normal Edge installation | Gemini automation and short-link redirect resolution. |
 | Douzy | Douyin only | `%LOCALAPPDATA%\Programs\Douzy` | Downloads Douyin videos and maintains the local history/database. |
 | Douzy configuration | Douyin only | `%APPDATA%\douyin-downloader-desktop\config.yml` | Provides the Douyin download directory and sidecar configuration. |
 | VideOCR | Yes | `C:\Program Files\VideOCR\videocr-cli.exe` | Extracts subtitles from the video. |
-| Gemini Notebook | Yes | `https://gemini.google.com/notebook/<id>` | Translates the SRT text into Vietnamese. |
-| Google login | Yes | Dedicated Edge debug profile | Grants access to the selected Gemini Notebook. |
-| FFmpeg / FFprobe | No | `ffprobe` available in `PATH` | Improves conversion of saved crop coordinates to the real video resolution. |
+| Gemini Notebook | Notebook mode | `https://gemini.google.com/notebook/<id>` | Translates the SRT text into Vietnamese through the browser. |
+| Translation API account | API mode | DeepSeek, OpenRouter, or another OpenAI-compatible provider | Translates SRT text without Notebook/Edge automation. |
+| Google login | Notebook mode | Dedicated Edge debug profile | Grants access to the selected Gemini Notebook. |
+| FFmpeg / FFprobe | No | `ffmpeg` and `ffprobe` available in `PATH` | Enables long-video chunking metadata and automatic recovery from mixed-resolution VideOCR crashes. |
 | Python 3.11+ | Source only | `python` available in `PATH` | Required only when running or building from source. |
 
 Douzy and VideOCR are third-party applications and are not redistributed by this repository. Install them from sources you trust and follow their own licenses and documentation.
@@ -233,11 +237,11 @@ The health panel distinguishes between the sidecar executable, configuration fil
 
 - Install VideOCR so that `C:\Program Files\VideOCR\videocr-cli.exe` exists.
 - Configure and save a crop area in VideOCR if subtitles occupy only part of the video.
-- Install FFmpeg/FFprobe and add it to `PATH` if you need crop-coordinate conversion across different resolutions.
+- Install FFmpeg/FFprobe and add both commands to `PATH`; this is strongly recommended for long or concatenated videos whose resolution may change midway.
 
-### 3. Prepare Gemini Notebook
+### 3. Choose a translation provider
 
-- Create or select a Gemini Notebook that you are allowed to access.
+- For Notebook mode, create or select a Gemini Notebook that you are allowed to access.
 - Copy its full URL in this exact form:
 
   ```text
@@ -247,6 +251,7 @@ The health panel distinguishes between the sidecar executable, configuration fil
 - Paste it into **Settings → Gemini Notebook used for translation**.
 - Keep **Run Edge in background** enabled if desired. The full browser still renders while minimized.
 - If the Google session expires or the Notebook needs inspection, VietSub Studio restores Edge and shows a retry action after login.
+- For API mode, select **DeepSeek API**, **OpenRouter**, or **API OpenAI-compatible khác**, then enter the Base URL, model, and API key. Use **Test API connection** before starting a queue.
 
 VietSub Studio does not ask for your Google password and does not store it. Authentication remains inside the Edge profile managed by Edge.
 
@@ -316,7 +321,7 @@ Arguments:
 | `-l`, `--lang` | No | OCR language: `ch`, `en`, `ja`, `ko`, or `vi`. Default: `ch`. |
 | `-n`, `--name` | No | Shared name for the project, video, and both subtitle files. |
 
-The CLI still requires the same local Douzy, VideOCR, Edge, Notebook, and configuration setup as the desktop interface.
+The CLI still requires the same local Douzy/VideOCR setup and either Notebook/Edge or a configured translation API, depending on the selected provider.
 
 ## Building the Windows app
 
@@ -357,7 +362,7 @@ flowchart TD
     G --> H[Edit OCR crop and language]
     H --> I[Persist job in sequential queue]
     I --> J[VideOCR creates raw SRT]
-    J --> K[Gemini Notebook translation through Edge]
+    J --> K[Notebook or OpenAI-compatible API translation]
     K --> L[Restore and validate timestamps and blocks]
     L --> M[Write Vietnamese SRT and project.json]
     T --> M
@@ -381,7 +386,8 @@ Local API endpoints:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/health` | GET | Check Douzy, VideOCR, FFprobe, Notebook, and Edge readiness. |
+| `/api/health` | GET | Check Douzy, VideOCR, FFmpeg/FFprobe, Notebook, and Edge readiness. |
+| `/api/translation/test` | POST | Send a minimal probe to the configured API provider. |
 | `/api/settings` | GET/POST | Read and save local settings. |
 | `/api/history` | GET | Read recent items from the local Douzy database. |
 | `/api/previews` | POST | Prepare a video and return its protected preview URL. |
@@ -418,8 +424,8 @@ The Flask server binds to `127.0.0.1`, not to the public network. Every control-
 - Video download and OCR run through locally installed applications.
 - The video itself is not uploaded to this repository or to a VietSub Studio server.
 - Selected local MP4 files are limited to 8 GiB, checked for an MP4 `ftyp` container header, and copied only into the app's managed local cache so queued jobs survive a restart.
-- Subtitle text is submitted to the user's Gemini Notebook through the user's local Edge session. Review Google's terms and privacy policy before processing sensitive content.
-- The app does not require a Gemini API key.
+- Subtitle text is submitted either to the user's Gemini Notebook through the local Edge session or to the configured DeepSeek/OpenRouter/OpenAI-compatible API. Review the selected provider's terms and privacy policy before processing sensitive content.
+- API keys are encrypted with Windows DPAPI and are never returned by the local settings endpoint.
 - Google credentials remain managed by Edge; VietSub Studio does not read or store the password.
 - A random local bearer token is generated for each Douzy sidecar session.
 - Settings and output files are written atomically to reduce corruption risk.
@@ -434,10 +440,10 @@ See [SECURITY.md](SECURITY.md) before reporting a security issue.
 - Queue items run sequentially; parallel OCR/translation is intentionally not supported.
 - Playlist, profile, and mix URLs are not expanded automatically.
 - Requires VideOCR; Douzy is additionally required when the source is Douyin.
-- Requires an authenticated Gemini Notebook session in Edge.
-- Gemini UI changes may occasionally break browser selectors until the project is updated.
+- Requires either an authenticated Gemini Notebook session in Edge or a working translation API configuration.
+- Gemini UI changes may occasionally break Notebook browser selectors until the project is updated.
 - OCR quality depends on the video, subtitle contrast, language model, and saved crop region.
-- FFprobe is optional, but crop coordinates may be less accurate without it.
+- FFmpeg/FFprobe are optional for short constant-resolution videos, but long-video crash recovery is unavailable without them.
 - The community EXE is not code-signed, so SmartScreen may warn on first launch.
 - The one-file EXE may start slowly because it extracts bundled files on each launch.
 - Download and translation behavior must comply with Douyin, Google, Douzy, VideOCR, and local copyright rules.
@@ -488,6 +494,8 @@ Close stale Edge debug sessions, then reopen VietSub Studio. Advanced users can 
 
 Check that the selected language matches the video, configure a tighter crop in VideOCR, and test VideOCR directly with the same video. Low contrast, animated subtitles, watermarks, or very small text reduce OCR quality.
 
+For long or concatenated videos, install FFmpeg/FFprobe. VietSub Studio scans them in chunks and automatically normalizes the remaining segments if VideOCR crashes after a resolution change.
+
 ### Translation changed timestamps
 
 VietSub Studio validates the translated SRT and restores source timestamps when the subtitle block count still matches. If Gemini removes or merges blocks, the workflow stops instead of silently exporting a desynchronized file.
@@ -526,9 +534,9 @@ VietSub Studio does not upload the MP4 to its own server. Douzy downloads it loc
 
 No. Settings remain on your machine unless you deliberately share them. The public repository ignores `app_config.json`.
 
-### Can I use a Gemini API key instead of Notebook?
+### Can I use an API instead of Notebook?
 
-No. The current translation adapter automates Gemini Notebook through Edge. A future API adapter can be proposed through an issue or pull request.
+Yes. In **Settings**, select DeepSeek API, OpenRouter, or another OpenAI-compatible API, enter the Base URL, model, and key, then click **Test API connection**. The app calls the provider's `/chat/completions` endpoint and stores the key with Windows DPAPI encryption.
 
 ### Can it translate to languages other than Vietnamese?
 
@@ -654,6 +662,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Hỗ trợ OCR tiếng Trung, Anh, Nhật, Hàn và Việt.
 - Cho phép chọn model OCR mobile nhanh, model server chính xác hoặc giữ cấu hình VideOCR hiện có, kèm mức bỏ qua khung hình tuỳ chọn.
 - Dùng FFprobe nếu có để quy đổi crop từ kích thước preview sang độ phân giải video nguồn chính xác hơn.
+- Quét video dài theo từng đoạn 10 phút, ghép lại SRT với timestamp gốc và dùng FFmpeg chuẩn hoá đoạn đổi độ phân giải làm VideOCR bị crash.
 - Gọi VideOCR CLI đã cài trên máy và ghi kết quả nhận dạng vào file `.raw.srt` riêng.
 
 ### Hàng đợi tuần tự và khôi phục lỗi
@@ -666,14 +675,16 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Cho phép mở thư mục làm dở nhưng không gắn nhãn kết quả thành công cho job lỗi.
 - Khôi phục trạng thái và log tăng dần nếu giao diện bị reload.
 
-### Tự động Gemini Notebook và Edge
+### Provider dịch và tự động Gemini Notebook/Edge
 
-- Dùng link Gemini Notebook và phiên Google của chính người dùng; dự án không yêu cầu lưu API key.
+- Hỗ trợ Gemini Notebook qua Edge, DeepSeek API, OpenRouter và các API chat OpenAI-compatible khác.
+- Khi chọn Notebook, app dùng link Notebook và phiên Google của người dùng; khi chọn API, key được mã hoá bằng Windows DPAPI.
 - Kết nối Playwright tới profile Edge riêng qua cổng debug chỉ bind ở `127.0.0.1:9222`.
 - Mặc định khởi chạy Edge thu nhỏ và tắt các cơ chế throttling nền có thể làm automation đứng.
 - Chờ đúng giao diện chat Notebook tải xong rồi mới kết luận có cần đăng nhập hay không.
 - Chỉ hiện Edge khi phiên Google hết hạn hoặc Notebook cần người dùng kiểm tra thủ công.
 - Có nút **Mở Edge đăng nhập** rõ ràng trên job lỗi.
+- Video không quá 45 phút được gửi cho Gemini trong một lần; video dài hơn được chia thành các đoạn giữ nguyên timestamp rồi ghép lại sau khi dịch.
 - Huỷ quá trình Gemini đang sinh nội dung khi người dùng dừng workflow.
 
 ### Toàn vẹn phụ đề và quản lý kết quả
@@ -691,7 +702,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 ### Trải nghiệm desktop và chẩn đoán
 
 - Giao diện desktop responsive bằng pywebview, phía sau là Flask API cục bộ.
-- Bảng kiểm tra Douzy, VideOCR, FFprobe, Notebook và Edge kèm hướng dẫn sửa từng mục.
+- Bảng kiểm tra Douzy, VideOCR, FFmpeg/FFprobe, Notebook và Edge kèm hướng dẫn sửa từng mục.
 - Hiển thị lịch sử Douzy và nạp lại video gần đây nhanh chóng.
 - Có hộp thoại Windows để chọn thư mục lưu riêng, hoàn toàn độc lập với thư mục tải Douzy.
 - Cảnh báo nếu thư mục project thực tế nằm trong OneDrive vì đồng bộ cloud có thể làm chậm video dung lượng lớn.
@@ -737,13 +748,14 @@ Nếu thư mục đã tồn tại, dự án tiếp theo sẽ là `Review sản p
 | Thành phần | Bắt buộc | Vị trí/hành vi mong đợi | Mục đích |
 |---|---:|---|---|
 | Windows 10/11 x64 | Có | Phiên desktop Windows | Các tích hợp và bản đóng gói hiện tại dành riêng cho Windows. |
-| Microsoft Edge | Có | Bản Edge thông thường | Tự động hoá Gemini qua giao diện debug Chromium. |
+| Microsoft Edge | Chế độ Notebook hoặc link Douyin ngắn | Bản Edge thông thường | Tự động hoá Gemini và giải mã redirect link ngắn. |
 | Douzy | Chỉ nguồn Douyin | `%LOCALAPPDATA%\Programs\Douzy` | Tải video Douyin và quản lý lịch sử/cache cục bộ. |
 | Cấu hình Douzy | Chỉ nguồn Douyin | `%APPDATA%\douyin-downloader-desktop\config.yml` | Cung cấp thư mục tải Douyin và cấu hình sidecar. |
 | VideOCR | Có | `C:\Program Files\VideOCR\videocr-cli.exe` | Trích xuất phụ đề từ video. |
-| Gemini Notebook | Có | `https://gemini.google.com/notebook/<id>` | Dịch nội dung SRT sang tiếng Việt. |
-| Tài khoản Google | Có | Profile Edge debug riêng | Cấp quyền truy cập Notebook đã chọn. |
-| FFmpeg / FFprobe | Không | Lệnh `ffprobe` có trong `PATH` | Chuyển vùng crop sang đúng độ phân giải video. |
+| Gemini Notebook | Chế độ Notebook | `https://gemini.google.com/notebook/<id>` | Dịch nội dung SRT qua trình duyệt. |
+| Tài khoản API dịch | Chế độ API | DeepSeek, OpenRouter hoặc provider OpenAI-compatible khác | Dịch SRT không cần Notebook/Edge automation. |
+| Tài khoản Google | Chế độ Notebook | Profile Edge debug riêng | Cấp quyền truy cập Notebook đã chọn. |
+| FFmpeg / FFprobe | Không | Có cả lệnh `ffmpeg` và `ffprobe` trong `PATH` | Lấy metadata video dài và tự phục hồi khi VideOCR crash do video đổi độ phân giải. |
 | Python 3.11+ | Chỉ mã nguồn | Lệnh `python` có trong `PATH` | Chỉ cần khi chạy/build từ source. |
 
 Douzy và VideOCR là ứng dụng bên thứ ba, không được phân phối lại trong repository. Hãy cài từ nguồn bạn tin tưởng và tuân thủ giấy phép/tài liệu riêng của chúng.
@@ -776,11 +788,11 @@ Bảng sức khoẻ phân biệt riêng file sidecar, file cấu hình và datab
 
 - Cài sao cho file `C:\Program Files\VideOCR\videocr-cli.exe` tồn tại.
 - Nếu phụ đề chỉ nằm trong một phần khung hình, cấu hình và lưu vùng crop trong VideOCR.
-- Nếu cần đổi crop chính xác giữa nhiều độ phân giải, cài FFmpeg/FFprobe và thêm vào `PATH`.
+- Nên cài FFmpeg/FFprobe và thêm cả hai lệnh vào `PATH`, nhất là với video dài hoặc video ghép có thể đổi độ phân giải giữa chừng.
 
-### 3. Chuẩn bị Gemini Notebook
+### 3. Chọn provider dịch
 
-- Tạo hoặc chọn Gemini Notebook mà bạn có quyền truy cập.
+- Với chế độ Notebook, tạo hoặc chọn Gemini Notebook mà bạn có quyền truy cập.
 - Sao chép URL đầy đủ đúng định dạng:
 
   ```text
@@ -790,6 +802,7 @@ Bảng sức khoẻ phân biệt riêng file sidecar, file cấu hình và datab
 - Dán vào **Thiết lập → Notebook Gemini dùng để dịch**.
 - Có thể giữ bật **Chạy Edge ẩn**; trang vẫn render đầy đủ dù cửa sổ được thu nhỏ.
 - Khi phiên Google hết hạn hoặc cần kiểm tra Notebook, app sẽ hiện Edge và cho chạy lại job sau khi đăng nhập.
+- Với chế độ API, chọn **DeepSeek API**, **OpenRouter** hoặc **API OpenAI-compatible khác**, nhập Base URL, model và API key rồi bấm **Kiểm tra kết nối API** trước khi chạy hàng đợi.
 
 VietSub Studio không hỏi và không lưu mật khẩu Google. Việc đăng nhập nằm hoàn toàn trong profile do Edge quản lý.
 
@@ -922,8 +935,9 @@ Các API cục bộ:
 
 | Endpoint | Method | Mục đích |
 |---|---|---|
-| `/api/health` | GET | Kiểm tra Douzy, VideOCR, FFprobe, Notebook và Edge. |
+| `/api/health` | GET | Kiểm tra Douzy, VideOCR, FFmpeg/FFprobe, Notebook và Edge. |
 | `/api/settings` | GET/POST | Đọc và lưu thiết lập cục bộ. |
+| `/api/translation/test` | POST | Gửi một yêu cầu thử tối thiểu tới provider API đã cấu hình. |
 | `/api/history` | GET | Đọc video gần đây từ database Douzy. |
 | `/api/previews` | POST | Chuẩn bị video và trả URL preview được bảo vệ. |
 | `/api/previews/local` | POST | Sao chép MP4 local vào cache quản lý và tạo preview. |
@@ -959,8 +973,8 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng. M
 - Video được tải và OCR thông qua ứng dụng đã cài cục bộ.
 - File MP4 không bị upload lên repository hay server riêng của VietSub Studio.
 - MP4 được chọn trên máy bị giới hạn 8 GiB, được kiểm tra header container `ftyp` rồi mới sao chép vào cache cục bộ do app quản lý để hàng đợi sống qua lần khởi động lại.
-- Nội dung SRT được gửi đến Gemini Notebook bằng phiên Edge của chính người dùng. Hãy đọc điều khoản/quyền riêng tư của Google trước khi xử lý nội dung nhạy cảm.
-- Ứng dụng không cần Gemini API key.
+- Nội dung SRT được gửi đến Gemini Notebook qua phiên Edge hoặc provider API mà người dùng chọn. Hãy đọc điều khoản/quyền riêng tư của provider trước khi xử lý nội dung nhạy cảm.
+- API key được mã hoá bằng Windows DPAPI và không bao giờ trả ngược qua API settings.
 - Thông tin đăng nhập Google do Edge giữ; VietSub Studio không đọc hoặc lưu mật khẩu.
 - Mỗi phiên sidecar Douzy dùng bearer token cục bộ ngẫu nhiên.
 - Thiết lập và file kết quả được ghi atomic để giảm nguy cơ hỏng.
@@ -978,7 +992,7 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng. M
 - Bắt buộc có phiên Gemini Notebook đã đăng nhập trong Edge.
 - Gemini thay đổi giao diện có thể làm selector lỗi cho tới khi dự án được cập nhật.
 - Chất lượng OCR phụ thuộc video, độ tương phản, ngôn ngữ và vùng crop.
-- FFprobe không bắt buộc nhưng crop có thể kém chính xác nếu thiếu.
+- FFmpeg/FFprobe không bắt buộc với video ngắn có độ phân giải cố định, nhưng thiếu chúng thì không thể tự phục hồi crash ở video dài.
 - EXE cộng đồng chưa ký số nên SmartScreen có thể cảnh báo.
 - EXE một file có thể mở chậm vì phải giải nén tài nguyên mỗi lần.
 - Việc tải/dịch phải tuân thủ điều khoản Douyin, Google, Douzy, VideOCR và luật bản quyền.
@@ -1029,6 +1043,8 @@ Dùng nút **Mở Edge để đăng nhập**, đăng nhập Google, xác nhận 
 
 Kiểm tra đúng ngôn ngữ nguồn, cấu hình crop hẹp hơn trong VideOCR và thử VideOCR trực tiếp với cùng video. Chữ quá nhỏ, nền kém tương phản, subtitle động hoặc watermark sẽ làm OCR kém.
 
+Với video dài hoặc video ghép, hãy cài FFmpeg/FFprobe. VietSub Studio sẽ quét theo từng đoạn và tự chuẩn hoá các đoạn còn lại nếu VideOCR crash sau khi độ phân giải thay đổi.
+
 ### Bản dịch làm thay đổi timestamp
 
 VietSub Studio kiểm tra SRT và khôi phục timestamp nguồn nếu số block vẫn khớp. Nếu Gemini xoá hoặc gộp block, quy trình dừng thay vì âm thầm xuất sub lệch thời gian.
@@ -1067,9 +1083,9 @@ VietSub Studio không upload MP4 lên server riêng. Douzy tải video cục b�
 
 Không. Cấu hình nằm trên máy của bạn trừ khi bạn tự chia sẻ. Repository public bỏ qua `app_config.json`.
 
-### Có thể dùng Gemini API key thay Notebook không?
+### Có thể dùng API thay Notebook không?
 
-Chưa. Adapter hiện tại tự động hoá Gemini Notebook qua Edge. Có thể đề xuất adapter API bằng Issue hoặc pull request.
+Có. Trong **Thiết lập**, chọn DeepSeek API, OpenRouter hoặc API OpenAI-compatible khác, nhập Base URL, model và API key rồi bấm **Kiểm tra kết nối API**. DeepSeek/OpenRouter dùng endpoint `/chat/completions`; API key được mã hoá bằng Windows DPAPI.
 
 ### Có thể dịch sang ngôn ngữ khác tiếng Việt không?
 

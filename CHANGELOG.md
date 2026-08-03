@@ -11,6 +11,11 @@ All notable changes to VietSub Studio are documented here.
 
 ### Fixed
 
+- Long videos are now OCRed in 10-minute chunks and merged back into one timestamp-safe SRT. If VideOCR crashes on a mixed-resolution HEVC segment, VietSub Studio normalizes that segment to a fixed-size H.264 crop with FFmpeg and retries automatically.
+- Videos up to 45 minutes keep the single-request translation flow; longer videos are translated in smaller timestamp-preserving Gemini chunks and merged back into one SRT.
+- Added DeepSeek API, OpenRouter, and custom OpenAI-compatible translation providers with encrypted Windows API-key storage, connection testing, retries, and per-chunk resume files.
+- Added a shared game/sci-fi translation glossary and character-pronoun rules to every Gemini/API translation request; SRT timestamps remain strict while terminology notes stay outside the saved subtitle file.
+- API translation now requests SSE streaming when available, so local gateways such as 9router can deliver partial output without waiting for one large response; non-streaming gateways still fall back to JSON.
 - Queue mutations now persist with copy-on-write semantics, the worker converts unexpected exceptions into terminal job errors, corrupt queue/config files are quarantined, the CLI no longer loads or overwrites the desktop queue, and a cross-process lock prevents multiple app/CLI instances from sharing providers and state.
 - Fixed stale preview/auto-name/resolution races, Gemini timeout cleanup, detached sidecar startup cleanup, native shutdown process cleanup, SRT ordering validation, and queue admission beyond the persisted limit.
 
