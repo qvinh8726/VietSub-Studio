@@ -5,9 +5,7 @@ chcp 65001 >nul
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
-echo Installing dependencies...
-python -m pip install -r requirements.txt
-if errorlevel 1 goto :error
+echo Installing build dependencies...
 python -m pip install -r requirements-build.txt
 if errorlevel 1 goto :error
 

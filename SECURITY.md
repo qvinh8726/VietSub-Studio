@@ -23,3 +23,6 @@ Báo cáo nên có phiên bản bị ảnh hưởng, các bước tái hiện, m
 - Subtitle text is submitted to the user's Gemini Notebook through a local Edge browser session.
 - VietSub Studio does not require a Gemini API key and does not bundle Google credentials.
 - Packaged settings are stored locally under `%APPDATA%\VietSub Studio`.
+- The local Flask control plane binds to loopback and requires a fresh per-launch capability token for API requests; Host, Origin, Fetch Metadata, path, and mutation content-type checks are also enforced.
+- Local MP4 uploads are capped at 8 GiB and must contain an MP4 `ftyp` container header before being admitted to managed cache.
+- The self-updater verifies the official repository URL and mandatory release checksum, but community builds remain unsigned; a compromised publisher account is outside the protection offered by same-release hashes.

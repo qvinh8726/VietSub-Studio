@@ -1,20 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
 
-datas = [('templates', 'templates'), ('avatar.jpg', '.'), ('avatar.ico', '.')]
-binaries = []
-hiddenimports = []
-webview_data, webview_binaries, webview_hiddenimports = collect_all('webview')
-datas += webview_data
-binaries += webview_binaries
-hiddenimports += webview_hiddenimports
+datas = [
+    ('templates', 'templates'),
+    ('static', 'static'),
+    ('avatar.jpg', '.'),
+    ('avatar.ico', '.'),
+]
+
 
 a = Analysis(
     ['app.py'],
     pathex=[],
-    binaries=binaries,
+    binaries=[],
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=['webview'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
