@@ -3,7 +3,7 @@
 import argparse
 import sys
 
-from app import progress_snapshot, queue_workflow
+from app import acquire_instance_lock, release_instance_lock, run_single_workflow
 
 
 def main():
@@ -19,14 +19,18 @@ def main():
     )
     args = parser.parse_args()
 
-    try:
-        thread = queue_workflow(args.url, args.lang, args.name)
-    except (RuntimeError, ValueError) as error:
-        print(f"Lỗi: {error}", file=sys.stderr)
+    if not acquire_instance_lock():
+        print("Lỗi: VietSub Studio đang chạy ở một tiến trình khác.", file=sys.stderr)
         return 1
+    try:
+        try:
+            result = run_single_workflow(args.url, args.lang, args.name)
+        except (RuntimeError, ValueError) as error:
+            print(f"Lỗi: {error}", file=sys.stderr)
+            return 1
+    finally:
+        release_instance_lock()
 
-    thread.join()
-    result = progress_snapshot()
     if result["status"] != "success":
         print(f"Lỗi: {result['error']}", file=sys.stderr)
         return 1

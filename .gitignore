@@ -1,6 +1,7 @@
 # Local settings and machine-specific shortcuts
 app_config.json
 workflow_queue.json
+/instance.lock
 local_videos/
 *.lnk
 

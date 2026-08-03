@@ -1,4 +1,4 @@
-name: Tests
+name: Tests and package smoke
 
 on:
   push:
@@ -8,18 +8,104 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unit-tests:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          architecture: x64
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - name: Validate dependencies
+        run: python -m pip check
       - name: Compile
         run: python -m py_compile app.py automate.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+  package-smoke:
+    needs: unit-tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Build portable executable
+        run: python -m PyInstaller --noconfirm --clean --distpath dist_portable --workpath build_portable "VietSub Studio Portable.spec"
+      - name: Generate build manifest and dependency inventory
+        shell: pwsh
+        run: |
+          python -m pip freeze | Out-File -Encoding utf8 "dist_portable\dependencies.txt"
+          $exe = Resolve-Path "dist_portable\VietSub Studio.exe"
+          $manifest = [ordered]@{
+            commit = "${{ github.sha }}"
+            ref = "${{ github.ref }}"
+            python = (python --version)
+            architecture = "x64"
+            artifact = $exe.Path
+            sha256 = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          }
+          $manifest | ConvertTo-Json | Out-File -Encoding utf8 "dist_portable\build-manifest.json"
+      - name: Smoke-test packaged local server
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist_portable\VietSub Studio.exe").Path
+          $process = Start-Process -FilePath $exe -ArgumentList "--server" -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 60; $attempt++) {
+              try {
+                $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:5000/" -TimeoutSec 2
+                if ($response.StatusCode -eq 200 -and $response.Content -match "VietSub Studio") {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) {
+              throw "Packaged app did not become ready within 60 seconds."
+            }
+            foreach ($asset in @("avatar.jpg", "static/app.js", "static/style.css")) {
+              $assetResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:5000/$asset" -TimeoutSec 5
+              if ($assetResponse.StatusCode -ne 200) {
+                throw "Packaged asset $asset was not served correctly."
+              }
+            }
+            $second = Start-Process -FilePath $exe -ArgumentList "--server" -PassThru
+            if (-not $second.WaitForExit(60000)) {
+              throw "A second packaged instance did not exit within 60 seconds."
+            }
+            if ($second.ExitCode -ne 2) {
+              throw "A second packaged instance returned unexpected code $($second.ExitCode)."
+            }
+          } finally {
+            $testProcesses = Get-CimInstance Win32_Process -Filter "Name='VietSub Studio.exe'" |
+              Where-Object { $_.ExecutablePath -eq $exe }
+            foreach ($testProcess in $testProcesses) {
+              Stop-Process -Id $testProcess.ProcessId -Force
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VietSub-Studio-Portable-${{ github.sha }}
+          path: |
+            dist_portable/VietSub Studio.exe
+            dist_portable/build-manifest.json
+            dist_portable/dependencies.txt
+          if-no-files-found: error
