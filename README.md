@@ -1,1147 +1,640 @@
-<p align="center">
-  <img src="avatar.jpg" width="132" alt="VietSub Studio avatar">
-</p>
-
-<h1 align="center">VietSub Studio</h1>
+# VietSub Studio - Phần mềm tạo phụ đề tiếng Việt từ video Douyin và MP4
 
 <p align="center">
-  An open-source Windows desktop workflow that turns Douyin videos or local MP4 files into timestamp-safe Vietnamese subtitle projects: preview the exact OCR region, queue multiple videos, extract text with VideOCR, translate through Gemini Notebook or a configured API, validate the SRT, and keep every intermediate result recoverable.<br>
-  Công cụ desktop Windows mã nguồn mở biến video Douyin hoặc MP4 trên máy thành dự án phụ đề Việt giữ nguyên timestamp: xem/chỉnh chính xác vùng OCR, xếp nhiều video vào hàng đợi, nhận chữ bằng VideOCR, dịch qua Gemini Notebook hoặc API đã cấu hình, kiểm tra SRT và giữ lại file trung gian để có thể chạy tiếp khi gặp lỗi.
+  <img src="avatar.jpg" width="132" alt="VietSub Studio - công cụ OCR và dịch phụ đề tiếng Việt">
 </p>
 
 <p align="center">
-  <a href="https://github.com/qvinh8726/VietSub-Studio/releases/latest">Download / Tải bản mới nhất</a>
-  · <a href="#english">English</a>
-  · <a href="#tiếng-việt">Tiếng Việt</a>
-  · <a href="CONTRIBUTING.md">Contributing / Đóng góp</a>
+  <strong>OCR phụ đề cháy trên video · dịch tiếng Việt · bảo toàn timestamp SRT · xử lý hàng đợi trên Windows.</strong>
 </p>
 
 <p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-1f6feb">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-2ea44f">
-  <img alt="Release" src="https://img.shields.io/github/v/release/qvinh8726/VietSub-Studio?display_name=tag">
+  <a href="https://github.com/qvinh8726/VietSub-Studio/releases/latest">Tải bản portable mới nhất</a>
+  · <a href="https://github.com/qvinh8726/VietSub-Studio/issues">Báo lỗi / đề xuất</a>
+  · <a href="CONTRIBUTING.md">Đóng góp</a>
 </p>
+
+<p align="center">
+  <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%2F11-1f6feb">
+  <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12%2B-3776ab">
+  <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2ea44f">
+  <img alt="Latest release" src="https://img.shields.io/github/v/release/qvinh8726/VietSub-Studio?display_name=tag">
+  <img alt="CI status" src="https://github.com/qvinh8726/VietSub-Studio/actions/workflows/tests.yml/badge.svg">
+</p>
+
+VietSub Studio là ứng dụng desktop Windows mã nguồn mở giúp **tạo phụ đề tiếng Việt từ video Douyin hoặc file MP4 local**. Ứng dụng kết hợp preview vùng OCR, VideOCR, Douzy, Gemini Notebook qua Microsoft Edge, DeepSeek API, OpenRouter và API OpenAI-compatible để tạo ra file `.vi.srt` có timestamp an toàn.
+
+Nếu bạn đang tìm **phần mềm OCR phụ đề video Trung Quốc**, **công cụ dịch phụ đề Douyin sang tiếng Việt**, **SRT translator trên Windows**, hoặc **cách giữ nguyên timestamp khi dịch phụ đề**, đây là workflow mà VietSub Studio cung cấp.
 
 > [!IMPORTANT]
-> The portable EXE contains VietSub Studio, but it does **not** bundle Douzy, VideOCR, Microsoft Edge, a Google account, a Gemini Notebook, or an external API account. Those are external prerequisites depending on the selected source and translation provider.
->
-> File EXE portable chứa VietSub Studio nhưng **không** đóng gói Douzy, VideOCR, Microsoft Edge, tài khoản Google, Gemini Notebook hoặc tài khoản API ngoài. Thành phần cần có tuỳ nguồn video và provider dịch đã chọn.
->
-> Douyin videos are processed from the MP4 downloaded by Douzy, then that MP4 and its related assets are moved into the selected project folder after the Vietnamese SRT passes validation. This keeps one full-size video copy while making every completed project self-contained. Local MP4 files are first copied into app-managed storage because browser uploads do not expose the original filesystem path safely, then hard-linked into the project on the same drive or copied as a fallback.
->
-> Video Douyin được xử lý từ file MP4 do Douzy tải; sau khi SRT tiếng Việt vượt qua kiểm tra, app chuyển MP4 và các asset liên quan vào thư mục project đã chọn. Nhờ vậy chỉ có một bản video dung lượng lớn nhưng mỗi project hoàn tất vẫn tự chứa đầy đủ file. MP4 chọn từ máy được chép vào vùng app quản lý vì trình duyệt không cung cấp đường dẫn file gốc an toàn, sau đó được hard-link vào project nếu cùng ổ đĩa hoặc fallback sang sao chép.
+> Bản portable chỉ đóng gói VietSub Studio. Ứng dụng **không** kèm Douzy, VideOCR, FFmpeg, Microsoft Edge, tài khoản Google, Gemini Notebook hay tài khoản API. Hãy cài các phụ thuộc bên thứ ba từ nguồn bạn tin cậy và tuân thủ điều khoản của từng dịch vụ.
 
----
+## Muc luc
 
-# English
+- [VietSub Studio la gi?](#vietsub-studio-la-gi)
+- [Doi tuong su dung](#doi-tuong-su-dung)
+- [Tinh nang noi bat](#tinh-nang-noi-bat)
+- [Quy trinh xu ly](#quy-trinh-xu-ly)
+- [Dau vao va dau ra](#dau-vao-va-dau-ra)
+- [Yeu cau he thong](#yeu-cau-he-thong)
+- [Cai dat nhanh bang EXE portable](#cai-dat-nhanh-bang-exe-portable)
+- [Thiet lap lan dau](#thiet-lap-lan-dau)
+- [Cach xu ly mot video](#cach-xu-ly-mot-video)
+- [Dich phu de Notebook va API](#dich-phu-de-notebook-va-api)
+- [Prompt dich mac dinh va block code SRT](#prompt-dich-mac-dinh-va-block-code-srt)
+- [Hang doi retry va khoi phuc](#hang-doi-retry-va-khoi-phuc)
+- [Chay tu ma nguon](#chay-tu-ma-nguon)
+- [CLI khong giao dien](#cli-khong-giao-dien)
+- [Build EXE Windows](#build-exe-windows)
+- [Du lieu local va cau hinh](#du-lieu-local-va-cau-hinh)
+- [Bao mat va quyen rieng tu](#bao-mat-va-quyen-rieng-tu)
+- [Gioi han va luu y phap ly](#gioi-han-va-luu-y-phap-ly)
+- [Xu ly loi thuong gap](#xu-ly-loi-thuong-gap)
+- [Kiem thu va dong gop](#kiem-thu-va-dong-gop)
+- [Giay phep](#giay-phep)
 
-## Table of contents
+## VietSub Studio la gi?
 
-- [What is VietSub Studio?](#what-is-vietsub-studio)
-- [Why this project exists](#why-this-project-exists)
-- [Features](#features)
-- [What the output looks like](#what-the-output-looks-like)
-- [Requirements](#requirements)
-- [Quick start with the portable EXE](#quick-start-with-the-portable-exe)
-- [First-run setup](#first-run-setup)
-- [Processing videos](#processing-videos)
-- [Running from source](#running-from-source)
-- [Command-line usage](#command-line-usage)
-- [Building the Windows app](#building-the-windows-app)
-- [How it works](#how-it-works)
-- [Configuration and local data](#configuration-and-local-data)
-- [Privacy and security](#privacy-and-security)
-- [Known limitations](#known-limitations)
-- [Troubleshooting](#troubleshooting)
-- [Frequently asked questions](#frequently-asked-questions)
-- [Contributing](#contributing)
+VietSub Studio khong phai la video editor va khong thay the Douzy, VideOCR hay nha cung cap AI. No la lop dieu phoi giup ban lap lai mot quy trinh phu de on dinh:
 
-## What is VietSub Studio?
+1. Nhap link video Douyin hoac chon file MP4 tren may.
+2. Xem preview va keo khung OCR dung vao vung chu tren video.
+3. Chon ngon ngu OCR, che do OCR va ten project.
+4. Dua nhieu video vao hang doi, xu ly tuan tu de tranh tranh chap tai nguyen.
+5. Chay VideOCR de tao phu de goc `.raw.srt`.
+6. Dich bang Gemini Notebook qua Edge hoac bang API tuong thich OpenAI.
+7. Kiem tra so block, index, timestamp va noi dung SRT truoc khi danh dau thanh cong.
+8. Luu video, phu de, thumbnail va manifest vao mot thu muc project doc lap.
 
-VietSub Studio is a Windows desktop orchestration tool for creators who need to turn burned-in subtitles inside long videos into editable Vietnamese SRT files. It is not a replacement for Douzy, VideOCR, Edge, Gemini, or a full video editor. Instead, it connects those existing tools into one repeatable workflow with preview, queueing, retry, validation, local project files, and update management.
+Ung dung chay Flask chi bind vao `.127.0.0.1`, hien thi bang cua so pywebview/WebView2. Neu WebView native khong khoi dong kip, app tu dong chuyen sang trinh duyet cuc bo.
 
-The complete workflow is:
+## Doi tuong su dung
 
-1. Accept a direct Douyin URL/share message or an MP4 selected from the user's machine.
-2. Resolve short Douyin share links, reject mix/profile/playlist URLs, and identify the exact source video.
-3. For Douyin, ask the installed Douzy sidecar to download the video or reuse an existing cache record. For a local MP4, store a managed upload copy and skip Douzy completely.
-4. Stream the prepared video into the in-app preview and let the user drag or resize the OCR rectangle over the exact subtitle region.
-5. Save the crop, OCR language, speed options, project name, source metadata, and video resolution as an independent queue job.
-6. Run OCR and the selected translator sequentially for one active video. While that video is in OCR or translation, prefetch the next queued Douyin download without ever running two Douzy sidecars together.
-7. Process the original Douzy MP4 in place, then move it and the related Douzy assets into the project folder only after translation succeeds.
-8. Ask the installed VideOCR CLI to scan only the selected area and write the original-language `.raw.srt` file.
-9. Connect to the selected translator: Playwright for Gemini Notebook or an OpenAI-compatible `/chat/completions` API for DeepSeek/OpenRouter/custom endpoints.
-10. Restore source timecodes when the translator rewrites compatible subtitle blocks, then reject incomplete translations, missing blocks, changed indexes, or invalid timestamps.
-11. Write the Vietnamese `.vi.srt`, optional Douyin thumbnail, and `project.json` manifest. A job is marked successful only when the video reference and both subtitle files pass validation.
+- Creator lam video ngan, video Douyin hoac noi dung Trung Quoc can phu de tieng Viet.
+- Nhom dich thuat can OCR phu de da ghi san (burned-in subtitles) thanh SRT co the chinh sua.
+- Nguoi dung muon dich SRT bang Gemini Notebook, DeepSeek, OpenRouter hoac gateway API rieng.
+- Nha phat trien Windows muon co pipeline OCR -> translation -> validation co the retry va kiem tra bang unit test.
 
-The application runs as a Flask service bound only to `127.0.0.1` and is presented as a native desktop window through pywebview/WebView2. Queue data, settings, downloaded media, OCR output, and browser sessions stay on the user's computer. Only the subtitle text intentionally submitted to the selected Notebook/API provider leaves the local machine.
+## Tinh nang noi bat
 
-## Why this project exists
+### Nhan video va quan ly nguon
 
-The project is designed around the parts of long-form subtitle work that become slow, repetitive, or unstable when performed manually:
+- Nhan URL video Douyin day du, link ngan `.v.douyin.com` va ca doan share co chua URL.
+- Tu dong trich URL, kiem tra hostname va tu choi domain gia mao.
+- Tu choi link profile, playlist va mix vi moi job dai dien cho mot video cu the.
+- Nhan file `.mp4` local; workflow local khong can Douzy.
+- Tai lai video da co trong history/cache cua Douzy thay vi tai lai khong can thiet.
+- Doc title, video path, metadata va cover tu Douzy neu co.
+- Chi chuyen MP4 va asset lien quan vao project sau khi phu de dich da vuot validation.
+- MP4 local duoc copy vao cache do app quan ly de hang doi co the song qua lan khoi dong; khi cung o cung dia, app uu tien hard-link vao project va fallback sang copy neu filesystem khong ho tro.
 
-- A two-hour video can make editing software sluggish long before subtitle translation is complete.
-- Burned-in subtitles require a carefully selected OCR region; scanning the entire frame wastes time and increases recognition noise.
-- Downloading or copying the same large source video more than once consumes unnecessary disk space. A 6 GB Douyin video should remain one 6 GB file, not become 12 GB before OCR even begins.
-- Running multiple OCR or browser-automation jobs in parallel creates resource contention and makes failures harder to diagnose. VietSub Studio accepts multiple jobs but deliberately processes them one at a time.
-- Gemini can return partial SRT, alter timestamps, or require a renewed Google session. The app validates the final structure and exposes a visible Edge fallback instead of silently reporting success.
-- A failed translation should not force another download or OCR pass. Queue persistence and stage-aware retry reuse the prepared video and raw SRT whenever they are still valid.
-- Open-source users need a clear installation and update path. The portable build includes an update banner, verified ZIP installation, automatic restart, and a manual GitHub fallback.
+### Preview va OCR chinh xac
 
-## Features
+- Preview video truoc khi chay OCR.
+- Khung crop truc quan co the keo va doi kich thuoc de chi quet vung phu de.
+- Luu crop mac dinh va crop rieng cho tung job.
+- Ho tro ngon ngu OCR: `.ch`, `.en`, `.ja`, `.ko`, `.vi`.
+- Ho tro che do VideOCR: `.auto`, `.fast`, `.accurate`.
+- Ho tro bo qua tu `.0` den `.10` frame.
+- Dung FFprobe neu co de quy doi toa do preview ve dung do phan giai nguon.
+- Video dai hon 45 phut duoc tach thanh cac doan OCR 10 phut, sau do merge lai theo timestamp goc.
+- Neu VideOCR gap segment HEVC/mixed-resolution, app co the dung FFmpeg chuan hoa segment va thu lai.
 
-### Video input and source handling
+### Dich phu de tieng Viet
 
-- Accepts direct Douyin video URLs, `v.douyin.com` short links, and complete pasted share messages.
-- Extracts URLs automatically and validates the real hostname to reject lookalike or malicious domains.
-- Rejects mix, user-profile, and playlist-style sources because every queue item must represent one exact video.
-- Accepts MP4 files from the local machine without requiring Douzy.
-- Reuses the Douzy history/cache when the requested Douyin video is already available.
-- Reads Douzy's recorded title, video path, metadata, and optional cover image.
-- Moves the original Douzy MP4, cover, metadata, music, and other per-video assets into the completed project folder without leaving a second full-size copy.
-- Copies a local MP4 into managed app storage so it remains available to the persisted queue.
-- Hard-links the managed local MP4 into the completed project on the same drive, with a full-copy fallback across drives or unsupported filesystems.
+- Gemini Notebook qua Microsoft Edge voi profile debug rieng.
+- DeepSeek API voi preset mac dinh `.https://api.deepseek.com` / `.deepseek-v4-pro`.
+- OpenRouter voi preset mac dinh `.https://openrouter.ai/api/v1` / `.deepseek/deepseek-chat`.
+- API OpenAI-compatible tuy chinh: nhap Base URL, model va API key theo gateway cua ban.
+- API request dung endpoint `./chat/completions`.
+- API co streaming SSE khi gateway ho tro; gateway khong ho tro se tu dong fallback ve JSON day du.
+- API tu dong retry toi da 3 lan cho loi tam thoi; phan hoi qua lon, JSON hong, output bi cat hoac SRT khong hop le se bi bao loi ro rang.
+- Video khong qua 45 phut co the dich mot request; video dai hon duoc chia chunk bao toan timestamp, toi da 400 block hoac 24.000 ky tu moi chunk.
 
-### OCR preview and recognition
+### Hang doi va khoi phuc
 
-- Streams a protected local video preview inside the app before starting OCR.
-- Provides a visible, draggable, and resizable crop rectangle for the burned-in subtitle area.
-- Stores crop coordinates per queue item and can reuse a saved default crop.
-- Supports Chinese, English, Japanese, Korean, and Vietnamese OCR modes.
-- Lets users choose the fast mobile OCR model, the accurate server model, or the existing VideOCR configuration, plus an optional frame-skip interval.
-- Uses FFprobe when available to convert preview coordinates accurately to the source resolution.
-- Scans long videos in 10-minute chunks, merges the raw SRT with original timestamps, and uses FFmpeg to normalize mixed-resolution segments that crash VideOCR.
-- Calls the locally installed VideOCR CLI and writes raw OCR output to a dedicated `.raw.srt` file.
+- Chuan bi nhieu job truoc khi bam chay.
+- OCR va dich chay tuan tu, chi mot worker xu ly tai mot thoi diem.
+- Prefetch toi da mot video Douyin ke tiep sau khi job hien tai roi khoi buoc download.
+- Luu job `.queued`, `.running`, `.success`, `.error`, `.cancelled` vao file JSON atomic.
+- Ho tro huy job dang chay, xoa job dang cho va don job da ket thuc.
+- Job loi co the retry tu buoc hop ly nhat: chuan bi video, OCR hoac dich.
+- Neu app dong khi job dang chay, lan mo sau job duoc danh dau can retry thay vi gia thanh cong gia.
+- Giu log tien trinh va output trung gian de khong phai download/OCR lai neu chi loi o buoc dich.
 
-### Sequential queue and recovery
+### Kiem tra SRT va project
 
-- Lets users prepare multiple Douyin and local MP4 jobs before processing starts.
-- Uses one sequential OCR/Gemini worker and prefetches at most one future Douyin download after the active job leaves its download step.
-- Persists queued, running, successful, failed, and cancelled job metadata across app restarts.
-- Supports removing waiting jobs, cancelling the active job, and clearing finished jobs.
-- Retries from the earliest reusable stage: video preparation, OCR, or translation.
-- Keeps incomplete project folders accessible without presenting them as successful results.
-- Restores progress and incremental logs after a UI reload.
+- Giu nguyen index va timestamp cua SRT goc.
+- Neu model sua timestamp nhung van giu duoc block tuong ung, app co the khoi phuc timestamp goc.
+- Tu choi output rong, thieu block, doi index, timestamp sai, SRT khong parse duoc hoac thieu file.
+- Chi hien thi job thanh cong khi video reference, `.raw.srt` va `.vi.srt` deu ton tai.
+- Xu ly ten project an toan cho Windows, tranh reserved name va them hau to `.(2)`, `.(3)` neu trung.
+- Ghi `.project.json` voi source URL, video ID, status, error, output paths va update time.
+- Ho tro thumbnail `.jpg`, `.jpeg`, `.png`, `.webp` khi Douzy cung cap cover hoac metadata hop le.
 
-### Translation providers and Edge automation
+### Desktop, cap nhat va chan doan
 
-- Supports Gemini Notebook through Edge, direct DeepSeek API, OpenRouter, and other OpenAI-compatible chat APIs.
-- Uses the user's own Gemini Notebook URL and Google session when Notebook mode is selected; API keys are optional in that mode and encrypted when an API provider is selected.
-- Connects through Playwright to a dedicated Edge profile exposed only on `127.0.0.1:9222`.
-- Starts Edge minimized by default while disabling background throttling that could stall automation.
-- Waits for the actual Notebook chat interface before deciding that login is required.
-- Shows Edge only when Google authentication expires or the Notebook needs manual inspection.
-- Provides an explicit **Open Edge login** action for failed jobs.
-- Sends subtitles from videos up to 45 minutes in one Gemini request; longer subtitle files are split into timestamp-preserving chunks and merged after translation.
-- Cancels active Gemini generation when the workflow is stopped.
+- Giao dien responsive tren pywebview/WebView2.
+- Bang health check cho Douzy sidecar, Douzy config/database, VideOCR, FFmpeg, FFprobe, provider dich va Edge.
+- Xem history Douzy va chon lai video gan day.
+- Chon thu muc output rieng, khong phu thuoc thu muc download cua Douzy.
+- Canh bao khi output nam trong OneDrive vi dong bo cloud co the lam cham file video lon.
+- Tao lai shortcut Desktop cho ban EXE portable.
+- Kiem tra GitHub Releases, thong bao ban moi va ho tro tai/cai ban portable chinh thuc.
+- Trinh cap nhat kiem tra repository, asset, checksum SHA-256, kich thuoc va EXE truoc khi thay the ban dang chay.
 
-### Subtitle integrity and result management
+## Quy trinh xu ly
 
-- Preserves all source timestamps and subtitle block indexes.
-- Restores original timecodes when Gemini preserves block structure but rewrites compatible timestamps.
-- Rejects empty output, partial SRT, changed block counts, changed indexes, and missing translated files.
-- Reports success only after the source video reference, raw SRT, and validated Vietnamese SRT all exist.
-- Uses safe Windows project names, including reserved-name handling and length limits.
-- Adds duplicate suffixes such as `(2)` and `(3)` without overwriting an existing project.
-- Writes configuration, queue state, SRT output, and manifests atomically to reduce partially written files.
-- Exports a Douyin thumbnail as JPG, PNG, or WebP when a local cover or valid saved metadata URL is available.
-- Records source URL, video ID, source path, output paths, status, error, and update time in `project.json`.
+```mermaid
+flowchart TD
+    A[Link Douyin hoac MP4 local] --> B{Loai nguon}
+    B -->|Douyin| C[Douzy tai hoac tai su dung cache]
+    B -->|MP4 local| D[Copy vao cache local da kiem tra MP4]
+    C --> E[Preview video]
+    D --> E
+    E --> F[Keo crop OCR va chon ngon ngu]
+    F --> G[Luu job vao hang doi]
+    G --> H[VideOCR tao raw.srt]
+    H --> I{Provider dich}
+    I -->|Gemini Notebook| J[Playwright / Edge]
+    I -->|DeepSeek / OpenRouter / custom| K[API chat completions]
+    J --> L[Parse va khoi phuc timestamp]
+    K --> L
+    L --> M[Validate SRT]
+    M --> N[Lu project, video, thumbnail va manifest]
+```
 
-### Desktop experience and diagnostics
+Nguyen tac quan trong: **SRT chi duoc coi la thanh cong sau khi validation cuoi cung pass**. Neu provider tra ve thieu block hoac chen giai thich vao SRT, job se dung va cho phep retry.
 
-- Provides a responsive pywebview desktop interface backed by a local Flask API.
-- Includes a dependency health panel for Douzy, VideOCR, FFmpeg/FFprobe, Notebook settings, and Edge.
-- Shows recent Douzy history and can reload a previous video quickly.
-- Supports a native Windows folder picker and a configurable output directory independent from Douzy.
-- Warns when the effective project output directory is inside OneDrive, where large exports may be slowed by cloud synchronization.
-- Creates or recreates a Desktop shortcut for the packaged EXE.
-- Keeps the Edge window minimized during normal translation while retaining a reliable visible fallback.
-- Ships as a portable one-file Windows EXE with a custom icon.
+## Dau vao va dau ra
 
-### Updates, openness, and safety
+### Dau vao duoc ho tro
 
-- Checks official GitHub Releases for newer versions and displays an in-app update banner.
-- Downloads the official portable ZIP, validates the expected repository URL, ZIP SHA256 file, GitHub asset digest, declared size, and embedded EXE.
-- Replaces the running packaged EXE and restarts automatically when in-place updating is supported.
-- Falls back to the official GitHub Release page when automatic installation is unavailable.
-- Keeps machine-specific settings, queue files, local videos, browser profiles, and credentials out of the repository.
-- Uses the MIT License so the workflow can be inspected, modified, redistributed, and extended subject to third-party terms.
+```
+https://www.douyin.com/video/1234567890123456789
+https://v.douyin.com/xxxxxx/
+```
 
-## What the output looks like
+Ban co the dan ca doan share co chua mot trong hai URL tren. Link profile, playlist, mix va URL khong tro toi mot video don se bi tu choi.
 
-If the project name is `Product Review`, VietSub Studio creates:
+File tu may phai la `.mp4`, khong rong, nho hon hoac bang `.8 GiB` va co header container `.ftyp` hop le.
 
-```text
+### Cau truc project ket qua
+
+Voi ten project `.Product Review`, app tao mot thu muc tu chua:
+
+```
 Product Review/
-├── Product Review.mp4
-├── Product Review.thumbnail.jpg (when available)
-├── Product Review.raw.srt
-├── Product Review.vi.srt
-├── Product Review.data.json (when Douzy provides it)
-├── Product Review.music.mp3 (when Douzy provides it)
-└── project.json
+|-- Product Review.mp4
+|-- Product Review.thumbnail.jpg   (neu co cover)
+|-- Product Review.raw.srt          (phu de OCR ngon ngu goc)
+|-- Product Review.vi.srt            (phu de dich tieng Viet)
+|-- Product Review.data.json         (neu Douzy cung cap)
+|-- Product Review.music.mp3         (neu Douzy cung cap)
++-- project.json                     (manifest)
 ```
 
-- A completed Douyin project contains the original MP4 moved from Douzy. Local MP4 uploads use a same-drive hard link into the self-contained layout, with a normal copy as fallback.
-- `Product Review.thumbnail.jpg`: the Douyin thumbnail copied from Douzy or downloaded from its saved metadata when available; PNG and WebP are also supported.
-- `Product Review.raw.srt`: OCR output in the selected source language.
-- `Product Review.vi.srt`: translated Vietnamese subtitle with source timestamps preserved.
-- Extra Douzy assets use synchronized names such as `Product Review.data.json` and `Product Review.music.mp3`.
-- `project.json`: project name, source URL, Douyin video ID, paths, status, error information, and update timestamp.
+`*.raw.srt` là đầu ra OCR để bạn kiểm tra. `*.vi.srt` là file phụ đề tiếng Việt đã qua kiểm tra cấu trúc. Timestamp và số thứ tự được giữ theo SRT gốc; app không render video hay ghi phụ đề trực tiếp vào video.
 
-When a project folder already exists, the next project becomes `Product Review (2)`. The video, subtitles, thumbnail, Douzy assets, and manifest all use the unique project name.
+## Yeu cau he thong
 
-## Requirements
+| Thanh phan | Bat buoc khi | Cai dat / ghi chu |
+|---|---|---|
+| Windows 10/11 x64 | Moi workflow | Tich hop hien tai la Windows-first. |
+| Python 3.12+ | Chay tu source | Python 3.11+ ve mat ly thuyet; CI va build duoc kiem tra voi Python 3.12. |
+| VideOCR CLI | Moi workflow OCR | Mac dinh: `C:\\Program Files\\VideOCR\\videocr-cli.exe`. |
+| Douzy | Nguon Douyin | Tai video va quan ly history/cache. Khong can neu chon MP4 local. |
+| Microsoft Edge | Gemini Notebook; link ngan Douyin | Edge duoc chay voi profile debug tai cong local `.9222`. |
+| Tai khoan Google | Provider Gemini Notebook | Dang nhap trong profile Edge cua app. |
+| DeepSeek / OpenRouter / custom API | Provider API | Can Base URL, model va key theo provider. |
+| FFmpeg + FFprobe | Khuyen nghi manh | Ho tro video dai, chunk OCR va mixed-resolution recovery. |
 
-| Component | Required | Expected location or behavior | Why it is needed |
-|---|---:|---|---|
-| Windows 10/11 x64 | Yes | Desktop Windows session | The current integrations and packaged build are Windows-specific. |
-| Microsoft Edge | Notebook mode or short Douyin links | Normal Edge installation | Gemini automation and short-link redirect resolution. |
-| Douzy | Douyin only | `%LOCALAPPDATA%\Programs\Douzy` | Downloads Douyin videos and maintains the local history/database. |
-| Douzy configuration | Douyin only | `%APPDATA%\douyin-downloader-desktop\config.yml` | Provides the Douyin download directory and sidecar configuration. |
-| VideOCR | Yes | `C:\Program Files\VideOCR\videocr-cli.exe` | Extracts subtitles from the video. |
-| Gemini Notebook | Notebook mode | `https://gemini.google.com/notebook/<id>` | Translates the SRT text into Vietnamese through the browser. |
-| Translation API account | API mode | DeepSeek, OpenRouter, or another OpenAI-compatible provider | Translates SRT text without Notebook/Edge automation. |
-| Google login | Notebook mode | Dedicated Edge debug profile | Grants access to the selected Gemini Notebook. |
-| FFmpeg / FFprobe | No | `ffmpeg` and `ffprobe` available in `PATH` | Enables long-video chunking metadata and automatic recovery from mixed-resolution VideOCR crashes. |
-| Python 3.11+ | Source only | `python` available in `PATH` | Required only when running or building from source. |
+Douzy va VideOCR la phan mem ben thu ba, khong duoc phan phoi trong repository nay.
 
-Douzy and VideOCR are third-party applications and are not redistributed by this repository. Install them from sources you trust and follow their own licenses and documentation.
+## Cai dat nhanh bang EXE portable
 
-## Quick start with the portable EXE
+1. Mo [GitHub Releases](https://github.com/qvinh8726/VietSub-Studio/releases/latest).
+2. Tai asset co ten `VietSub-Studio-Portable-v*.zip`.
+3. Tai file checksum di kem neu muon kiem tra toan ven file.
+4. Giai nen vao thu muc co quyen ghi; khong chay EXE truc tiep trong cua so xem ZIP.
+5. Mo `VietSub Studio.exe`.
+6. Lan chay dau co the cham hon do PyInstaller giai nen tai nguyen va Windows Defender quet file.
+7. Neu SmartScreen canh bao, hay kiem tra dung URL release va checksum truoc khi chon **More info -> Run anyway**.
+8. Mo **Thiet lap** va xu ly cac muc health check dang loi.
 
-1. Open [GitHub Releases](https://github.com/qvinh8726/VietSub-Studio/releases/latest).
-2. Download `VietSub-Studio-Portable-*.zip`.
-3. Extract the ZIP into a normal writable folder. Do not run the EXE from inside the ZIP preview.
-4. Open `VietSub Studio.exe`.
-5. The packaged app creates a `VietSub Studio` shortcut on the Desktop after the first successful launch. Use **Settings → Recreate Desktop shortcut** if it is deleted or the portable folder is moved.
-6. The first launch may take 20-60 seconds while the one-file package is extracted and scanned by Windows security software.
-7. If SmartScreen appears because the community build is not code-signed, review the publisher/source and choose **More info → Run anyway** only if you trust the downloaded release.
-8. Open **Settings** and complete every required item shown in red.
+### Kiem tra checksum tren PowerShell
 
-You can verify the downloaded EXE with the `SHA256.txt` file included in the ZIP. The release page also publishes the ZIP checksum.
+```powershell
+$zip = \".\\VietSub-Studio-Portable-v1.5.3.zip\"
+Get-FileHash $zip -Algorithm SHA256
+Get-Content \".\\VietSub-Studio-Portable-v1.5.3.zip.sha256\"
+```
 
-## First-run setup
+Chi tiep tuc neu hash tinh duoc trung voi hash tren GitHub Release. Ban portable khong duoc ky so, vi vay SmartScreen co the van hien canh bao du da kiem tra checksum.
 
-### 1. Prepare Douzy
+## Thiet lap lan dau
 
-- Install Douzy in its default location.
-- Open it at least once.
-- Select a download directory.
-- Download one video if the database has not been created yet.
+### 1. Douzy cho video Douyin
 
-The health panel distinguishes between the sidecar executable, configuration file, and optional history database.
+1. Cai Douzy va mo ung dung it nhat mot lan.
+2. Chon thu muc tai video trong Douzy.
+3. Tai thu mot video neu Douzy chua tao database.
+4. Mo VietSub Studio va xem health check:
+   - Douzy sidecar: `%LOCALAPPDATA%\\Programs\\Douzy\\resources\\sidecar\\win32-x64\\douyin-dl-sidecar.exe`
+   - Douzy config: `%APPDATA%\\douyin-downloader-desktop\\config.yml`
+   - Douzy database: `%APPDATA%\\douyin-downloader-desktop\\dy_downloader.db`
 
-### 2. Prepare VideOCR
+Douzy database co the chua co ngay sau khi cai; trang thai nay khong ngan MP4 local va thuong tu day sau lan tai dau tien.
 
-- Install VideOCR so that `C:\Program Files\VideOCR\videocr-cli.exe` exists.
-- Configure and save a crop area in VideOCR if subtitles occupy only part of the video.
-- Install FFmpeg/FFprobe and add both commands to `PATH`; this is strongly recommended for long or concatenated videos whose resolution may change midway.
+### 2. VideOCR va FFmpeg
 
-### 3. Choose a translation provider
+- Cai VideOCR sao cho file `C:\\Program Files\\VideOCR\\videocr-cli.exe` ton tai.
+- Cai FFmpeg, them `ffmpeg` va `ffprobe` vao `PATH`.
+- Neu phu de nam o mot goc co dinh, van nen dung crop trong VietSub Studio de giam noise OCR.
+- Thu voi mot video ngan truoc khi dua video dai vao hang doi.
 
-- For Notebook mode, create or select a Gemini Notebook that you are allowed to access.
-- Copy its full URL in this exact form:
+### 3. Chon cach dich
 
-  ```text
-  https://gemini.google.com/notebook/YOUR-NOTEBOOK-ID
-  ```
+Trong **Thiet lap -> Cach dich phu de**, chon mot provider:
 
-- Paste it into **Settings → Gemini Notebook used for translation**.
-- Keep **Run Edge in background** enabled if desired. The full browser still renders while minimized.
-- If the Google session expires or the Notebook needs inspection, VietSub Studio restores Edge and shows a retry action after login.
-- For API mode, select **DeepSeek API**, **OpenRouter**, or **API OpenAI-compatible khác**, then enter the Base URL, model, and API key. Use **Test API connection** before starting a queue.
+| Provider | Can gi | Khi nen dung |
+|---|---|---|
+| Gemini Notebook qua Edge | URL Notebook + Google session | Muon dung Notebook hien co, khong can API key trong app. |
+| DeepSeek API | API key | Muon pipeline API tu dong, co streaming va retry. |
+| OpenRouter | API key + model | Muon doi model/gateway trong mot API endpoint. |
+| API OpenAI-compatible khac | Base URL + model; key tuy endpoint | Dung gateway local, 9router hoac nha cung cap tuong thich. |
 
-VietSub Studio does not ask for your Google password and does not store it. Authentication remains inside the Edge profile managed by Edge.
+URL Notebook phai co dang:
 
-### 4. Choose an output directory
+```
+https://gemini.google.com/notebook/NOTEBOOK_ID
+```
 
-Use **Choose folder** in Settings to select any destination on the machine. The setting is independent from Douzy. When it is empty, projects are created in `Documents\VietSub Studio` (or the Windows fallback directory if Documents cannot be resolved).
+Khong dung URL chat Gemini thong thuong thay cho URL Notebook.
 
-## Processing videos
+### 4. Thu muc output
 
-1. Either choose an MP4 from the machine or paste one of the following into the main input:
-   - `https://www.douyin.com/video/<id>`
-   - `https://v.douyin.com/<code>/`
-   - the complete share message containing either URL
-2. Enter an optional shared project name. Leave it empty to use the source title or MP4 filename.
-3. Click **Load preview** for Douyin, or **Choose MP4** for a local file.
-4. Drag and resize the yellow OCR box over the subtitle region.
-5. Select the source OCR language and click **Add to queue**.
-6. Repeat for every video, then click **Run queue**.
-7. Follow the active job through resolve, video preparation, OCR, translation, and completion.
-8. Use **Cancel job** to stop the current item; queued items remain available.
-9. Failed/cancelled jobs offer a retry button that reuses existing video or OCR subtitle files when possible.
-10. The queue remains available after closing and reopening the app. Open completed project folders from their queue cards or the result panel.
+De trong de app dung `Documents\\VietSub Studio` (hoac thu muc Windows fallback). Ban cung co the chon thu muc rieng trong Settings. Tranh dat output trong OneDrive neu ban thuong xu ly video nhieu GB; dong bo cloud co the lam cham move, hard-link, mo folder va cleanup.
 
-Mix, user-profile, and playlist URLs are still rejected. The queue accepts separate video URLs and processes them sequentially rather than concurrently.
+## Cach xu ly mot video
 
-## Running from source
+1. Dan link Douyin vao o nguon hoac bam **Chon MP4**.
+2. Bam **Tai preview** / **Chuan bi preview**.
+3. Keo khung mau vao dung vung phu de; co the doi kich thuoc o bon goc.
+4. Chon ngon ngu OCR: `ch`, `en`, `ja`, `ko` hoac `vi`.
+5. Dat ten project neu muon; de trong se dung title Douyin hoac ten file MP4.
+6. Bam **Them vao hang doi**.
+7. Lap lai voi video khac neu can, sau do bam **Chay hang doi**.
+8. Theo doi cac buoc: `resolve` -> `download` -> `ocr` -> `translate` -> `done`.
+9. Neu Google yeu cau dang nhap, bam **Mo Edge dang nhap**, dang nhap xong roi bam **Chay lai** job.
+10. Mo project tu card ket qua sau khi app bao thanh cong.
+
+### Meo de OCR tot hon
+
+- Crop sat vung subtitle nhung khong cat mat chu.
+- Chon dung ngon ngu chu hien tren video; `ch` la lua chon mac dinh cho tieng Trung.
+- Giam `frames to skip` neu chu nho, chay nhanh hoac thay doi lien tuc.
+- Dung `fast` cho preview thu; dung `accurate` khi can chat luong cao va may du tai nguyen.
+- Luon kiem tra `*.raw.srt` truoc khi danh gia chat luong ban dich.
+
+## Dich phu de Notebook va API
+
+### Gemini Notebook qua Edge
+
+Che do Notebook dung Playwright ket noi toi Microsoft Edge co profile rieng, mac dinh cong debug `9222`. Edge khong chay headless; tuy chon **Chay Edge an** chi lam cua so khong tranh focus trong qua trinh binh thuong.
+
+Khi session Google het han, app co the hien cua so Edge de ban dang nhap. VietSub Studio khong doc mat khau Google va khong dong goi cookie vao repo.
+
+### DeepSeek API
+
+Preset trong app:
+
+```
+Base URL: https://api.deepseek.com
+Model:    deepseek-v4-pro
+```
+
+Hay bam **Kiem tra ket noi API** truoc khi chay hang doi. API key duoc ma hoa bang Windows DPAPI va chi giai ma duoc tren tai khoan Windows da luu key.
+
+### OpenRouter
+
+Preset trong app:
+
+```
+Base URL: https://openrouter.ai/api/v1
+Model:    deepseek/deepseek-chat
+```
+
+Ban co the thay model bang model phu hop trong dashboard OpenRouter. Gia, han muc va chinh sach luu prompt phu thuoc OpenRouter/model ban chon.
+
+### API OpenAI-compatible tuy chinh
+
+Nhap endpoint HTTPS co dang base URL, model va key theo gateway. App se goi:
+
+```
+POST <base-url>/chat/completions
+Content-Type: application/json
+```
+
+HTTP khong ma hoa chi duoc chap nhan cho `localhost`, `127.0.0.1` hoac `::1` de tranh gui key qua mang khong an toan.
+
+## Prompt dich mac dinh va block code SRT
+
+VietSub Studio co prompt dich mac dinh huong toi phu de Trung -> Viet, dac biet voi ngu canh game va khoa hoc vien tuong. Prompt mac dinh bao gom:
+
+- Dich tu nhien, muot, bam ngu canh thay vi dich word-by-word.
+- Chon dai tu nhan xung theo quan he va tinh cach nhan vat, giu nhat quan.
+- Giu nguyen so thu tu va timestamp cua tung block.
+- Khong bo sung loi giai thich vao noi dung SRT.
+- Liet ke ngan gon thuat ngu, ten rieng va dai tu da dung **ben ngoai** block SRT de hau kiem.
+
+Sau lop prompt tuy chinh, app luon them hop dong dau ra ky thuat:
+
+```
+DAU VAO LA TIENG TRUNG. DAU RA BAT BUOC LA TIENG VIET.
+Khong chep lai cau tieng Trung va khong xuat song ngu.
+Giu nguyen index va timestamp; chi dich noi dung subtitle.
+Dat toan bo SRT da dich trong dung mot block code srt.
+```
+
+Vi vay provider duoc yeu cau tra SRT theo block code chuan:
+
+````markdown
+```srt
+1
+00:00:01,000 --> 00:00:03,000
+Noi dung tieng Viet
+```
+````
+
+Neu ban nhap **Cach dich mong muon** trong Settings, noi dung do se thay the glossary/prompt mac dinh; cac rang buoc ve ngon ngu, index, timestamp va mot block code `srt` van duoc app them vao sau. Gioi han truong nay la `16.000` ky tu.
+
+## Hang doi, retry va khoi phuc
+
+Hang doi toi da luu `500` job. Moi job co the o mot trong cac trang thai `queued`, `running`, `success`, `error` hoac `cancelled`.
+
+- **Huy job dang chay:** dung tien trinh con dang hoat dong va giu cac job dang cho.
+- **Retry tu OCR:** dung khi video van con va loi chi xay ra trong VideOCR.
+- **Retry tu dich:** dung khi `*.raw.srt` con hop le nhung provider tra loi loi.
+- **Retry tu video:** dung khi file nguon khong con hoac can tai lai.
+- **Mo lai app:** job dang `running` duoc chuyen ve loi co the retry, khong bi danh dau thanh cong gia.
+
+App ghi file queue va config theo kieu atomic. Neu file JSON bi hong, app quarantine file loi va tao cau hinh mac dinh de khoi dong an toan hon.
+
+## Chay tu ma nguon
+
+### Cai dat
 
 ```powershell
 git clone https://github.com/qvinh8726/VietSub-Studio.git
 cd VietSub-Studio
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\\.venv\\Scripts\\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+Neu PowerShell chan script activation, co the goi truc tiep Python trong venv:
+
+```powershell
+.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
+.\\.venv\\Scripts\\python.exe app.py
+```
+
+### Chay giao dien desktop
+
+```powershell
 python app.py
 ```
 
-Alternatively, double-click `Chay Tool.bat`; it checks the core Python dependencies and starts the desktop app.
+App uu tien cua so native pywebview/WebView2. Neu native WebView loi hoac timeout, app tu dong chuyen sang trinh duyet cuc bo.
 
-To run the local browser version on port 5000:
+### Chay server local o cong 5000
 
 ```powershell
 python app.py --server
 ```
 
-Then open `http://127.0.0.1:5000`.
+Sau do mo `http://127.0.0.1:5000`. Tuy chon nay phu hop de smoke test, debug frontend va kiem tra asset. Khong expose cong nay ra Internet.
 
-To let the app choose a free local port and open the default browser automatically (the same fallback used when native WebView startup fails), run:
+### Chay browser mode voi cong ngau nhien
 
 ```powershell
 python app.py --browser
 ```
 
-## Command-line usage
+Browser mode tu chon cong local trong may va tu mo trinh duyet mac dinh.
 
-`automate.py` runs the same workflow without the graphical interface:
+### Script Windows co san
+
+- `Chay Tool.bat`: cai dependency runtime neu thieu roi chay app.
+- `build_portable.bat`: cai dependency build va tao EXE portable.
+- `build_app.bat`: tao ban onedir de debug/build thay the.
+
+## CLI khong giao dien
+
+`automate.py` thuc hien workflow Douyin OCR va dich tu tuyen lenh:
 
 ```powershell
-python automate.py --url "https://www.douyin.com/video/123" --lang ch --name "Product Review"
+python automate.py --url \"https://www.douyin.com/video/1234567890123456789\" --lang ch --name \"Review san pham\"
 ```
 
-Arguments:
-
-| Argument | Required | Description |
+| Tham so | Bat buoc | Mo ta |
 |---|---:|---|
-| `-u`, `--url` | Yes | Douyin video URL or short share URL. |
-| `-l`, `--lang` | No | OCR language: `ch`, `en`, `ja`, `ko`, or `vi`. Default: `ch`. |
-| `-n`, `--name` | No | Shared name for the project, video, and both subtitle files. |
+| `-u`, `--url` | Co | Link video Douyin. |
+| `-l`, `--lang` | Khong | `ch`, `en`, `ja`, `ko` hoac `vi`; mac dinh `ch`. |
+| `-n`, `--name` | Khong | Ten chung cho project, video va subtitle. |
 
-The CLI still requires the same local Douzy/VideOCR setup and either Notebook/Edge or a configured translation API, depending on the selected provider.
+CLI van dung Douzy, VideOCR, Edge/Notebook va cau hinh local tuong tu desktop app. CLI khong nhan file MP4 local trong phien ban hien tai; dung giao dien desktop cho local MP4.
 
-## Building the Windows app
+## Build EXE Windows
 
-Install the build dependencies and create the portable one-file build:
-
-```powershell
-.\build_portable.bat
-```
-
-Equivalent manual command:
+### Build portable mot file
 
 ```powershell
-python -m pip install -r requirements.txt
 python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --distpath dist_portable --workpath build_portable "VietSub Studio Portable.spec"
+python -m PyInstaller --noconfirm --clean --distpath dist_portable --workpath build_portable \"VietSub Studio Portable.spec\"
 ```
 
-Output:
+Ket qua nam tai:
 
-```text
-dist_portable\VietSub Studio.exe
+```
+dist_portable\\VietSub Studio.exe
 ```
 
-`build_app.bat` and `VietSub Studio.spec` provide an alternative onedir build. The portable spec bundles templates, the avatar assets, and pywebview resources. External applications and user credentials are never bundled.
+Hoac chay:
 
-## How it works
-
-```mermaid
-flowchart TD
-    A[Douyin URL/share text or local MP4] --> B{Source type}
-    B -->|Douyin| C[Resolve exact video ID]
-    C --> D[Douzy download or cache reuse]
-    D --> E[Reuse original Douzy MP4]
-    D --> T[Local cover or metadata thumbnail]
-    B -->|Local MP4| F[Managed local upload copy]
-    E --> G[Protected in-app preview]
-    F --> G
-    G --> H[Edit OCR crop and language]
-    H --> I[Persist job in sequential queue]
-    I --> J[VideOCR creates raw SRT]
-    J --> K[Notebook or OpenAI-compatible API translation]
-    K --> L[Restore and validate timestamps and blocks]
-    L --> M[Write Vietnamese SRT and project.json]
-    T --> M
-    M --> N[Expose result only after final validation]
+```powershell
+.\\build_portable.bat
 ```
 
-The queue is intentionally sequential. A later job does not start until the current job finishes, fails, or is cancelled. This protects the shared VideOCR installation, Douzy sidecar, Edge debug profile, and Notebook conversation from concurrent control.
+### Build ban onedir
 
-For a Douyin job, the original MP4 stays in Douzy while OCR and translation run, then the app moves that exact video and its identity-matched assets into the self-contained project after final validation. For a local upload, the managed MP4 is validated, kept in the app cache while queued, and hard-linked or copied into the project so the persisted job can safely resume.
-
-Main implementation areas:
-
-- `app.py`: validation, process orchestration, Flask API, pywebview desktop launcher, file handling, and integrations.
-- `templates/index.html`: semantic HTML structure and server-rendered bootstrap metadata.
-- `static/style.css` and `static/app.js`: responsive styling, frontend state, settings, diagnostics, progress, history, and result interactions.
-- `automate.py`: command-line entry point.
-- `tests/test_app.py`: validation, naming, download lookup, API, cancellation, and workflow tests.
-- `VietSub Studio Portable.spec`: one-file PyInstaller configuration.
-
-Local API endpoints:
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/health` | GET | Check Douzy, VideOCR, FFmpeg/FFprobe, Notebook, and Edge readiness. |
-| `/api/translation/test` | POST | Send a minimal probe to the configured API provider. |
-| `/api/settings` | GET/POST | Read and save local settings. |
-| `/api/history` | GET | Read recent items from the local Douzy database. |
-| `/api/previews` | POST | Prepare a video and return its protected preview URL. |
-| `/api/previews/local` | POST | Copy a local MP4 into managed cache and create a preview. |
-| `/api/queue` | GET/POST | List jobs or add a prepared video to the queue. |
-| `/api/queue/start` | POST | Start the single sequential worker. |
-| `/api/queue/<job_id>/retry` | POST | Retry from video preparation, OCR, or translation. |
-| `/api/edge/show` | POST | Restore the dedicated Edge window for login or inspection. |
-| `/api/update/install` | POST | Download, verify, install, and restart into the latest packaged release. |
-| `/api/progress` | GET | Retrieve state and incremental logs. |
-| `/api/cancel` | POST | Cancel the active workflow and child processes. |
-| `/api/open-folder` | POST | Open only a path produced by the current workflow. |
-
-The Flask server binds to `127.0.0.1`, not to the public network. Every control-plane API request uses a per-launch unguessable token; the server also validates local Host, Origin, Fetch Metadata, and state-changing content types. Preview video streaming uses an unguessable preview identifier because native video elements cannot attach the custom API header.
-
-## Configuration and local data
-
-| Data | Source mode | Packaged EXE |
-|---|---|---|
-| VietSub Studio settings | `app_config.json` beside `app.py` | `%APPDATA%\VietSub Studio\app_config.json` |
-| Persistent queue | `workflow_queue.json` beside `app.py` | `%APPDATA%\VietSub Studio\workflow_queue.json` |
-| Managed local MP4 cache | `local_videos` beside `app.py` | `%APPDATA%\VietSub Studio\local_videos` |
-| Dedicated Edge profile | `%LOCALAPPDATA%\Microsoft\Edge\User Data Debug` | Same |
-| Douzy config | `%APPDATA%\douyin-downloader-desktop\config.yml` | Same |
-| Douzy history database | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Same |
-| Project output | Selected output directory or `Documents\VietSub Studio` | Same |
-| Durable app log | `vietsub-studio.log` beside `app.py` | `%APPDATA%\VietSub Studio\vietsub-studio.log` |
-| Single-instance lock | `instance.lock` beside `app.py` | `%APPDATA%\VietSub Studio\instance.lock` |
-
-`app_config.json` is ignored by Git because it may contain a private Notebook URL. Use `app_config.example.json` only as a safe reference.
-
-## Privacy and security
-
-- Video download and OCR run through locally installed applications.
-- The video itself is not uploaded to this repository or to a VietSub Studio server.
-- Selected local MP4 files are limited to 8 GiB, checked for an MP4 `ftyp` container header, and copied only into the app's managed local cache so queued jobs survive a restart.
-- Subtitle text is submitted either to the user's Gemini Notebook through the local Edge session or to the configured DeepSeek/OpenRouter/OpenAI-compatible API. Review the selected provider's terms and privacy policy before processing sensitive content.
-- API keys are encrypted with Windows DPAPI and are never returned by the local settings endpoint.
-- Google credentials remain managed by Edge; VietSub Studio does not read or store the password.
-- A random local bearer token is generated for each Douzy sidecar session.
-- Settings and output files are written atomically to reduce corruption risk.
-- The local API uses a fresh per-launch capability token and validates Host, Origin, Fetch Metadata, paths, languages, filenames, upload type/size, and result-folder access.
-- Never share `app_config.json`, Edge profile data, cookies, private Notebook URLs, or logs containing private video links.
-
-See [SECURITY.md](SECURITY.md) before reporting a security issue.
-
-## Known limitations
-
-- Windows only in the current release.
-- Queue items run sequentially; parallel OCR/translation is intentionally not supported.
-- Playlist, profile, and mix URLs are not expanded automatically.
-- Requires VideOCR; Douzy is additionally required when the source is Douyin.
-- Requires either an authenticated Gemini Notebook session in Edge or a working translation API configuration.
-- Gemini UI changes may occasionally break Notebook browser selectors until the project is updated.
-- OCR quality depends on the video, subtitle contrast, language model, and saved crop region.
-- FFmpeg/FFprobe are optional for short constant-resolution videos, but long-video crash recovery is unavailable without them.
-- The community EXE is not code-signed, so SmartScreen may warn on first launch.
-- The one-file EXE may start slowly because it extracts bundled files on each launch.
-- Download and translation behavior must comply with Douyin, Google, Douzy, VideOCR, and local copyright rules.
-
-## Troubleshooting
-
-### The Settings tab shows “Douzy sidecar: Missing”
-
-Install Douzy in its default location. The current integration expects:
-
-```text
-%LOCALAPPDATA%\Programs\Douzy\resources\sidecar\win32-x64\douyin-dl-sidecar.exe
+```powershell
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --noconfirm --clean \"VietSub Studio.spec\"
 ```
 
-Custom Douzy installation paths are not currently configurable.
+Build onedir phu hop debug tai nguyen; build portable la asset phat hanh chinh. Khong commit `build_*`, `dist_*`, `release/` hoac file ZIP vao Git; CI tao artifact va GitHub Release luu asset phat hanh.
 
-### “Douzy configuration: Missing”
-
-Open Douzy, select a download folder, close it normally, and click **Check again** in VietSub Studio.
-
-### “Douzy database” is yellow
-
-The database is optional for initial readiness. It normally appears after Douzy processes its first video. History and cache lookup improve once it exists.
-
-### “VideOCR CLI: Missing”
-
-Confirm this file exists:
-
-```text
-C:\Program Files\VideOCR\videocr-cli.exe
-```
-
-Reinstall VideOCR to its default location if necessary.
-
-### “Gemini Notebook: Missing”
-
-Paste a valid HTTPS URL matching `https://gemini.google.com/notebook/<id>` into Settings. A normal Gemini chat URL is not accepted.
-
-### Edge opens but translation does not start
-
-Use **Open Edge to sign in**, authenticate with Google, confirm the Notebook opens, then retry the failed job. Background mode minimizes Edge without using headless mode, so Gemini still receives a normally rendered page.
-
-### Port 9222 is busy or Edge debug cannot connect
-
-Close stale Edge debug sessions, then reopen VietSub Studio. Advanced users can inspect processes using port `9222`. Avoid terminating normal Edge sessions unless you know which process owns the debug profile.
-
-### OCR subtitle is empty or inaccurate
-
-Check that the selected language matches the video, configure a tighter crop in VideOCR, and test VideOCR directly with the same video. Low contrast, animated subtitles, watermarks, or very small text reduce OCR quality.
-
-For long or concatenated videos, install FFmpeg/FFprobe. VietSub Studio scans them in chunks and automatically normalizes the remaining segments if VideOCR crashes after a resolution change.
-
-### Translation changed timestamps
-
-VietSub Studio validates the translated SRT and restores source timestamps when the subtitle block count still matches. If Gemini removes or merges blocks, the workflow stops instead of silently exporting a desynchronized file.
-
-### The downloaded video already exists
-
-This is expected. VietSub Studio asks Douzy to reuse the cached item, locates the matching video ID, and copies it into a new project folder. It does not rename the cache file.
-
-### Windows rejects a project name
-
-Characters invalid on Windows are replaced, trailing spaces/dots are removed, reserved names such as `CON` are prefixed, and long names are limited. Duplicate projects receive a numeric suffix.
-
-### The portable EXE appears to do nothing
-
-Wait up to 60 seconds on the first launch. Extract it from the ZIP first, then check Windows Security quarantine/history. Verify its SHA256 against the release files before allowing it.
-
-### Where are my results?
-
-Open Settings to see or choose the output directory. When empty, the default is `Documents\VietSub Studio`. The result panel can open the exact self-contained project folder after success.
-
-## Frequently asked questions
-
-### Is the EXE completely standalone?
-
-No. It bundles the Python application and UI, but Douzy, VideOCR, Edge, a Google login, and a Gemini Notebook remain external requirements.
-
-### Is VietSub Studio free and open source?
-
-Yes, the code in this repository is released under the MIT License. Third-party tools, platforms, models, and assets keep their own licenses and terms.
-
-### Does the app upload my video?
-
-VietSub Studio does not upload the MP4 to its own server. Douzy downloads it locally and VideOCR processes it locally. The SRT text is sent to the Gemini Notebook through your Edge session for translation.
-
-### Does the maintainer receive my Notebook URL or Google account?
-
-No. Settings remain on your machine unless you deliberately share them. The public repository ignores `app_config.json`.
-
-### Can I use an API instead of Notebook?
-
-Yes. In **Settings**, select DeepSeek API, OpenRouter, or another OpenAI-compatible API, enter the Base URL, model, and key, then click **Test API connection**. The app calls the provider's `/chat/completions` endpoint and stores the key with Windows DPAPI encryption.
-
-### Can it translate to languages other than Vietnamese?
-
-The current translation prompt and `.vi.srt` convention target Vietnamese. OCR supports several source languages, but translated-output language selection is not yet implemented.
-
-### Can it process TikTok, YouTube, Bilibili, or local files?
-
-Local MP4 files are supported. TikTok, YouTube, Bilibili, playlists, profiles, and other remote sources are not currently supported.
-
-### Can it process multiple videos automatically?
-
-Yes. Prepare each video preview, add it to the queue, then start the worker. The app processes one item at a time to avoid Douzy, VideOCR, and Edge/Gemini conflicts.
-
-### Can I move the portable EXE after configuring it?
-
-Yes. Packaged settings live under `%APPDATA%\VietSub Studio`, so moving the EXE does not remove the configuration.
-
-### Why does the EXE trigger SmartScreen?
-
-The release is not signed with a commercial Windows code-signing certificate. Always download from the official GitHub Releases page and verify checksums.
-
-From v1.3.0 onward, the packaged EXE can update itself in place. It accepts only assets from this repository's official GitHub Release URL, requires the published ZIP checksum, checks GitHub digest/size metadata when available, reserves the application so no new preview or queue job can start, replaces the executable with rollback protection, and keeps the old EXE until the new process remains alive through its startup window. If the portable folder is not writable or validation fails, it opens the official release page instead. The community build is still unsigned, so publisher authenticity ultimately depends on the GitHub release account until Authenticode or an independent signing key is added.
-
-### Why does the first launch take so long?
-
-PyInstaller's one-file mode extracts bundled resources to a temporary directory, and Windows security software may scan them. Later launches can still take several seconds.
-
-### Can I sell a modified version?
-
-The MIT License permits commercial use of this repository's code, but you remain responsible for third-party licenses, platform terms, branding, content rights, and all applicable laws.
-
-### How should I report a bug?
-
-Use the bug-report template and include the version, installation type, reproduction steps, health-panel state, and sanitized logs. Remove all credentials, private URLs, cookies, and personal paths.
-
-## Contributing
-
-Pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), keep changes focused, and run:
+### Kiem tra truoc khi tao release
 
 ```powershell
 python -m py_compile app.py automate.py
 python -m unittest discover -s tests -v
+python -m pip check
 ```
 
-The repository includes a Windows GitHub Actions workflow that compiles the sources, runs unit tests, builds the portable PyInstaller executable, starts the packaged `--server` mode, verifies the UI and static assets, and uploads the smoke-tested artifact. Dependabot also tracks Python and GitHub Actions updates.
+Workflow GitHub Actions cung chay unit test, compile, pip check, build PyInstaller va smoke-test EXE bang `--server`.
 
----
+## Du lieu local va cau hinh
 
-# Tiếng Việt
+### Khi chay tu source
 
-## Mục lục
+File runtime nam canh source:
 
-- [VietSub Studio là gì?](#vietsub-studio-là-gì)
-- [Vì sao dự án này được tạo ra?](#vì-sao-dự-án-này-được-tạo-ra)
-- [Tính năng](#tính-năng)
-- [Cấu trúc kết quả](#cấu-trúc-kết-quả)
-- [Yêu cầu hệ thống](#yêu-cầu-hệ-thống)
-- [Dùng nhanh bản EXE portable](#dùng-nhanh-bản-exe-portable)
-- [Thiết lập lần đầu](#thiết-lập-lần-đầu)
-- [Xử lý nhiều video tuần tự](#xử-lý-nhiều-video-tuần-tự)
-- [Chạy từ mã nguồn](#chạy-từ-mã-nguồn)
-- [Dùng dòng lệnh](#dùng-dòng-lệnh)
-- [Tự build ứng dụng Windows](#tự-build-ứng-dụng-windows)
-- [Cách hệ thống hoạt động](#cách-hệ-thống-hoạt-động)
-- [Cấu hình và dữ liệu cục bộ](#cấu-hình-và-dữ-liệu-cục-bộ)
-- [Quyền riêng tư và bảo mật](#quyền-riêng-tư-và-bảo-mật)
-- [Giới hạn hiện tại](#giới-hạn-hiện-tại)
-- [Khắc phục sự cố](#khắc-phục-sự-cố)
-- [Câu hỏi thường gặp](#câu-hỏi-thường-gặp)
-- [Đóng góp](#đóng-góp)
-
-## VietSub Studio là gì?
-
-VietSub Studio là công cụ điều phối quy trình làm phụ đề trên Windows dành cho người cần biến chữ đã dính sẵn trong video dài thành file SRT tiếng Việt có thể chỉnh sửa. App không thay thế Douzy, VideOCR, Edge, Gemini hay phần mềm dựng video. Nó nối các công cụ đó thành một luồng thống nhất có preview, hàng đợi, chạy lại theo từng bước, kiểm tra kết quả, lưu file dự án và cập nhật ứng dụng.
-
-Toàn bộ quy trình gồm:
-
-1. Nhận link/đoạn share Douyin hoặc file MP4 người dùng chọn trên máy.
-2. Giải mã link share ngắn, từ chối link mix/profile/playlist và xác định đúng một video nguồn.
-3. Với Douyin, yêu cầu sidecar Douzy đã cài trên máy tải video hoặc dùng lại bản ghi cache. Với MP4 local, app lưu một bản upload do app quản lý và bỏ qua Douzy hoàn toàn.
-4. Phát video đã chuẩn bị trong khung preview của app để người dùng kéo/đổi kích thước vùng OCR đúng vị trí phụ đề.
-5. Lưu crop, ngôn ngữ OCR, tuỳ chọn tốc độ, tên dự án, metadata nguồn và độ phân giải thành một job độc lập trong hàng đợi.
-6. Chỉ cho một video chạy OCR/Gemini tại một thời điểm. Khi video đó đã sang bước OCR hoặc dịch, app tải trước video Douyin kế tiếp nhưng không bao giờ chạy hai sidecar Douzy cùng lúc.
-7. Với video Douyin, xử lý trực tiếp MP4 gốc tại Douzy rồi chỉ chuyển MP4 và các asset liên quan vào folder project sau khi dịch thành công.
-8. Gọi VideOCR CLI quét đúng vùng đã chọn và ghi phụ đề ngôn ngữ gốc vào file `.raw.srt`.
-9. Kết nối Playwright với profile Edge debug riêng, gửi sub OCR vào Gemini Notebook của người dùng và lấy phản hồi dịch.
-10. Khôi phục timestamp nguồn nếu Gemini chỉ viết lại mốc thời gian nhưng vẫn giữ đúng cấu trúc block; từ chối bản dịch thiếu đoạn, đổi số thứ tự hoặc sai timestamp.
-11. Ghi `.vi.srt`, thumbnail Douyin nếu có và manifest `project.json`. Job chỉ được báo thành công khi đường dẫn video cùng hai file phụ đề đều tồn tại và vượt qua kiểm tra.
-
-Ứng dụng chạy Flask service chỉ bind vào `127.0.0.1` và hiển thị thành cửa sổ desktop qua pywebview/WebView2. Hàng đợi, thiết lập, video tải về, kết quả OCR và phiên trình duyệt đều nằm trên máy người dùng. Chỉ nội dung phụ đề được người dùng chủ động gửi vào Gemini mới rời khỏi máy.
-
-## Vì sao dự án này được tạo ra?
-
-Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi khi làm phụ đề video dài thủ công:
-
-- Video dài khoảng hai giờ có thể khiến phần mềm dựng lag nặng trước cả khi dịch phụ đề xong.
-- Phụ đề dính trong hình cần vùng OCR chính xác; quét cả khung hình vừa chậm vừa tăng nhiễu nhận dạng.
-- Tải hoặc sao chép cùng một video lớn nhiều lần làm tốn ổ đĩa vô ích. Video Douyin 6 GB nên chỉ chiếm 6 GB, không nên thành 12 GB trước khi OCR bắt đầu.
-- Chạy nhiều OCR hoặc phiên tự động trình duyệt song song dễ tranh CPU/RAM/GPU và khiến lỗi khó chẩn đoán. VietSub Studio nhận nhiều job nhưng cố ý xử lý từng video một.
-- Gemini có thể trả SRT thiếu, tự đổi timestamp hoặc yêu cầu đăng nhập Google lại. App kiểm tra cấu trúc cuối và hiện Edge khi thật sự cần thay vì âm thầm báo hoàn thành.
-- Dịch lỗi không nên buộc người dùng tải và OCR lại từ đầu. Hàng đợi được lưu và cơ chế retry theo bước sẽ dùng lại video hoặc sub OCR còn hợp lệ.
-- Người dùng mã nguồn mở cần đường cập nhật rõ ràng. Bản portable có banner phiên bản mới, cài ZIP đã xác minh, tự mở lại và fallback sang GitHub khi không thể tự thay EXE.
-
-## Tính năng
-
-### Đầu vào video và quản lý nguồn
-
-- Nhận link video Douyin trực tiếp, link ngắn `v.douyin.com` và nguyên đoạn văn bản chia sẻ.
-- Tự tách URL và kiểm tra hostname thật để từ chối tên miền giả hoặc link đánh lừa.
-- Từ chối mix, profile người dùng và playlist vì mỗi job phải tương ứng chính xác với một video.
-- Nhận file MP4 trên máy mà không cần Douzy.
-- Dùng lại lịch sử/cache Douzy nếu video Douyin đã được tải trước đó.
-- Đọc tiêu đề, đường dẫn video, metadata và ảnh cover từ dữ liệu Douzy.
-- Chuyển MP4 gốc, cover, metadata, nhạc và các asset riêng của video từ Douzy vào folder project hoàn tất mà không tạo bản sao video dung lượng lớn thứ hai.
-- Sao chép MP4 local vào vùng app quản lý để job vẫn tồn tại sau khi đóng/mở ứng dụng.
-- Hard-link MP4 local do app quản lý vào project nếu cùng ổ đĩa; nếu khác ổ hoặc filesystem không hỗ trợ thì tự fallback sang sao chép đầy đủ.
-
-### Preview vùng OCR và nhận dạng
-
-- Phát preview video qua URL cục bộ được bảo vệ trước khi bắt đầu OCR.
-- Có khung crop trực quan, kéo và đổi kích thước được để bao đúng vùng phụ đề dính trong hình.
-- Lưu crop riêng cho từng job và có thể dùng lại crop mặc định.
-- Hỗ trợ OCR tiếng Trung, Anh, Nhật, Hàn và Việt.
-- Cho phép chọn model OCR mobile nhanh, model server chính xác hoặc giữ cấu hình VideOCR hiện có, kèm mức bỏ qua khung hình tuỳ chọn.
-- Dùng FFprobe nếu có để quy đổi crop từ kích thước preview sang độ phân giải video nguồn chính xác hơn.
-- Quét video dài theo từng đoạn 10 phút, ghép lại SRT với timestamp gốc và dùng FFmpeg chuẩn hoá đoạn đổi độ phân giải làm VideOCR bị crash.
-- Gọi VideOCR CLI đã cài trên máy và ghi kết quả nhận dạng vào file `.raw.srt` riêng.
-
-### Hàng đợi tuần tự và khôi phục lỗi
-
-- Cho phép chuẩn bị nhiều job Douyin và MP4 local trước khi bắt đầu chạy.
-- Chỉ có một worker OCR/Gemini tuần tự và tối đa một lượt tải trước Douyin sau khi job hiện tại rời bước download.
-- Lưu metadata của job chờ, đang chạy, thành công, lỗi và đã huỷ qua lần đóng/mở app.
-- Hỗ trợ xoá job đang chờ, huỷ job hiện tại và dọn các job đã kết thúc.
-- Chạy lại từ bước sớm nhất còn tận dụng được: chuẩn bị video, OCR hoặc dịch.
-- Cho phép mở thư mục làm dở nhưng không gắn nhãn kết quả thành công cho job lỗi.
-- Khôi phục trạng thái và log tăng dần nếu giao diện bị reload.
-
-### Provider dịch và tự động Gemini Notebook/Edge
-
-- Hỗ trợ Gemini Notebook qua Edge, DeepSeek API, OpenRouter và các API chat OpenAI-compatible khác.
-- Khi chọn Notebook, app dùng link Notebook và phiên Google của người dùng; khi chọn API, key được mã hoá bằng Windows DPAPI.
-- Kết nối Playwright tới profile Edge riêng qua cổng debug chỉ bind ở `127.0.0.1:9222`.
-- Mặc định khởi chạy Edge thu nhỏ và tắt các cơ chế throttling nền có thể làm automation đứng.
-- Chờ đúng giao diện chat Notebook tải xong rồi mới kết luận có cần đăng nhập hay không.
-- Chỉ hiện Edge khi phiên Google hết hạn hoặc Notebook cần người dùng kiểm tra thủ công.
-- Có nút **Mở Edge đăng nhập** rõ ràng trên job lỗi.
-- Video không quá 45 phút được gửi cho Gemini trong một lần; video dài hơn được chia thành các đoạn giữ nguyên timestamp rồi ghép lại sau khi dịch.
-- Huỷ quá trình Gemini đang sinh nội dung khi người dùng dừng workflow.
-
-### Toàn vẹn phụ đề và quản lý kết quả
-
-- Giữ nguyên toàn bộ timestamp và số thứ tự block của sub nguồn.
-- Khôi phục mốc thời gian gốc khi Gemini giữ đúng cấu trúc nhưng viết lại timestamp tương thích.
-- Từ chối output trống, SRT thiếu, sai số block, đổi số thứ tự hoặc không tạo được file dịch.
-- Chỉ báo thành công khi đường dẫn video, sub OCR và sub Việt đã kiểm tra đều tồn tại.
-- Làm sạch tên dự án an toàn cho Windows, kể cả tên hệ thống bị cấm và giới hạn độ dài.
-- Tự thêm hậu tố `(2)`, `(3)` mà không ghi đè dự án cũ.
-- Ghi config, hàng đợi, SRT và manifest theo kiểu atomic để giảm file dở dang.
-- Xuất thumbnail Douyin dạng JPG, PNG hoặc WebP nếu có ảnh cover local hoặc URL metadata hợp lệ.
-- Ghi URL nguồn, ID video, đường dẫn nguồn/kết quả, trạng thái, lỗi và thời gian cập nhật vào `project.json`.
-
-### Trải nghiệm desktop và chẩn đoán
-
-- Giao diện desktop responsive bằng pywebview, phía sau là Flask API cục bộ.
-- Bảng kiểm tra Douzy, VideOCR, FFmpeg/FFprobe, Notebook và Edge kèm hướng dẫn sửa từng mục.
-- Hiển thị lịch sử Douzy và nạp lại video gần đây nhanh chóng.
-- Có hộp thoại Windows để chọn thư mục lưu riêng, hoàn toàn độc lập với thư mục tải Douzy.
-- Cảnh báo nếu thư mục project thực tế nằm trong OneDrive vì đồng bộ cloud có thể làm chậm video dung lượng lớn.
-- Tự tạo hoặc tạo lại shortcut ngoài Desktop cho bản EXE.
-- Giữ Edge thu nhỏ trong luồng dịch bình thường nhưng vẫn có fallback hiện cửa sổ đáng tin cậy.
-- Đóng gói thành một file EXE Windows portable với icon riêng.
-
-### Cập nhật, mã nguồn mở và an toàn
-
-- Kiểm tra GitHub Releases chính thức và hiển thị banner khi có phiên bản mới.
-- Tải ZIP portable chính thức, kiểm tra URL đúng repo, file SHA256 của ZIP, digest asset GitHub, kích thước công bố và EXE bên trong.
-- Tự thay EXE đang chạy và mở lại app nếu môi trường hỗ trợ cập nhật tại chỗ.
-- Mở đúng trang GitHub Release chính thức nếu không thể cài tự động.
-- Không đưa thiết lập máy, hàng đợi, video local, profile trình duyệt hay thông tin đăng nhập lên repo.
-- Phát hành theo giấy phép MIT để cộng đồng có thể đọc, sửa, phân phối và mở rộng mã nguồn trong phạm vi điều khoản của các dịch vụ bên thứ ba.
-
-## Cấu trúc kết quả
-
-Nếu đặt tên dự án là `Review sản phẩm`, ứng dụng tạo:
-
-```text
-Review sản phẩm/
-├── Review sản phẩm.mp4
-├── Review sản phẩm.thumbnail.jpg (nếu có)
-├── Review sản phẩm.raw.srt
-├── Review sản phẩm.vi.srt
-├── Review sản phẩm.data.json (nếu Douzy có)
-├── Review sản phẩm.music.mp3 (nếu Douzy có)
-└── project.json
+```
+app_config.json
+workflow_queue.json
+local_videos\\
+vietsub-studio.log
+instance.lock
 ```
 
-- Project Douyin hoàn tất chứa MP4 gốc đã được chuyển khỏi thư mục Douzy. MP4 chọn từ máy được hard-link vào bố cục project tự chứa nếu cùng ổ đĩa, nếu không sẽ được sao chép bình thường.
-- `Review sản phẩm.thumbnail.jpg`: thumbnail Douyin lấy từ Douzy hoặc tải từ metadata đã lưu nếu có; app cũng hỗ trợ PNG và WebP.
-- `Review sản phẩm.raw.srt`: phụ đề OCR theo ngôn ngữ gốc đã chọn.
-- `Review sản phẩm.vi.srt`: phụ đề tiếng Việt, giữ mốc thời gian nguồn.
-- Các asset Douzy khác được đổi tên đồng bộ như `Review sản phẩm.data.json` và `Review sản phẩm.music.mp3`.
-- `project.json`: tên dự án, URL nguồn, ID video Douyin, đường dẫn file, trạng thái, lỗi và thời gian cập nhật.
+### Khi chay EXE portable
 
-Nếu thư mục đã tồn tại, dự án tiếp theo sẽ là `Review sản phẩm (2)`. Video, sub, thumbnail, asset Douzy và manifest đều dùng tên project riêng này.
+File runtime nam trong:
 
-## Yêu cầu hệ thống
-
-| Thành phần | Bắt buộc | Vị trí/hành vi mong đợi | Mục đích |
-|---|---:|---|---|
-| Windows 10/11 x64 | Có | Phiên desktop Windows | Các tích hợp và bản đóng gói hiện tại dành riêng cho Windows. |
-| Microsoft Edge | Chế độ Notebook hoặc link Douyin ngắn | Bản Edge thông thường | Tự động hoá Gemini và giải mã redirect link ngắn. |
-| Douzy | Chỉ nguồn Douyin | `%LOCALAPPDATA%\Programs\Douzy` | Tải video Douyin và quản lý lịch sử/cache cục bộ. |
-| Cấu hình Douzy | Chỉ nguồn Douyin | `%APPDATA%\douyin-downloader-desktop\config.yml` | Cung cấp thư mục tải Douyin và cấu hình sidecar. |
-| VideOCR | Có | `C:\Program Files\VideOCR\videocr-cli.exe` | Trích xuất phụ đề từ video. |
-| Gemini Notebook | Chế độ Notebook | `https://gemini.google.com/notebook/<id>` | Dịch nội dung SRT qua trình duyệt. |
-| Tài khoản API dịch | Chế độ API | DeepSeek, OpenRouter hoặc provider OpenAI-compatible khác | Dịch SRT không cần Notebook/Edge automation. |
-| Tài khoản Google | Chế độ Notebook | Profile Edge debug riêng | Cấp quyền truy cập Notebook đã chọn. |
-| FFmpeg / FFprobe | Không | Có cả lệnh `ffmpeg` và `ffprobe` trong `PATH` | Lấy metadata video dài và tự phục hồi khi VideOCR crash do video đổi độ phân giải. |
-| Python 3.11+ | Chỉ mã nguồn | Lệnh `python` có trong `PATH` | Chỉ cần khi chạy/build từ source. |
-
-Douzy và VideOCR là ứng dụng bên thứ ba, không được phân phối lại trong repository. Hãy cài từ nguồn bạn tin tưởng và tuân thủ giấy phép/tài liệu riêng của chúng.
-
-## Dùng nhanh bản EXE portable
-
-1. Mở [GitHub Releases](https://github.com/qvinh8726/VietSub-Studio/releases/latest).
-2. Tải file `VietSub-Studio-Portable-*.zip`.
-3. Giải nén ZIP vào thư mục bình thường có quyền ghi. Không chạy EXE trực tiếp trong cửa sổ xem trước ZIP.
-4. Mở `VietSub Studio.exe`.
-5. Bản EXE tự tạo shortcut `VietSub Studio` ngoài Desktop sau lần mở đầu tiên thành công. Nếu shortcut bị xóa hoặc chuyển thư mục portable, dùng **Thiết lập → Tạo lại shortcut ngoài Desktop**.
-6. Lần mở đầu có thể mất 20-60 giây vì bản một file cần giải nén tạm và bị Windows quét bảo mật.
-7. Nếu SmartScreen cảnh báo do bản cộng đồng chưa có chữ ký số, hãy kiểm tra đúng nguồn/checksum rồi chỉ chọn **More info → Run anyway** khi bạn tin tưởng bản tải.
-8. Mở **Thiết lập** và xử lý hết các mục bắt buộc màu đỏ.
-
-Có thể kiểm tra EXE bằng `SHA256.txt` nằm trong ZIP. Trang Release cũng công bố checksum của file ZIP.
-
-## Thiết lập lần đầu
-
-### 1. Chuẩn bị Douzy
-
-- Cài Douzy vào đường dẫn mặc định.
-- Mở ít nhất một lần.
-- Chọn thư mục tải video.
-- Nếu chưa có database, hãy thử tải một video bằng Douzy.
-
-Bảng sức khoẻ phân biệt riêng file sidecar, file cấu hình và database lịch sử tuỳ chọn.
-
-### 2. Chuẩn bị VideOCR
-
-- Cài sao cho file `C:\Program Files\VideOCR\videocr-cli.exe` tồn tại.
-- Nếu phụ đề chỉ nằm trong một phần khung hình, cấu hình và lưu vùng crop trong VideOCR.
-- Nên cài FFmpeg/FFprobe và thêm cả hai lệnh vào `PATH`, nhất là với video dài hoặc video ghép có thể đổi độ phân giải giữa chừng.
-
-### 3. Chọn provider dịch
-
-- Với chế độ Notebook, tạo hoặc chọn Gemini Notebook mà bạn có quyền truy cập.
-- Sao chép URL đầy đủ đúng định dạng:
-
-  ```text
-  https://gemini.google.com/notebook/ID-NOTEBOOK-CUA-BAN
-  ```
-
-- Dán vào **Thiết lập → Notebook Gemini dùng để dịch**.
-- Có thể giữ bật **Chạy Edge ẩn**; trang vẫn render đầy đủ dù cửa sổ được thu nhỏ.
-- Khi phiên Google hết hạn hoặc cần kiểm tra Notebook, app sẽ hiện Edge và cho chạy lại job sau khi đăng nhập.
-- Với chế độ API, chọn **DeepSeek API**, **OpenRouter** hoặc **API OpenAI-compatible khác**, nhập Base URL, model và API key rồi bấm **Kiểm tra kết nối API** trước khi chạy hàng đợi.
-
-VietSub Studio không hỏi và không lưu mật khẩu Google. Việc đăng nhập nằm hoàn toàn trong profile do Edge quản lý.
-
-### 4. Chọn thư mục xuất
-
-Bấm **Chọn thư mục…** trong Thiết lập để chọn bất kỳ nơi lưu nào trên máy, độc lập với Douzy. Nếu để trống, app dùng `Documents\VietSub Studio` (hoặc thư mục Windows dự phòng nếu không xác định được Documents).
-
-## Xử lý nhiều video tuần tự
-
-1. Chọn MP4 trên máy hoặc dán một trong các dạng sau vào ô chính:
-   - `https://www.douyin.com/video/<id>`
-   - `https://v.douyin.com/<mã>/`
-   - nguyên đoạn chia sẻ có chứa một trong hai link trên
-2. Nhập tên dùng chung nếu muốn; để trống để lấy tiêu đề nguồn hoặc tên file MP4.
-3. Bấm **Tải preview** cho Douyin hoặc **Chọn MP4** cho video trên máy.
-4. Kéo/đổi kích thước khung vàng cho khớp vùng phụ đề.
-5. Chọn ngôn ngữ OCR rồi bấm **Thêm vào hàng đợi**.
-6. Lặp lại cho các video khác, sau đó bấm **Chạy hàng đợi**.
-7. Theo dõi job hiện tại qua năm bước: giải mã, video, OCR, dịch và hoàn tất.
-8. Bấm **Huỷ job** nếu cần dừng video hiện tại; các video đang chờ vẫn được giữ.
-9. Job lỗi/đã huỷ có nút chạy lại, tự dùng video hoặc sub OCR còn tồn tại nếu có.
-10. Hàng đợi vẫn còn sau khi đóng/mở app. Mở thư mục dự án từ card hàng đợi hoặc bảng kết quả.
-
-Link mix, hồ sơ người dùng và playlist vẫn bị từ chối. Hàng đợi nhận từng link video riêng và xử lý tuần tự, không chạy đồng thời.
-
-## Chạy từ mã nguồn
-
-```powershell
-git clone https://github.com/qvinh8726/VietSub-Studio.git
-cd VietSub-Studio
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python app.py
+```
+%APPDATA%\\VietSub Studio\\app_config.json
+%APPDATA%\\VietSub Studio\\workflow_queue.json
+%APPDATA%\\VietSub Studio\\local_videos\\
+%APPDATA%\\VietSub Studio\\vietsub-studio.log
+%APPDATA%\\VietSub Studio\\instance.lock
 ```
 
-Hoặc bấm đúp `Chay Tool.bat`; script sẽ kiểm tra thư viện Python cốt lõi và mở ứng dụng desktop.
+Phu thuoc ben ngoai duoc tim tai:
 
-Chạy giao diện web cục bộ ở cổng 5000:
-
-```powershell
-python app.py --server
+```
+%LOCALAPPDATA%\\Programs\\Douzy\\resources\\sidecar\\win32-x64\\douyin-dl-sidecar.exe
+%APPDATA%\\douyin-downloader-desktop\\config.yml
+%APPDATA%\\douyin-downloader-desktop\\dy_downloader.db
+C:\\Program Files\\VideOCR\\videocr-cli.exe
+%LOCALAPPDATA%\\Microsoft\\Edge\\User Data Debug\\
 ```
 
-Sau đó mở `http://127.0.0.1:5000`.
+`app_config.example.json` la mau cau hinh an toan de tham khao. Khong commit `app_config.json`, API key, Notebook URL rieng, cookie, profile Edge hay video local.
 
-Để app tự chọn cổng local trống và tự mở trình duyệt mặc định (cùng cơ chế dự phòng khi WebView native không khởi động được), chạy:
+## Bao mat va quyen rieng tu
 
-```powershell
-python app.py --browser
+- Flask chi bind `127.0.0.1`; app khong phat control API ra mang LAN/Internet.
+- Moi lan khoi dong tao capability token moi cho cac request frontend.
+- API kiem tra Host, Origin, Fetch Metadata, duong dan va JSON content type doi voi mutation.
+- Upload local chi nhan `.mp4`, gioi han `8 GiB` va kiem tra header `ftyp` truoc khi luu cache.
+- API key duoc ma hoa bang Windows DPAPI; key da luu chi giai ma duoc tren tai khoan Windows da luu.
+- Google credential nam trong profile Edge; VietSub Studio khong doc mat khau Google.
+- Chi subtitle text duoc gui toi provider ban chon. Video local khong duoc upload toi server VietSub Studio.
+- Updater chi chap nhan repository chinh thuc, asset dung ten, checksum va kich thuoc hop le.
+- Community EXE khong ky so; checksum giup phat hien file bi thay doi nhung khong thay the hoan toan chu ky so.
+
+Xem [SECURITY.md](SECURITY.md) de bao cao loi bao mat. Khi mo issue, khong gui API key, cookie, link Notebook rieng, link video rieng hay log chua du lieu nhay cam.
+
+## Gioi han va luu y phap ly
+
+- Hien tai chi ho tro Windows 10/11 x64.
+- Hang doi OCR/dich chay tuan tu, khong chay song song nhieu VideOCR hoac Gemini worker.
+- Douzy chi can cho nguon Douyin; MP4 local khong can Douzy.
+- VideOCR bat buoc cho OCR; chat luong phu de phu thuoc do phan giai, contrast, font, motion va crop.
+- Edge can cho Gemini Notebook va cho mot so link Douyin ngan can redirect.
+- FFmpeg/FFprobe khong bat buoc voi video ngan co do phan giai on dinh, nhung rat nen cai cho video dai.
+- Giao dien Gemini co the thay doi, khi do selector automation co the can cap nhat.
+- Dich AI co the sai ngu canh; luon kiem tra `*.raw.srt` va `*.vi.srt` truoc khi dang tai.
+- Ban tu chiu trach nhiem ve quyen su dung, ban quyen va dieu khoan cua Douyin, Google, Douzy, VideOCR va provider AI.
+
+## Xu ly loi thuong gap
+
+### Health check bao \"Douzy sidecar: Thieu\"
+
+Kiem tra file:
+
+```
+%LOCALAPPDATA%\\Programs\\Douzy\\resources\\sidecar\\win32-x64\\douyin-dl-sidecar.exe
 ```
 
-## Dùng dòng lệnh
+Mo Douzy mot lan, chon thu muc tai, roi bam **Kiem tra lai** trong VietSub Studio.
 
-`automate.py` chạy cùng luồng xử lý mà không cần giao diện:
+### \"Cau hinh Douzy: Thieu\"
 
-```powershell
-python automate.py --url "https://www.douyin.com/video/123" --lang ch --name "Review sản phẩm"
+Kiem tra:
+
+```
+%APPDATA%\\douyin-downloader-desktop\\config.yml
 ```
 
-| Tham số | Bắt buộc | Ý nghĩa |
-|---|---:|---|
-| `-u`, `--url` | Có | Link video Douyin hoặc link share ngắn. |
-| `-l`, `--lang` | Không | Ngôn ngữ OCR: `ch`, `en`, `ja`, `ko`, `vi`; mặc định `ch`. |
-| `-n`, `--name` | Không | Tên dùng chung cho dự án, video và hai file phụ đề. |
+Hay mo Douzy va luu cau hinh download truoc khi thu lai.
 
-CLI vẫn cần đầy đủ Douzy, VideOCR, Edge, Notebook và cấu hình cục bộ giống giao diện desktop.
+### \"VideOCR CLI: Thieu\"
 
-## Tự build ứng dụng Windows
+Cai VideOCR vao duong dan mac dinh hoac tao file dung ten tai:
 
-Build bản portable một file:
-
-```powershell
-.\build_portable.bat
+```
+C:\\Program Files\\VideOCR\\videocr-cli.exe
 ```
 
-Lệnh tương đương:
+### Gemini khong tim thay khung chat / yeu cau dang nhap
 
-```powershell
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --distpath dist_portable --workpath build_portable "VietSub Studio Portable.spec"
-```
+1. Bam **Mo Edge dang nhap**.
+2. Dang nhap Google trong cua so Edge ma app mo.
+3. Mo dung Notebook URL dang `https://gemini.google.com/notebook/<id>`.
+4. Cho khung chat hien ra, roi bam **Chay lai** job.
 
-Kết quả:
+### Edge debug port `9222` bi ban
 
-```text
-dist_portable\VietSub Studio.exe
-```
+Dong cac phien Edge debug cu roi mo lai VietSub Studio. Khong tat nham Edge ca nhan dang chay voi profile thong thuong.
 
-`build_app.bat` và `VietSub Studio.spec` cung cấp bản onedir thay thế. Spec portable đóng gói template, avatar và tài nguyên pywebview; không bao giờ đóng gói ứng dụng bên thứ ba hoặc thông tin đăng nhập.
+### API tra ve SRT thieu block hoac output bi cat
 
-## Cách hệ thống hoạt động
+- Bam **Kiem tra ket noi API**.
+- Kiem tra Base URL co dung va provider co ho tro `/chat/completions`.
+- Kiem tra model co du output token cho chunk hien tai.
+- Giam kich thuoc video/chunk hoac dung provider co context/output lon hon.
+- Retry tu buoc **Dich** neu file `*.raw.srt` van con.
 
-```mermaid
-flowchart TD
-    A[Link/đoạn share Douyin hoặc MP4 local] --> B{Loại nguồn}
-    B -->|Douyin| C[Giải mã đúng ID video]
-    C --> D[Douzy tải hoặc dùng cache]
-    D --> E[Dùng trực tiếp MP4 gốc của Douzy]
-    D --> T[Ảnh cover local hoặc thumbnail metadata]
-    B -->|MP4 local| F[Bản upload do app quản lý]
-    E --> G[Preview cục bộ được bảo vệ]
-    F --> G
-    G --> H[Chỉnh crop và ngôn ngữ OCR]
-    H --> I[Lưu job vào hàng đợi tuần tự]
-    I --> J[VideOCR tạo SRT thô]
-    J --> K[Gemini Notebook dịch qua Edge]
-    K --> L[Khôi phục và kiểm tra timestamp/block]
-    L --> M[Ghi sub Việt và project.json]
-    T --> M
-    M --> N[Chỉ hiện kết quả sau kiểm tra cuối]
-```
+### OCR sai nhieu
 
-Hàng đợi cố ý chạy tuần tự. Job sau chỉ bắt đầu khi job hiện tại thành công, lỗi hoặc bị huỷ. Cách này bảo vệ bản cài VideOCR, sidecar Douzy, profile Edge debug và cuộc hội thoại Notebook dùng chung khỏi bị nhiều luồng điều khiển cùng lúc.
+Thu crop hep hon, tang chat luong video, chon dung ngon ngu, giam frame skip va thu model `accurate`. Neu chu bi che, bong, watermark hoac chay ngang man hinh, hay chinh crop va xem lai `*.raw.srt` truoc khi dich.
 
-Với job Douyin, MP4 gốc chỉ ở lại thư mục Douzy trong lúc OCR và dịch; sau khi kiểm tra kết quả cuối, app chuyển đúng video và các asset khớp định danh vào project tự chứa. Với MP4 local, app giới hạn 8 GiB, kiểm tra header container MP4, giữ bản cache trong lúc chờ và hard-link hoặc sao chép vào project để job đã lưu có thể chạy lại an toàn.
+### EXE mo cham hoac SmartScreen canh bao
 
-Các phần chính:
+Day la dac diem thuong thay cua PyInstaller one-file va EXE cong dong chua ky so. Chi chay file tu GitHub Release chinh thuc sau khi doi chieu checksum.
 
-- `app.py`: kiểm tra đầu vào, điều phối tiến trình, Flask API, cửa sổ pywebview, xử lý file và tích hợp ngoài.
-- `templates/index.html`: cấu trúc HTML semantic và metadata bootstrap do server render.
-- `static/style.css` và `static/app.js`: giao diện responsive, state frontend, thiết lập, chẩn đoán, tiến trình, lịch sử và kết quả.
-- `automate.py`: entry point dòng lệnh.
-- `tests/test_app.py`: test validation, đặt tên, tìm video, API, huỷ và luồng xử lý.
-- `VietSub Studio Portable.spec`: cấu hình PyInstaller bản một file.
+## Kiem thu va dong gop
 
-Các API cục bộ:
-
-| Endpoint | Method | Mục đích |
-|---|---|---|
-| `/api/health` | GET | Kiểm tra Douzy, VideOCR, FFmpeg/FFprobe, Notebook và Edge. |
-| `/api/settings` | GET/POST | Đọc và lưu thiết lập cục bộ. |
-| `/api/translation/test` | POST | Gửi một yêu cầu thử tối thiểu tới provider API đã cấu hình. |
-| `/api/history` | GET | Đọc video gần đây từ database Douzy. |
-| `/api/previews` | POST | Chuẩn bị video và trả URL preview được bảo vệ. |
-| `/api/previews/local` | POST | Sao chép MP4 local vào cache quản lý và tạo preview. |
-| `/api/queue` | GET/POST | Xem hàng đợi hoặc thêm video đã chuẩn bị. |
-| `/api/queue/start` | POST | Chạy worker tuần tự duy nhất. |
-| `/api/queue/<job_id>/retry` | POST | Chạy lại từ bước video, OCR hoặc dịch. |
-| `/api/edge/show` | POST | Hiện cửa sổ Edge riêng để đăng nhập hoặc kiểm tra. |
-| `/api/update/install` | POST | Tải, xác minh, cài và khởi động lại vào bản packaged mới nhất. |
-| `/api/progress` | GET | Lấy trạng thái và log tăng dần. |
-| `/api/cancel` | POST | Huỷ quy trình cùng tiến trình con đang hoạt động. |
-| `/api/open-folder` | POST | Chỉ mở đường dẫn do quy trình hiện tại tạo ra. |
-
-Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng. Mỗi lần mở app tạo một token API ngẫu nhiên; control plane còn kiểm tra Host, Origin, Fetch Metadata và content type của yêu cầu thay đổi trạng thái. Luồng video preview dùng ID ngẫu nhiên vì thẻ video native không thể gắn custom API header.
-
-## Cấu hình và dữ liệu cục bộ
-
-| Dữ liệu | Chạy source | Bản EXE |
-|---|---|---|
-| Thiết lập VietSub Studio | `app_config.json` cạnh `app.py` | `%APPDATA%\VietSub Studio\app_config.json` |
-| Hàng đợi đã lưu | `workflow_queue.json` cạnh `app.py` | `%APPDATA%\VietSub Studio\workflow_queue.json` |
-| Cache MP4 local | `local_videos` cạnh `app.py` | `%APPDATA%\VietSub Studio\local_videos` |
-| Profile Edge riêng | `%LOCALAPPDATA%\Microsoft\Edge\User Data Debug` | Giống nhau |
-| Cấu hình Douzy | `%APPDATA%\douyin-downloader-desktop\config.yml` | Giống nhau |
-| Database lịch sử Douzy | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Giống nhau |
-| Kết quả dự án | Thư mục đã chọn hoặc `Documents\VietSub Studio` | Giống nhau |
-| Log ứng dụng bền vững | `vietsub-studio.log` cạnh `app.py` | `%APPDATA%\VietSub Studio\vietsub-studio.log` |
-| Khoá một instance | `instance.lock` cạnh `app.py` | `%APPDATA%\VietSub Studio\instance.lock` |
-
-`app_config.json` bị Git bỏ qua vì có thể chứa link Notebook riêng. `app_config.example.json` chỉ là mẫu an toàn.
-
-## Quyền riêng tư và bảo mật
-
-- Video được tải và OCR thông qua ứng dụng đã cài cục bộ.
-- File MP4 không bị upload lên repository hay server riêng của VietSub Studio.
-- MP4 được chọn trên máy bị giới hạn 8 GiB, được kiểm tra header container `ftyp` rồi mới sao chép vào cache cục bộ do app quản lý để hàng đợi sống qua lần khởi động lại.
-- Nội dung SRT được gửi đến Gemini Notebook qua phiên Edge hoặc provider API mà người dùng chọn. Hãy đọc điều khoản/quyền riêng tư của provider trước khi xử lý nội dung nhạy cảm.
-- API key được mã hoá bằng Windows DPAPI và không bao giờ trả ngược qua API settings.
-- Thông tin đăng nhập Google do Edge giữ; VietSub Studio không đọc hoặc lưu mật khẩu.
-- Mỗi phiên sidecar Douzy dùng bearer token cục bộ ngẫu nhiên.
-- Thiết lập và file kết quả được ghi atomic để giảm nguy cơ hỏng.
-- API cục bộ dùng token capability ngẫu nhiên theo mỗi lần mở app và kiểm tra Host, Origin, Fetch Metadata, đường dẫn, ngôn ngữ, tên file, loại/kích thước upload và quyền mở thư mục kết quả.
-- Không chia sẻ `app_config.json`, profile Edge, cookie, link Notebook riêng hoặc log chứa link video riêng tư.
-
-Đọc [SECURITY.md](SECURITY.md) trước khi báo cáo vấn đề bảo mật.
-
-## Giới hạn hiện tại
-
-- Chỉ hỗ trợ Windows.
-- Hàng đợi chạy tuần tự; không chạy OCR/dịch song song.
-- Không tự bung link playlist, profile hoặc mix thành nhiều video.
-- Bắt buộc có VideOCR; Douzy chỉ cần thêm khi nguồn là Douyin.
-- Bắt buộc có phiên Gemini Notebook đã đăng nhập trong Edge.
-- Gemini thay đổi giao diện có thể làm selector lỗi cho tới khi dự án được cập nhật.
-- Chất lượng OCR phụ thuộc video, độ tương phản, ngôn ngữ và vùng crop.
-- FFmpeg/FFprobe không bắt buộc với video ngắn có độ phân giải cố định, nhưng thiếu chúng thì không thể tự phục hồi crash ở video dài.
-- EXE cộng đồng chưa ký số nên SmartScreen có thể cảnh báo.
-- EXE một file có thể mở chậm vì phải giải nén tài nguyên mỗi lần.
-- Việc tải/dịch phải tuân thủ điều khoản Douyin, Google, Douzy, VideOCR và luật bản quyền.
-
-## Khắc phục sự cố
-
-### Thiết lập báo “Douzy sidecar: Thiếu”
-
-Cài Douzy đúng đường dẫn mặc định. Tích hợp hiện tại tìm file:
-
-```text
-%LOCALAPPDATA%\Programs\Douzy\resources\sidecar\win32-x64\douyin-dl-sidecar.exe
-```
-
-Hiện chưa hỗ trợ tuỳ chỉnh đường dẫn cài Douzy.
-
-### “Cấu hình Douzy: Thiếu”
-
-Mở Douzy, chọn thư mục tải, đóng ứng dụng bình thường rồi bấm **Kiểm tra lại** trong VietSub Studio.
-
-### “Database Douzy” màu vàng
-
-Database không bắt buộc cho trạng thái sẵn sàng ban đầu. Nó thường xuất hiện sau khi Douzy xử lý video đầu tiên; lịch sử và tìm cache sẽ đầy đủ hơn khi có database.
-
-### “VideOCR CLI: Thiếu”
-
-Kiểm tra file sau có tồn tại:
-
-```text
-C:\Program Files\VideOCR\videocr-cli.exe
-```
-
-Nếu không, cài lại VideOCR vào đường dẫn mặc định.
-
-### “Notebook Gemini: Thiếu”
-
-Dán URL HTTPS đúng dạng `https://gemini.google.com/notebook/<id>` vào Thiết lập. Link chat Gemini thông thường không được chấp nhận.
-
-### Edge mở nhưng không bắt đầu dịch
-
-Dùng nút **Mở Edge để đăng nhập**, đăng nhập Google, xác nhận Notebook truy cập được rồi chạy lại job lỗi. Chế độ nền chỉ thu nhỏ Edge chứ không chạy headless, nên trang Gemini vẫn render bình thường.
-
-### Cổng 9222 bận hoặc không kết nối được Edge debug
-
-Đóng các phiên Edge debug cũ rồi mở lại VietSub Studio. Người dùng nâng cao có thể kiểm tra tiến trình đang giữ cổng `9222`; không nên tắt Edge bình thường nếu chưa xác định đúng tiến trình.
-
-### Sub OCR trống hoặc sai nhiều
-
-Kiểm tra đúng ngôn ngữ nguồn, cấu hình crop hẹp hơn trong VideOCR và thử VideOCR trực tiếp với cùng video. Chữ quá nhỏ, nền kém tương phản, subtitle động hoặc watermark sẽ làm OCR kém.
-
-Với video dài hoặc video ghép, hãy cài FFmpeg/FFprobe. VietSub Studio sẽ quét theo từng đoạn và tự chuẩn hoá các đoạn còn lại nếu VideOCR crash sau khi độ phân giải thay đổi.
-
-### Bản dịch làm thay đổi timestamp
-
-VietSub Studio kiểm tra SRT và khôi phục timestamp nguồn nếu số block vẫn khớp. Nếu Gemini xoá hoặc gộp block, quy trình dừng thay vì âm thầm xuất sub lệch thời gian.
-
-### Video đã tồn tại trong Douzy
-
-Đây là hành vi bình thường. Tool yêu cầu Douzy dùng cache, tìm đúng video ID rồi sao chép sang dự án mới; không đổi tên file cache.
-
-### Windows không chấp nhận tên dự án
-
-Ký tự cấm được thay thế, dấu cách/dấu chấm cuối bị bỏ, tên hệ thống như `CON` được thêm tiền tố và tên quá dài bị giới hạn. Dự án trùng tên tự nhận hậu tố số.
-
-### Mở EXE nhưng tưởng không chạy
-
-Lần đầu hãy chờ tối đa 60 giây. Phải giải nén ZIP trước, sau đó kiểm tra lịch sử cách ly của Windows Security. Luôn đối chiếu SHA256 trước khi cho phép chạy.
-
-### Kết quả nằm ở đâu?
-
-Mở Thiết lập để xem hoặc chọn thư mục lưu. Nếu để trống, mặc định là `Documents\VietSub Studio`. Sau khi thành công, bảng kết quả có nút mở đúng folder project tự chứa.
-
-## Câu hỏi thường gặp
-
-### EXE có hoàn toàn độc lập không?
-
-Không. Nó chứa ứng dụng Python và UI, nhưng Douzy, VideOCR, Edge, tài khoản Google và Gemini Notebook vẫn là phụ thuộc bên ngoài.
-
-### VietSub Studio có miễn phí và mã nguồn mở không?
-
-Có. Mã trong repository dùng giấy phép MIT. Công cụ, nền tảng, mô hình và tài sản bên thứ ba vẫn dùng giấy phép/điều khoản riêng.
-
-### Tool có upload video của tôi không?
-
-VietSub Studio không upload MP4 lên server riêng. Douzy tải video cục bộ và VideOCR xử lý cục bộ. Nội dung SRT được gửi tới Gemini Notebook qua phiên Edge của bạn để dịch.
-
-### Maintainer có nhận được link Notebook hoặc tài khoản Google không?
-
-Không. Cấu hình nằm trên máy của bạn trừ khi bạn tự chia sẻ. Repository public bỏ qua `app_config.json`.
-
-### Có thể dùng API thay Notebook không?
-
-Có. Trong **Thiết lập**, chọn DeepSeek API, OpenRouter hoặc API OpenAI-compatible khác, nhập Base URL, model và API key rồi bấm **Kiểm tra kết nối API**. DeepSeek/OpenRouter dùng endpoint `/chat/completions`; API key được mã hoá bằng Windows DPAPI.
-
-### Có thể dịch sang ngôn ngữ khác tiếng Việt không?
-
-Prompt hiện tại và quy ước `.vi.srt` nhắm tới tiếng Việt. OCR hỗ trợ nhiều ngôn ngữ nguồn, nhưng chưa có tuỳ chọn ngôn ngữ đích.
-
-### Có dùng được TikTok, YouTube, Bilibili hoặc video local không?
-
-Có hỗ trợ file MP4 local. TikTok, YouTube, Bilibili, playlist, profile và các nguồn online khác hiện chưa được hỗ trợ.
-
-### Có thể xử lý nhiều video tự động không?
-
-Có. Tạo preview cho từng video, thêm vào hàng đợi rồi bấm chạy. App chỉ xử lý một job tại một thời điểm để Douzy, VideOCR và Edge/Gemini không xung đột.
-
-### Có thể di chuyển EXE sau khi cấu hình không?
-
-Có. Bản đóng gói lưu thiết lập tại `%APPDATA%\VietSub Studio`, nên di chuyển EXE không làm mất cấu hình.
-
-### Tại sao SmartScreen cảnh báo?
-
-Bản release chưa được ký bằng chứng thư code-signing thương mại. Chỉ tải từ GitHub Releases chính thức và luôn kiểm tra checksum.
-
-Từ v1.3.0, bản EXE có thể tự cập nhật tại chỗ. App chỉ nhận asset từ release chính thức của repository này, bắt buộc kiểm tra checksum ZIP và kiểm tra digest/kích thước GitHub khi metadata có sẵn. Khi cập nhật bắt đầu, app giữ reservation để không preview hay job mới nào được chạy, thay EXE với cơ chế rollback và chỉ xoá bản cũ sau khi tiến trình mới sống qua cửa sổ khởi động. Nếu thư mục portable không có quyền ghi hoặc xác minh thất bại, app sẽ mở trang release chính thức. Bản cộng đồng vẫn chưa được ký số nên tính xác thực nhà phát hành còn phụ thuộc tài khoản GitHub cho đến khi có Authenticode hoặc khoá ký độc lập.
-
-### Tại sao lần đầu mở lâu?
-
-Chế độ one-file của PyInstaller giải nén tài nguyên vào thư mục tạm và Windows có thể quét từng file. Những lần sau vẫn có thể mất vài giây.
-
-### Có thể bán phiên bản đã sửa không?
-
-MIT cho phép dùng mã nguồn repository với mục đích thương mại, nhưng bạn phải tự chịu trách nhiệm về giấy phép bên thứ ba, điều khoản nền tảng, thương hiệu, quyền nội dung và pháp luật liên quan.
-
-### Báo lỗi thế nào để dễ được hỗ trợ?
-
-Dùng mẫu Bug Report, ghi phiên bản, kiểu cài đặt, bước tái hiện, trạng thái bảng sức khoẻ và log đã làm sạch. Xoá toàn bộ mật khẩu, link riêng, cookie và đường dẫn cá nhân.
-
-## Đóng góp
-
-Pull request luôn được chào đón. Đọc [CONTRIBUTING.md](CONTRIBUTING.md), giữ thay đổi tập trung và chạy:
+Chay test local:
 
 ```powershell
 python -m py_compile app.py automate.py
 python -m unittest discover -s tests -v
+python -m pip check
 ```
 
-Repository có workflow GitHub Actions compile source, chạy unit test, build EXE portable, khởi động chế độ packaged `--server`, kiểm tra UI/static asset và upload artifact đã smoke-test. Dependabot theo dõi dependency Python và GitHub Actions.
+Truoc khi tao PR:
+
+1. Khong commit file runtime ca nhan (`app_config.json`, queue, log, video).
+2. Khong commit artifact PyInstaller (`build_*`, `dist_*`, `release/`).
+3. Ghi ro thay doi, ly do va cach kiem thu.
+4. Neu sua luong dich, them test cho parse SRT, timestamp, provider va retry.
+
+Xem [CONTRIBUTING.md](CONTRIBUTING.md) de biet quy uoc dong gop.
+
+## Giay phep
+
+VietSub Studio phat hanh theo [MIT License](LICENSE). Douzy, VideOCR, Microsoft Edge, Google Gemini, DeepSeek, OpenRouter va cac model AI la san pham/dich vu ben thu ba, co dieu khoan va giay phep rieng.
 
 ---
 
-## License / Giấy phép
+### English summary
 
-VietSub Studio is released under the [MIT License](LICENSE). Third-party applications and services are not covered by this repository's license.
+VietSub Studio is an open-source Windows desktop workflow for converting burned-in subtitles from Douyin videos or local MP4 files into validated Vietnamese SRT subtitles. It provides OCR-region preview, VideOCR integration, sequential queueing, Gemini Notebook through Edge, DeepSeek/OpenRouter/OpenAI-compatible APIs, timestamp-preserving translation, retryable intermediate files, and a verified portable EXE release.
 
-VietSub Studio được phát hành theo [MIT License](LICENSE). Ứng dụng và dịch vụ bên thứ ba không thuộc giấy phép của repository này.
-
-## Disclaimer / Miễn trừ trách nhiệm
-
-Use this project only with content you are authorized to download, process, and translate. You are responsible for platform terms, copyright, privacy, and local law.
-
-Chỉ sử dụng dự án với nội dung bạn có quyền tải, xử lý và dịch. Người dùng tự chịu trách nhiệm về điều khoản nền tảng, bản quyền, quyền riêng tư và pháp luật địa phương.
+Keywords: Vietnamese subtitle generator, Douyin subtitle OCR, Chinese-to-Vietnamese subtitle translation, SRT translator, VideOCR, Gemini Notebook, DeepSeek API, OpenRouter, Windows portable EXE.
