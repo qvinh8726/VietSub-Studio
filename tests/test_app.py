@@ -1,16 +1,78 @@
-import io
 import hashlib
+import io
 import json
 import os
+import socket
 import sys
 import tempfile
+import tomllib
+import traceback
 import unittest
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import app
 import automate
+from vietsub import constants, douyin, srt, translation_api, updater, validators
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Every test runs against throwaway app-data paths, and real network access is
+# blocked. A missed patch therefore fails loudly instead of touching the
+# developer's config, queue, log, Edge debug port or the internet.
+_module_state_dir = None
+_module_patchers = []
+_blocked_network_calls = []
+
+
+def _record_blocked_network_call(target):
+    test_frames = [frame.name for frame in traceback.extract_stack() if frame.name.startswith("test_")]
+    _blocked_network_calls.append(f"{test_frames[-1] if test_frames else '<unknown test>'} -> {target!r}")
+    return OSError(f"Network access is disabled in unit tests: {target!r}")
+
+
+def _blocked_connect(_socket, address, *_args, **_kwargs):
+    raise _record_blocked_network_call(address)
+
+
+def _blocked_getaddrinfo(host, port, *_args, **_kwargs):
+    raise _record_blocked_network_call((host, port))
+
+
+def setUpModule():
+    global _module_state_dir
+    _module_state_dir = tempfile.TemporaryDirectory(prefix="vietsub-tests-")
+    state_root = Path(_module_state_dir.name)
+    isolated_paths = {
+        "CONFIG_PATH": state_root / "app_config.json",
+        "QUEUE_PATH": state_root / "workflow_queue.json",
+        "LOG_PATH": state_root / "vietsub-studio.log",
+        "LOCAL_VIDEO_DIR": state_root / "local_videos",
+        "DOWNLOAD_CACHE_DIR": state_root / "downloads",
+        "DOWNLOAD_HISTORY_PATH": state_root / "download_history.json",
+        "INSTANCE_LOCK_PATH": state_root / "instance.lock",
+    }
+    _module_patchers.extend(patch.object(app, name, str(path)) for name, path in isolated_paths.items())
+    _module_patchers.extend([
+        patch.object(socket.socket, "connect", _blocked_connect),
+        patch.object(socket.socket, "connect_ex", _blocked_connect),
+        patch.object(socket, "getaddrinfo", _blocked_getaddrinfo),
+    ])
+    for patcher in _module_patchers:
+        patcher.start()
+
+
+def tearDownModule():
+    for patcher in reversed(_module_patchers):
+        patcher.stop()
+    _module_patchers.clear()
+    _module_state_dir.cleanup()
+    if _blocked_network_calls:
+        calls = "\n".join(_blocked_network_calls)
+        raise AssertionError(f"Tests attempted real network access:\n{calls}")
 
 
 SOURCE_SRT = """1
@@ -115,7 +177,11 @@ class ValidationTests(unittest.TestCase):
         process = Mock()
         with (
             patch.object(app, "check_edge_status", side_effect=[False, False, True]),
-            patch.object(app, "resolve_edge_executable", return_value=r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            patch.object(
+                app,
+                "resolve_edge_executable",
+                return_value=r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ),
             patch.object(app.subprocess, "Popen", return_value=process) as popen,
             patch.object(app.time, "sleep"),
         ):
@@ -154,6 +220,8 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertFalse(app.is_valid_edge_debug_payload(payload))
         self.assertTrue(app.is_valid_edge_debug_payload(valid_payload))
+        app.reset_edge_owner_cache()
+        self.addCleanup(app.reset_edge_owner_cache)
         with (
             patch.object(app, "edge_debug_owner_uses_profile", return_value=True),
             patch.object(
@@ -172,6 +240,59 @@ class ValidationTests(unittest.TestCase):
             ),
         ):
             self.assertTrue(app.check_edge_status())
+
+    def test_edge_owner_probe_runs_once_per_browser_session(self):
+        def payload_for(session_id):
+            return {
+                "Browser": "Edg/128.0.0.0",
+                "webSocketDebuggerUrl": f"ws://127.0.0.1:9222/devtools/browser/{session_id}",
+            }
+
+        app.reset_edge_owner_cache()
+        self.addCleanup(app.reset_edge_owner_cache)
+        responses = [payload_for("first")] * 3 + [payload_for("second")]
+        with (
+            patch.object(
+                app.urllib.request,
+                "urlopen",
+                side_effect=lambda *_a, **_kw: io.BytesIO(json.dumps(responses.pop(0)).encode()),
+            ),
+            patch.object(app, "edge_debug_owner_uses_profile", return_value=True) as probe,
+        ):
+            self.assertTrue(app.check_edge_status())
+            self.assertTrue(app.check_edge_status())
+            self.assertTrue(app.check_edge_status())
+            self.assertEqual(probe.call_count, 1)
+            # A restarted Edge exposes a new DevTools browser ID and is verified again.
+            self.assertTrue(app.check_edge_status())
+            self.assertEqual(probe.call_count, 2)
+
+    def test_failed_edge_owner_probe_is_not_cached(self):
+        payload = {
+            "Browser": "Edg/128.0.0.0",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/session",
+        }
+        app.reset_edge_owner_cache()
+        self.addCleanup(app.reset_edge_owner_cache)
+        with (
+            patch.object(
+                app.urllib.request,
+                "urlopen",
+                side_effect=lambda *_a, **_kw: io.BytesIO(json.dumps(payload).encode()),
+            ),
+            patch.object(app, "edge_debug_owner_uses_profile", side_effect=[None, True]) as probe,
+        ):
+            self.assertFalse(app.check_edge_status())
+            self.assertTrue(app.check_edge_status())
+        self.assertEqual(probe.call_count, 2)
+
+    def test_edge_owner_probe_failure_is_reported_as_unknown(self):
+        with patch.object(
+            app.subprocess,
+            "run",
+            side_effect=app.subprocess.TimeoutExpired("powershell", app.EDGE_OWNER_PROBE_TIMEOUT_SECONDS),
+        ):
+            self.assertIsNone(app.edge_debug_owner_uses_profile())
 
     def test_edge_debug_owner_requires_the_dedicated_profile(self):
         expected_command = (
@@ -387,7 +508,7 @@ class ValidationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_dir:
             destination = Path(temporary_dir) / "123.mp4"
-            with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse()):
+            with patch.object(douyin, "open_douyin_stream", return_value=FakeResponse()):
                 with self.assertRaises(app.WorkflowCancelled):
                     app.download_douyin_stream(
                         ["https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200f"],
@@ -487,7 +608,10 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(Path(project["video"]).name, "Video demo.mp4")
             self.assertEqual(Path(project["video"]).read_bytes(), b"video-data")
             self.assertEqual(Path(project["thumbnail"]).name, "Video demo.thumbnail.jpg")
-            self.assertEqual((Path(project["project_dir"]) / "Video demo.data.json").read_text(encoding="utf-8"), '{"id":"123"}')
+            self.assertEqual(
+                (Path(project["project_dir"]) / "Video demo.data.json").read_text(encoding="utf-8"),
+                '{"id":"123"}',
+            )
             self.assertEqual((Path(project["project_dir"]) / "Video demo.music.mp3").read_bytes(), b"music-data")
             self.assertFalse(source_folder.exists())
 
@@ -580,20 +704,25 @@ class ValidationTests(unittest.TestCase):
             app.validate_ocr_lang("shell")
 
     def test_release_versions_compare_semantically(self):
-        self.assertEqual(app.parse_release_version("v1.2.3"), (1, 2, 3))
-        self.assertTrue(app.is_newer_release("1.2.0", "1.1.9"))
-        self.assertFalse(app.is_newer_release("1.1.0", "1.1.0"))
+        self.assertEqual(validators.parse_release_version("v1.2.3"), (1, 2, 3))
+        self.assertTrue(validators.is_newer_release("1.2.0", "1.1.9"))
+        self.assertFalse(validators.is_newer_release("1.1.0", "1.1.0"))
         with self.assertRaises(ValueError):
-            app.parse_release_version("latest")
+            validators.parse_release_version("latest")
+
+    def test_pyproject_version_matches_the_app_version(self):
+        with open(PROJECT_ROOT / "pyproject.toml", "rb") as handle:
+            project = tomllib.load(handle)["project"]
+        self.assertEqual(project["version"], constants.APP_VERSION)
 
     def test_update_download_urls_are_restricted_to_the_official_release(self):
         valid = (
             "https://github.com/qvinh8726/VietSub-Studio/releases/download/"
             "v1.3.0/VietSub-Studio-Portable-v1.3.0.zip"
         )
-        self.assertEqual(app.validate_release_download_url(valid, "1.3.0"), valid)
+        self.assertEqual(validators.validate_release_download_url(valid, "1.3.0"), valid)
         with self.assertRaises(ValueError):
-            app.validate_release_download_url(
+            validators.validate_release_download_url(
                 "https://example.test/VietSub-Studio-Portable-v1.3.0.zip",
                 "1.3.0",
             )
@@ -606,7 +735,8 @@ class ValidationTests(unittest.TestCase):
 
     def test_translation_rejects_chinese_echo_and_bilingual_output(self):
         source = (
-            "1\n00:00:01,000 --> 00:00:02,000\n\u4f60\u597d\u4e16\u754c\uff0c\u8fd9\u662f\u6d4b\u8bd5\u5b57\u5e55\u3002\n\n"
+            "1\n00:00:01,000 --> 00:00:02,000\n"
+            "\u4f60\u597d\u4e16\u754c\uff0c\u8fd9\u662f\u6d4b\u8bd5\u5b57\u5e55\u3002\n\n"
             "2\n00:00:03,000 --> 00:00:04,000\n\u6211\u4eec\u73b0\u5728\u51fa\u53d1\u3002\n"
         )
         bilingual = (
@@ -629,11 +759,15 @@ class ValidationTests(unittest.TestCase):
         runtime["model"] = "deepseek-chat"
         runtime["translation_instructions"] = "Dịch ngắn gọn, dứt khoát."
         self.assertNotEqual(first, app.translation_cache_fingerprint(runtime))
+        with_instructions = app.translation_cache_fingerprint(runtime)
+        runtime["source_lang"] = "ja"
+        self.assertNotEqual(with_instructions, app.translation_cache_fingerprint(runtime))
 
-    def test_translation_prompt_includes_glossary_and_srt_contract(self):
+    def test_default_translation_prompt_is_generic_and_keeps_the_srt_contract(self):
         prompt = app.build_translation_prompt(SOURCE_SRT)
-        self.assertIn("Saeed (赛伊德)", prompt)
-        self.assertIn("HA AVK CITY", prompt)
+        self.assertIn(constants.DEFAULT_TRANSLATION_INSTRUCTIONS.strip(), prompt)
+        self.assertNotIn("Saeed (赛伊德)", prompt)
+        self.assertIn("ĐẦU VÀO LÀ TIẾNG TRUNG", prompt)
         self.assertIn("```srt", prompt)
         self.assertIn(SOURCE_SRT, prompt)
 
@@ -646,15 +780,60 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("Đặt toàn bộ SRT đã dịch trong đúng một block code srt", custom_prompt)
         self.assertIn(SOURCE_SRT, custom_prompt)
 
+    def test_game_glossary_is_an_opt_in_preset(self):
+        prompt = app.build_translation_prompt(SOURCE_SRT, constants.GAME_GLOSSARY_TRANSLATION_PRESET)
+        self.assertIn("Saeed (赛伊德)", prompt)
+        self.assertIn("HA AVK CITY", prompt)
+
+    def test_translation_prompt_names_the_selected_source_language(self):
+        for ocr_lang, expected in (("ja", "TIẾNG NHẬT"), ("ko", "TIẾNG HÀN"), ("en", "TIẾNG ANH")):
+            with self.subTest(ocr_lang=ocr_lang):
+                prompt = app.build_translation_prompt(SOURCE_SRT, None, ocr_lang)
+                self.assertIn(f"ĐẦU VÀO LÀ {expected}", prompt)
+                self.assertNotIn("TIẾNG TRUNG", prompt)
+        messages = app.build_api_translation_messages(
+            {"source_lang": "ja", "translation_instructions": ""},
+            SOURCE_SRT,
+        )
+        self.assertIn("tiếng Nhật", messages[0]["content"])
+        self.assertNotIn("tiếng Trung", messages[0]["content"])
+
     def test_translation_restores_source_timestamps_when_blocks_match(self):
         changed_timecodes = TRANSLATED_SRT.replace("00:00:04,000", "00:00:05,000")
         normalized = app.normalize_translated_srt(SOURCE_SRT, changed_timecodes)
         self.assertEqual(
-            app.SRT_TIMECODE_PATTERN.findall(normalized),
-            app.SRT_TIMECODE_PATTERN.findall(SOURCE_SRT),
+            constants.SRT_TIMECODE_PATTERN.findall(normalized),
+            constants.SRT_TIMECODE_PATTERN.findall(SOURCE_SRT),
         )
 
-    def test_translation_chunks_only_after_45_minutes_and_preserves_blocks(self):
+    def test_dense_short_srt_is_split_by_size_limits(self):
+        blocks = [
+            (
+                str(index),
+                f"{srt.format_srt_timestamp(index * 1600)} --> {srt.format_srt_timestamp(index * 1600 + 1500)}",
+                f"这是第{index}句测试字幕内容，用于检查分块逻辑。",
+            )
+            for index in range(1, 1501)
+        ]
+        dense_srt = srt.format_srt_blocks(blocks)
+
+        chunks, was_split = app.split_srt_for_translation(dense_srt, video_duration_seconds=40 * 60)
+
+        self.assertTrue(was_split)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            chunk_blocks = app.parse_srt_blocks(chunk)
+            self.assertLessEqual(len(chunk_blocks), constants.TRANSLATION_CHUNK_MAX_BLOCKS)
+            self.assertLessEqual(
+                sum(len(srt.format_srt_blocks([block])) for block in chunk_blocks),
+                constants.TRANSLATION_CHUNK_MAX_CHARS,
+            )
+        self.assertEqual(
+            [block for chunk in chunks for block in app.parse_srt_blocks(chunk)],
+            app.parse_srt_blocks(dense_srt),
+        )
+
+    def test_translation_chunks_long_videos_by_time_and_preserves_blocks(self):
         short_srt = "1\n00:44:59,000 --> 00:45:00,000\nShort\n"
         chunks, is_long_video = app.split_srt_for_translation(short_srt)
         self.assertFalse(is_long_video)
@@ -898,6 +1077,176 @@ class ValidationTests(unittest.TestCase):
             app.validate_translated_srt(
                 long_srt,
                 output_srt.read_text(encoding="utf-8"),
+            )
+
+    API_RUNTIME = {
+        "provider": "custom",
+        "label": "Custom API",
+        "base_url": "http://127.0.0.1:20128/v1",
+        "model": "test-model",
+        "api_key": "",
+    }
+
+    def test_api_retries_rate_limits_but_not_rejected_requests(self):
+        rate_limited = translation_api.TranslationApiError(
+            "API dịch trả lỗi HTTP 429: slow down",
+            status=429,
+            retryable=translation_api.is_retryable_http_status(429),
+        )
+        with (
+            patch.object(app, "request_api_translation", side_effect=[rate_limited, TRANSLATED_SRT]) as request,
+            patch.object(app.time, "sleep"),
+        ):
+            translated = app.translate_api_chunk(self.API_RUNTIME, SOURCE_SRT, 1, 1)
+        self.assertEqual(request.call_count, 2)
+        app.validate_translated_srt(SOURCE_SRT, translated)
+
+        unauthorized = translation_api.TranslationApiError(
+            "API dịch trả lỗi HTTP 401: bad key",
+            status=401,
+            retryable=translation_api.is_retryable_http_status(401),
+        )
+        with (
+            patch.object(app, "request_api_translation", side_effect=unauthorized) as request,
+            patch.object(app.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+                app.translate_api_chunk(self.API_RUNTIME, SOURCE_SRT, 1, 1)
+        self.assertEqual(request.call_count, 1)
+
+    def test_api_does_not_retry_truncated_or_invalid_srt_output(self):
+        truncated = translation_api.TranslationApiError("cut", retryable=False)
+        for outcome in (truncated, "not an srt answer"):
+            with self.subTest(outcome=outcome):
+                with (
+                    patch.object(app, "request_api_translation", side_effect=[outcome]) as request,
+                    patch.object(app.time, "sleep"),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        app.translate_api_chunk(self.API_RUNTIME, SOURCE_SRT, 1, 1)
+                self.assertEqual(request.call_count, 1)
+
+    def test_api_cancellation_is_never_treated_as_a_retryable_error(self):
+        with (
+            patch.object(
+                app,
+                "request_api_translation",
+                side_effect=app.WorkflowCancelled("Đã huỷ quy trình theo yêu cầu."),
+            ) as request,
+            patch.object(app.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(app.WorkflowCancelled):
+                app.translate_api_chunk(self.API_RUNTIME, SOURCE_SRT, 1, 1)
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_api_falls_back_to_json_only_when_streaming_is_rejected(self):
+        rejected_stream = translation_api.TranslationApiError("HTTP 400", status=400, retryable=False)
+        with patch.object(app, "call_openai_compatible_api", side_effect=[rejected_stream, "OK"]) as call_api:
+            self.assertEqual(app.request_api_translation(self.API_RUNTIME, []), "OK")
+        self.assertEqual([call.kwargs["stream"] for call in call_api.call_args_list], [True, False])
+
+        server_error = translation_api.TranslationApiError("HTTP 500", status=500)
+        with patch.object(app, "call_openai_compatible_api", side_effect=server_error) as call_api:
+            with self.assertRaises(translation_api.TranslationApiError):
+                app.request_api_translation(self.API_RUNTIME, [])
+        self.assertEqual(call_api.call_count, 1)
+
+    def test_http_errors_carry_status_and_retry_decision(self):
+        def raise_http_error(status):
+            def fake_urlopen(request_object, timeout):
+                raise urllib.error.HTTPError(
+                    request_object.full_url, status, "error", {}, io.BytesIO(b'{"error": {"message": "nope"}}')
+                )
+            return fake_urlopen
+
+        for status, retryable in ((401, False), (404, False), (429, True), (503, True)):
+            with self.subTest(status=status):
+                with patch.object(app.urllib.request, "urlopen", side_effect=raise_http_error(status)):
+                    with self.assertRaises(translation_api.TranslationApiError) as raised:
+                        translation_api.call_openai_compatible_api(self.API_RUNTIME, [], max_tokens=16)
+                self.assertEqual(raised.exception.status, status)
+                self.assertEqual(raised.exception.retryable, retryable)
+                self.assertIn("nope", str(raised.exception))
+
+    def test_gemini_translation_resumes_from_saved_chunks(self):
+        long_srt = (
+            "1\n00:01:00,000 --> 00:01:01,000\nOne\n\n"
+            "2\n00:31:00,000 --> 00:31:01,000\nTwo\n\n"
+            "3\n01:01:00,000 --> 01:01:01,000\nThree\n"
+        )
+        notebook_url = "https://gemini.google.com/notebook/test-id"
+
+        def translated_chunk(source_chunk):
+            return app.format_srt_blocks([
+                (index, timecode, f"VI {text}")
+                for index, timecode, text in app.parse_srt_blocks(source_chunk)
+            ])
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            raw_srt = directory / "video.raw.srt"
+            output_srt = directory / "video.vi.srt"
+            raw_srt.write_text(long_srt, encoding="utf-8")
+            first_run = []
+
+            def fail_on_second(_url, pending, _count, _instructions, source_lang, store):
+                self.assertEqual(source_lang, "ch")
+                for chunk_index, source_chunk in pending:
+                    first_run.append(chunk_index)
+                    if chunk_index == 2:
+                        raise app.EdgeLoginRequired("Cần đăng nhập Edge.")
+                    store(chunk_index, translated_chunk(source_chunk))
+
+            with patch.object(app, "translate_gemini_chunks_in_edge", side_effect=fail_on_second):
+                with self.assertRaises(app.EdgeLoginRequired):
+                    app.translate_srt_via_gemini_edge(str(raw_srt), notebook_url, output_srt=str(output_srt))
+            self.assertEqual(first_run, [1, 2])
+
+            resumed = []
+
+            def finish(_url, pending, _count, _instructions, _source_lang, store):
+                for chunk_index, source_chunk in pending:
+                    resumed.append(chunk_index)
+                    store(chunk_index, translated_chunk(source_chunk))
+
+            with patch.object(app, "translate_gemini_chunks_in_edge", side_effect=finish):
+                result = app.translate_srt_via_gemini_edge(str(raw_srt), notebook_url, output_srt=str(output_srt))
+
+            self.assertEqual(result, str(output_srt))
+            self.assertEqual(resumed, [2, 3])
+            self.assertFalse(Path(str(output_srt) + ".parts").exists())
+            app.validate_translated_srt(long_srt, output_srt.read_text(encoding="utf-8"))
+
+    def test_gemini_translation_skips_edge_when_every_chunk_is_cached(self):
+        notebook_url = "https://gemini.google.com/notebook/test-id"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            raw_srt = directory / "video.raw.srt"
+            output_srt = directory / "video.vi.srt"
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            parts_dir = Path(str(output_srt) + ".parts")
+            parts_dir.mkdir()
+            config_hash = app.translation_cache_fingerprint({
+                "provider": "notebook",
+                "notebook_url": notebook_url,
+                "source_lang": "ch",
+                "translation_instructions": app.validate_translation_instructions(None),
+            })
+            part_path = app.translation_part_path(str(parts_dir), 1, SOURCE_SRT.strip(), config_hash)
+            Path(part_path).write_text(TRANSLATED_SRT, encoding="utf-8")
+
+            with (
+                patch.object(app, "translate_gemini_chunks_in_edge") as edge_translate,
+                patch.object(app, "ensure_edge_running") as ensure_edge,
+            ):
+                app.translate_srt_via_gemini_edge(str(raw_srt), notebook_url, output_srt=str(output_srt))
+
+            edge_translate.assert_not_called()
+            ensure_edge.assert_not_called()
+            self.assertEqual(
+                app.parse_srt_blocks(output_srt.read_text(encoding="utf-8")),
+                app.parse_srt_blocks(TRANSLATED_SRT),
             )
 
     def test_edge_login_detection_ignores_hidden_or_generic_google_links(self):
@@ -1281,7 +1630,8 @@ class ValidationTests(unittest.TestCase):
             translated_srt = directory / "project.vi.srt"
             video.write_bytes(b"video")
             chinese = (
-                "1\n00:00:01,000 --> 00:00:02,000\n\u4f60\u597d\u4e16\u754c\uff0c\u8fd9\u662f\u6d4b\u8bd5\u5b57\u5e55\u3002\n"
+                "1\n00:00:01,000 --> 00:00:02,000\n"
+                "\u4f60\u597d\u4e16\u754c\uff0c\u8fd9\u662f\u6d4b\u8bd5\u5b57\u5e55\u3002\n"
             )
             raw_srt.write_text(chinese, encoding="utf-8")
             translated_srt.write_text(chinese, encoding="utf-8")
@@ -1392,8 +1742,8 @@ class DownloadLookupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_dir:
             destination = Path(temporary_dir) / "7345678901234567890.mp4"
             with patch.object(
-                app.urllib.request,
-                "urlopen",
+                douyin,
+                "open_douyin_stream",
                 side_effect=lambda *_a, **_kw: FakeResponse(mp4_bytes),
             ):
                 result = app.download_douyin_stream(
@@ -1402,6 +1752,68 @@ class DownloadLookupTests(unittest.TestCase):
                 )
             self.assertEqual(result, str(destination))
             self.assertEqual(destination.read_bytes(), mp4_bytes)
+
+    def test_payload_never_falls_back_to_another_video(self):
+        payload = {
+            "item_list": [{
+                "aweme_id": "999",
+                "desc": "Video gợi ý khác",
+                "video": {"play_addr": {"url_list": ["https://v3-web.douyinvod.com/x/playwm/?video_id=abc"]}},
+            }]
+        }
+        self.assertIsNone(app.extract_douyin_video_payload(payload, expected_video_id="123"))
+        self.assertEqual(app.extract_douyin_video_payload(payload)["video_id"], "999")
+        self.assertEqual(
+            app.extract_douyin_video_payload(payload, expected_video_id="999")["video_title"],
+            "Video gợi ý khác",
+        )
+
+    def test_download_video_source_rejects_metadata_for_a_different_video(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                patch.object(app, "DOWNLOAD_CACHE_DIR", str(Path(temporary_dir) / "downloads")),
+                patch.object(app, "fetch_douyin_share_page_metadata", return_value={
+                    "video_id": "999",
+                    "video_title": "Video khác",
+                    "stream_urls": ["https://aweme.snssdk.com/aweme/v1/play/?video_id=v999"],
+                    "cover_url": "",
+                }),
+                patch.object(app, "download_douyin_stream") as download_stream,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "video khác"):
+                    app.download_video_source("https://www.douyin.com/video/123", "")
+            download_stream.assert_not_called()
+
+    def test_stream_redirects_must_stay_on_public_https_hosts(self):
+        allowed = {
+            "https://v26-web.douyinvod.com/video/a.mp4": "https://v26-web.douyinvod.com/video/a.mp4",
+            "http://v3-dy-o.zjcdn.com/video/a.mp4": "https://v3-dy-o.zjcdn.com/video/a.mp4",
+            "https://new-cdn.example-video.net/a.mp4": "https://new-cdn.example-video.net/a.mp4",
+        }
+        for url, expected in allowed.items():
+            with self.subTest(url=url):
+                self.assertEqual(validators.validate_douyin_stream_redirect_url(url), expected)
+        for url in (
+            "http://new-cdn.example-video.net/a.mp4",
+            "https://127.0.0.1/a.mp4",
+            "https://192.168.1.1/admin",
+            "https://[::1]/a.mp4",
+            "https://localhost/a.mp4",
+            "https://intranet/a.mp4",
+            "https://user:pass@v26-web.douyinvod.com/a.mp4",
+            "file:///C:/Windows/win.ini",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(validators.validate_douyin_stream_redirect_url(url), "")
+
+        handler = douyin._SafeDouyinStreamRedirectHandler()
+        request_object = urllib.request.Request("https://aweme.snssdk.com/aweme/v1/play/?video_id=v1")
+        with self.assertRaises(urllib.error.URLError):
+            handler.redirect_request(request_object, None, 302, "Found", {}, "https://192.168.1.1/admin")
+        redirected = handler.redirect_request(
+            request_object, None, 302, "Found", {}, "http://v26-web.douyinvod.com/video/a.mp4"
+        )
+        self.assertEqual(redirected.full_url, "https://v26-web.douyinvod.com/video/a.mp4")
 
     def test_download_video_source_reuses_valid_cached_mp4(self):
         mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2cached"
@@ -1651,12 +2063,13 @@ class AutomaticUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_dir:
             executable = Path(temporary_dir) / "VietSub Studio.exe"
             executable.write_bytes(b"MZ")
-            (Path(temporary_dir) / "_internal").mkdir()
             with (
-                patch.object(app, "is_packaged_app", return_value=True),
-                patch.object(app.sys, "executable", str(executable)),
+                patch.object(updater, "is_packaged_app", return_value=True),
+                patch.object(updater.sys, "executable", str(executable)),
             ):
-                self.assertFalse(app.supports_in_place_update())
+                self.assertTrue(updater.supports_in_place_update())
+                (Path(temporary_dir) / "_internal").mkdir()
+                self.assertFalse(updater.supports_in_place_update())
 
     def test_release_zip_is_verified_and_staged_next_to_the_current_exe(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -1668,7 +2081,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 archive.writestr("VietSub Studio/VietSub Studio.exe", b"MZnew-version")
             zip_bytes = release_zip.read_bytes()
             zip_hash = hashlib.sha256(zip_bytes).hexdigest()
-            zip_name, checksum_name = app.release_asset_names("9.9.9")
+            zip_name, checksum_name = updater.release_asset_names("9.9.9")
             checksum_bytes = f"{zip_hash.upper()}  {zip_name}\n".encode("ascii")
             base_url = "https://github.com/qvinh8726/VietSub-Studio/releases/download/v9.9.9"
             payload = {
@@ -1696,11 +2109,11 @@ class AutomaticUpdateTests(unittest.TestCase):
             update_package = None
             try:
                 with (
-                    patch.object(app, "is_packaged_app", return_value=True),
-                    patch.object(app.sys, "executable", str(current_exe)),
-                    patch.object(app, "download_release_asset", side_effect=fake_download),
+                    patch.object(updater, "is_packaged_app", return_value=True),
+                    patch.object(updater.sys, "executable", str(current_exe)),
+                    patch.object(updater, "download_release_asset", side_effect=fake_download),
                 ):
-                    update_package = app.prepare_update_executable(payload)
+                    update_package = updater.prepare_update_executable(payload)
 
                 self.assertEqual(Path(update_package["staged_path"]).read_bytes(), b"MZnew-version")
                 self.assertEqual(update_package["target_path"], str(current_exe))
@@ -1708,7 +2121,7 @@ class AutomaticUpdateTests(unittest.TestCase):
             finally:
                 if update_package:
                     Path(update_package["staged_path"]).unlink(missing_ok=True)
-                    app.shutil.rmtree(update_package["update_dir"], ignore_errors=True)
+                    updater.shutil.rmtree(update_package["update_dir"], ignore_errors=True)
 
 
 class ApiTests(unittest.TestCase):
@@ -1821,11 +2234,15 @@ class ApiTests(unittest.TestCase):
                 defaults = self.client.get("/api/settings").get_json()
                 self.assertEqual(
                     defaults["translation_instructions"],
-                    app.TRANSLATION_GLOSSARY_PROMPT,
+                    constants.DEFAULT_TRANSLATION_INSTRUCTIONS,
                 )
                 self.assertEqual(
                     defaults["translation_default_instructions"],
-                    app.TRANSLATION_GLOSSARY_PROMPT,
+                    constants.DEFAULT_TRANSLATION_INSTRUCTIONS,
+                )
+                self.assertEqual(
+                    defaults["translation_game_glossary_preset"],
+                    constants.GAME_GLOSSARY_TRANSLATION_PRESET,
                 )
 
                 custom = "Dịch tự nhiên, câu ngắn, ưu tiên đúng sắc thái nhân vật."
@@ -2095,6 +2512,99 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("cấu trúc MP4", response.get_json()["error"])
 
+    def test_native_local_video_is_hardlinked_into_managed_storage(self):
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2local"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            source = directory / "Phim của tôi.mp4"
+            source.write_bytes(mp4_bytes)
+            with (
+                patch.object(app, "LOCAL_VIDEO_DIR", str(directory / "local_videos")),
+                patch.object(app, "get_saved_crop_coords", return_value=None),
+                patch.object(app, "copy_file_atomic") as copy_file,
+            ):
+                preview = app.create_local_video_preview_from_path(str(source))
+
+            copy_file.assert_not_called()
+            self.assertEqual(preview["source_type"], "local")
+            self.assertEqual(preview["video_title"], "Phim của tôi")
+            with app.preview_registry_lock:
+                managed = Path(app.preview_registry[preview["id"]]["source_video"])
+            self.assertEqual(managed.parent, directory / "local_videos")
+            self.assertTrue(os.path.samefile(managed, source))
+            self.assertFalse(app.preview_lock.locked())
+
+    def test_native_local_video_copies_once_when_hardlinks_fail(self):
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2local"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            source = directory / "clip.mp4"
+            source.write_bytes(mp4_bytes)
+            with (
+                patch.object(app, "LOCAL_VIDEO_DIR", str(directory / "local_videos")),
+                patch.object(app, "get_saved_crop_coords", return_value=None),
+                patch.object(app, "try_hardlink_video", return_value=False),
+            ):
+                preview = app.create_local_video_preview_from_path(str(source))
+            with app.preview_registry_lock:
+                managed = Path(app.preview_registry[preview["id"]]["source_video"])
+            self.assertEqual(managed.read_bytes(), mp4_bytes)
+            self.assertFalse(os.path.samefile(managed, source))
+
+    def test_native_local_video_rejects_non_mp4_content(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            fake = Path(temporary_dir) / "fake.mp4"
+            fake.write_bytes(b"not-an-mp4-file")
+            with self.assertRaisesRegex(ValueError, "cấu trúc MP4"):
+                app.create_local_video_preview_from_path(str(fake))
+            with self.assertRaisesRegex(ValueError, "MP4"):
+                app.create_local_video_preview_from_path(str(Path(temporary_dir) / "clip.mov"))
+        self.assertFalse(app.preview_lock.locked())
+
+    def test_desktop_bridge_imports_only_the_file_picked_in_the_native_dialog(self):
+        class FakeWebview:
+            class FileDialog:
+                OPEN = 10
+
+        api = app.DesktopApi(FakeWebview)
+        api._window = Mock()
+        api._window.create_file_dialog.return_value = None
+        with patch.object(app, "create_local_video_preview_from_path") as import_video:
+            self.assertIsNone(api.select_local_video())
+        import_video.assert_not_called()
+
+        api._window.create_file_dialog.return_value = (r"C:\Videos\clip.mp4",)
+        with patch.object(app, "create_local_video_preview_from_path", return_value={"id": "p1"}) as import_video:
+            self.assertEqual(api.select_local_video(), {"id": "p1"})
+        import_video.assert_called_once_with(r"C:\Videos\clip.mp4")
+        api._window.create_file_dialog.assert_called_with(
+            10,
+            allow_multiple=False,
+            file_types=("Video MP4 (*.mp4)",),
+        )
+
+    def test_only_retired_deepseek_aliases_are_migrated(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                for saved_model, expected in (
+                    ("deepseek-chat", "deepseek-v4-flash"),
+                    ("deepseek-reasoner", "deepseek-v4-flash"),
+                    ("deepseek-v4-flash", "deepseek-v4-flash"),
+                    ("deepseek-v4-pro", "deepseek-v4-pro"),
+                ):
+                    with self.subTest(saved_model=saved_model):
+                        config_path.write_text(
+                            json.dumps({"translation_provider": "deepseek", "translation_api_model": saved_model}),
+                            encoding="utf-8",
+                        )
+                        self.assertEqual(app.load_app_config()["translation_api_model"], expected)
+                config_path.write_text(
+                    json.dumps({"translation_provider": "custom", "translation_api_model": "deepseek-chat"}),
+                    encoding="utf-8",
+                )
+                self.assertEqual(app.load_app_config()["translation_api_model"], "deepseek-chat")
+
     def test_retry_resumes_from_ocr_or_translation_when_files_exist(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
@@ -2340,9 +2850,59 @@ class ApiTests(unittest.TestCase):
                 str(raw_srt),
                 runtime_config,
                 output_srt=str(translated_srt),
+                source_lang="ch",
             )
             translate_notebook.assert_not_called()
             self.assertEqual(app.progress_snapshot()["status"], "success")
+
+    def test_vietnamese_ocr_skips_translation_and_publishes_the_ocr_srt(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            video = directory / "project.mp4"
+            raw_srt = directory / "project.raw.srt"
+            translated_srt = directory / "project.vi.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(TRANSLATED_SRT, encoding="utf-8")
+            project = {
+                "project_name": "Project",
+                "project_dir": str(directory),
+                "video": str(video),
+                "source_video": str(video),
+                "raw_srt": str(raw_srt),
+                "translated_srt": str(translated_srt),
+            }
+
+            self.assertTrue(app.workflow_lock.acquire(blocking=False))
+            app.reset_progress("vietnamese-ocr")
+            with (
+                patch.object(app, "load_app_config", return_value={
+                    "notebook_url": "https://gemini.google.com/notebook/test-id",
+                    "output_dir": "",
+                }),
+                patch.object(app, "write_project_manifest"),
+                patch.object(app, "finalize_project_assets", side_effect=lambda value, _video_id: value),
+                patch.object(app, "translate_srt_via_api") as translate_api,
+                patch.object(app, "translate_srt_via_gemini_edge") as translate_notebook,
+            ):
+                app.run_workflow_thread(
+                    "https://www.douyin.com/video/1",
+                    "vi",
+                    prepared_video={
+                        "source_url": "https://www.douyin.com/video/1",
+                        "video_id": "1",
+                        "source_video": str(video),
+                    },
+                    resume_project=project,
+                    resume_step="translate",
+                )
+
+            translate_api.assert_not_called()
+            translate_notebook.assert_not_called()
+            self.assertEqual(app.progress_snapshot()["status"], "success")
+            self.assertEqual(
+                app.parse_srt_blocks(translated_srt.read_text(encoding="utf-8")),
+                app.parse_srt_blocks(TRANSLATED_SRT),
+            )
 
     def test_queue_worker_runs_jobs_one_after_another(self):
         app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
@@ -2464,7 +3024,10 @@ class ApiTests(unittest.TestCase):
             "translation_api_key": "sk-test",
             "notebook_url": "",
         }
-        with patch.object(app, "load_app_config", return_value=config):
+        with (
+            patch.object(app, "load_app_config", return_value=config),
+            patch.object(app, "check_edge_status", return_value=False),
+        ):
             data = self.client.get("/api/health").get_json()
 
         self.assertTrue(data["checks"]["translation"]["ok"])
@@ -2651,7 +3214,8 @@ class ApiTests(unittest.TestCase):
                     "raw.srt",
                     "https://gemini.google.com/notebook/test-id",
                     output_srt="project/Test video.vi.srt",
-                    translation_instructions=app.TRANSLATION_GLOSSARY_PROMPT,
+                    translation_instructions=constants.DEFAULT_TRANSLATION_INSTRUCTIONS,
+                    source_lang="ch",
                 )
                 self.assertEqual(app.progress_snapshot()["status"], "success")
         finally:

@@ -204,6 +204,7 @@
         .translation-instructions-footer { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
         .translation-instructions-footer small { flex: 1; }
         .translation-instructions-footer .btn-ghost { flex: 0 0 auto; margin-top: 5px; white-space: nowrap; }
+        .translation-instructions-actions { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
         .api-key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
         .api-key-row .btn-ghost { min-height: 43px; white-space: nowrap; }
         .path-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }

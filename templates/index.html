@@ -164,8 +164,11 @@
                         <label for="setting-translation-instructions">Cách dịch mong muốn</label>
                         <textarea id="setting-translation-instructions" class="translation-instructions" rows="9" spellcheck="false" placeholder="Đang nạp prompt dịch mặc định…"></textarea>
                         <div class="translation-instructions-footer">
-                            <small>Mặc định là prompt dịch ban đầu. App luôn ghim riêng yêu cầu giữ timestamp và xuất đúng một block code <code>srt</code>.</small>
-                            <button id="reset-translation-instructions-btn" class="btn-ghost" type="button">Khôi phục mặc định</button>
+                            <small>Mặc định là prompt dịch chung cho mọi thể loại; ngôn ngữ nguồn lấy theo ngôn ngữ OCR của từng job. Dịch video game Trung có thể nạp từ điển mẫu (Delta Force). App luôn ghim riêng yêu cầu giữ timestamp và xuất đúng một block code <code>srt</code>.</small>
+                            <div class="translation-instructions-actions">
+                                <button id="reset-translation-instructions-btn" class="btn-ghost" type="button">Khôi phục mặc định</button>
+                                <button id="load-game-glossary-btn" class="btn-ghost" type="button">Nạp từ điển game mẫu</button>
+                            </div>
                         </div>
                     </div>
                     <div id="notebook-settings" class="provider-settings">

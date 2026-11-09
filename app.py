@@ -2,6 +2,7 @@ import ast
 import base64
 import copy
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -16,7 +17,6 @@ import urllib.error
 import urllib.request
 import uuid
 import webbrowser
-import zipfile
 from queue import Empty, Full, Queue
 from threading import Event, Lock, RLock, Thread, current_thread, local
 from urllib.parse import parse_qs, urlparse
@@ -24,66 +24,47 @@ from urllib.parse import parse_qs, urlparse
 from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.serving import make_server
 
-from vietsub.constants import (  # noqa: F401
-    ALLOWED_DOUYIN_THUMBNAIL_DOMAINS,
-    ALLOWED_DOUYIN_VIDEO_DOMAINS,
+from vietsub.constants import (
     ALLOWED_LOCAL_VIDEO_EXTENSIONS,
     ALLOWED_THUMBNAIL_EXTENSIONS,
     API_TOKEN,
     API_TOKEN_HEADER,
-    APP_HOME,
     APP_VERSION,
-    APPDATA,
-    CJK_CHAR_PATTERN,
     CONFIG_DIR,
     CONFIG_PATH,
+    DEFAULT_TRANSLATION_INSTRUCTIONS,
     DOWNLOAD_CACHE_DIR,
     DOWNLOAD_HISTORY_PATH,
     EDGE_DEBUG_PORT,
-    GITHUB_REPOSITORY,
+    EDGE_OWNER_CACHE_TTL_SECONDS,
+    EDGE_OWNER_PROBE_TIMEOUT_SECONDS,
+    GAME_GLOSSARY_TRANSLATION_PRESET,
     ICON_PATH,
     INSTANCE_LOCK_PATH,
-    LATEST_RELEASE_API,
     LATEST_RELEASE_URL,
     LOCAL_VIDEO_DIR,
     LOCALAPPDATA,
     LOG_PATH,
-    MAX_DOWNLOAD_HISTORY_ITEMS,
     MAX_IN_MEMORY_JOBS,
     MAX_LOCAL_VIDEO_BYTES,
     MAX_LOG_BACKUPS,
     MAX_LOG_FILE_BYTES,
     MAX_LOG_LINES,
-    MAX_OCR_FRAMES_TO_SKIP,
     MAX_PERSISTED_JOBS,
-    MAX_PROJECT_NAME_LENGTH,
     MAX_THUMBNAIL_BYTES,
-    MAX_TRANSLATION_INSTRUCTIONS_CHARS,
     PERSISTED_JOB_KEYS,
     POWERSHELL_EXE,
     PREVIEW_TTL_SECONDS,
     QUEUE_PATH,
     QUEUE_SCHEMA_VERSION,
     RESOURCE_DIR,
-    SOURCE_DIR,
-    SRT_TIMECODE_LINE_PATTERN,
-    SRT_TIMECODE_PATTERN,
-    SUPPORTED_OCR_LANGS,
-    SUPPORTED_OCR_MODEL_MODES,
-    SUPPORTED_TRANSLATION_PROVIDERS,
+    RETIRED_TRANSLATION_MODEL_ALIASES,
+    TARGET_TRANSLATION_LANG,
     TRANSLATION_API_MAX_ATTEMPTS,
-    TRANSLATION_API_MAX_RESPONSE_BYTES,
-    TRANSLATION_API_TIMEOUT_SECONDS,
     TRANSLATION_CHUNK_MAX_BLOCKS,
     TRANSLATION_CHUNK_MAX_CHARS,
-    TRANSLATION_CHUNK_TARGET_SECONDS,
-    TRANSLATION_CHUNK_THRESHOLD_SECONDS,
-    TRANSLATION_GLOSSARY_PROMPT,
     TRANSLATION_PROMPT_VERSION,
     TRANSLATION_PROVIDER_PRESETS,
-    UPDATE_CACHE_TTL_SECONDS,
-    UPDATE_DOWNLOAD_MAX_BYTES,
-    URL_PATTERN,
     USER_DATA_DIR_DEBUG,
     VIDEOCR_CHUNK_SECONDS,
     VIDEOCR_CHUNK_THRESHOLD_SECONDS,
@@ -91,15 +72,13 @@ from vietsub.constants import (  # noqa: F401
     VIDEOCR_CONFIG,
     VIDEOCR_PROCESS_TIMEOUT_SECONDS,
     VIDEOCR_TRANSCODE_TIMEOUT_SECONDS,
-    WINDOWS_DIRECTORY,
-    WINDOWS_RESERVED_NAMES,
     EdgeLoginRequired,
+    GeminiSubmitUnavailable,
     QueuePersistenceError,
     VideoOCRProcessError,
     WorkflowCancelled,
-    get_windows_directory,
 )
-from vietsub.douyin import (  # noqa: F401
+from vietsub.douyin import (
     download_douyin_stream,
     extract_douyin_metadata_from_html,
     extract_douyin_video_payload,
@@ -110,42 +89,41 @@ from vietsub.douyin import (  # noqa: F401
     normalize_douyin_stream_url,
     record_download_history,
     resolve_short_url_via_http,
-    save_download_history,
     update_download_history_path,
 )
-from vietsub.srt import (  # noqa: F401
-    align_crop_for_h264,
+from vietsub.srt import (
     build_translation_prompt,
     build_videocr_normalization_filter,
     extract_api_translated_srt,
     extract_gemini_translated_srt,
     format_srt_blocks,
-    format_srt_timestamp,
     format_videocr_time,
     normalize_translated_srt,
     parse_srt_blocks,
     read_videocr_srt_entries,
     split_srt_for_translation,
-    srt_timestamp_milliseconds,
-    translation_language_stats,
     validate_srt_structure,
     validate_translated_srt,
-    validate_translation_language,
     write_merged_videocr_srt,
 )
-from vietsub.validators import (  # noqa: F401
+from vietsub.translation_api import TranslationApiError, call_openai_compatible_api
+from vietsub.updater import (
+    fetch_latest_release_payload,
+    get_update_status,
+    is_packaged_app,
+    launch_update_helper,
+    prepare_update_executable,
+)
+from vietsub.validators import (
     files_have_same_content,
     get_video_id,
-    is_newer_release,
-    parse_release_version,
-    parse_update_checksum,
     path_is_within,
     sanitize_project_name,
+    source_language_label,
     thumbnail_extension,
     validate_crop_coords,
     validate_douyin_thumbnail_url,
     validate_douyin_url,
-    validate_douyin_video_stream_url,
     validate_local_mp4_file,
     validate_local_thumbnail_file,
     validate_notebook_url,
@@ -153,7 +131,6 @@ from vietsub.validators import (  # noqa: F401
     validate_ocr_lang,
     validate_ocr_model_mode,
     validate_output_dir,
-    validate_release_download_url,
     validate_release_url,
     validate_translation_api_base_url,
     validate_translation_api_key,
@@ -206,11 +183,9 @@ queue_worker_thread = None
 current_job_id = ""
 queue_state_initialized = False
 queue_revision = 0
-update_cache_lock = Lock()
 update_install_lock = Lock()
 operation_admission_lock = Lock()
 shutdown_event = Event()
-update_cache = {"checked_at": 0.0, "status": None}
 config_write_lock = RLock()
 log_file_lock = Lock()
 workflow_context = local()
@@ -218,70 +193,9 @@ prefetch_thread = None
 prefetch_cancel_event = Event()
 prefetch_job_id = ""
 instance_lock_handle = None
+edge_owner_cache_lock = Lock()
+edge_owner_cache = {"websocket_url": "", "owner_ok": False, "checked_at": 0.0}
 
-def fetch_latest_release_payload():
-    req = urllib.request.Request(
-        LATEST_RELEASE_API,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": f"VietSub-Studio/{APP_VERSION}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError("Không thể kiểm tra bản cập nhật từ GitHub.") from error
-    if not isinstance(payload, dict):
-        raise RuntimeError("Dữ liệu release từ GitHub không hợp lệ.")
-    return payload
-
-def release_asset_names(version):
-    base_name = f"VietSub-Studio-Portable-v{version}.zip"
-    return base_name, f"{base_name}.sha256.txt"
-
-def select_update_assets(payload, version):
-    zip_name, checksum_name = release_asset_names(version)
-    assets = {
-        str(item.get("name", "")): item
-        for item in payload.get("assets", [])
-        if isinstance(item, dict)
-    }
-    zip_asset = assets.get(zip_name)
-    checksum_asset = assets.get(checksum_name)
-    if not zip_asset or not checksum_asset:
-        raise RuntimeError("Release mới chưa có đủ file ZIP và checksum để tự cập nhật.")
-    for asset in (zip_asset, checksum_asset):
-        validate_release_download_url(asset.get("browser_download_url"), version)
-    return zip_asset, checksum_asset
-
-def get_update_status(force=False):
-    now = time.time()
-    with update_cache_lock:
-        cached = update_cache.get("status")
-        if cached and not force and now - update_cache["checked_at"] < UPDATE_CACHE_TTL_SECONDS:
-            return dict(cached)
-
-        payload = fetch_latest_release_payload()
-        latest_version = str(payload.get("tag_name", "")).strip().lstrip("v")
-        parse_release_version(latest_version)
-        release_url = validate_release_url(payload.get("html_url") or LATEST_RELEASE_URL)
-        try:
-            select_update_assets(payload, latest_version)
-            install_assets_available = True
-        except (RuntimeError, ValueError):
-            install_assets_available = False
-        status = {
-            "current_version": APP_VERSION,
-            "latest_version": latest_version,
-            "update_available": is_newer_release(latest_version),
-            "release_name": str(payload.get("name") or f"VietSub Studio v{latest_version}"),
-            "release_url": release_url,
-            "automatic_update_supported": supports_in_place_update() and install_assets_available,
-        }
-        update_cache.update({"checked_at": now, "status": status})
-        return dict(status)
 
 def reset_progress(job_id=""):
     with status_lock:
@@ -456,7 +370,7 @@ def acquire_instance_lock():
     global instance_lock_handle
     if instance_lock_handle is not None:
         return True
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(INSTANCE_LOCK_PATH) or ".", exist_ok=True)
     handle = open(INSTANCE_LOCK_PATH, "a+b")
     try:
         handle.seek(0, os.SEEK_END)
@@ -596,6 +510,15 @@ def get_translation_api_key(config):
     return validate_translation_api_key(config.get("translation_api_key", ""), allow_empty=True)
 
 
+def migrate_retired_translation_model(config):
+    """Replace model aliases the provider has retired; every other model choice is kept as-is."""
+    aliases = RETIRED_TRANSLATION_MODEL_ALIASES.get(config.get("translation_provider"), {})
+    model = str(config.get("translation_api_model") or "").strip().lower()
+    if model in aliases:
+        config["translation_api_model"] = aliases[model]
+    return config
+
+
 def load_app_config():
     default_config = {
         "notebook_url": "",
@@ -615,18 +538,12 @@ def load_app_config():
     with config_write_lock:
         if os.path.exists(CONFIG_PATH):
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                with open(CONFIG_PATH, encoding="utf-8") as f:
                     saved_config = json.load(f)
                 if not isinstance(saved_config, dict):
                     raise ValueError("Cấu hình phải là một JSON object.")
                 merged_config = {**default_config, **saved_config}
-                if (
-                    merged_config.get("translation_provider") == "deepseek"
-                    and str(merged_config.get("translation_api_model") or "").strip().lower()
-                    in {"deepseek-chat", "deepseek-v4-flash"}
-                ):
-                    merged_config["translation_api_model"] = "deepseek-v4-pro"
-                return merged_config
+                return migrate_retired_translation_model(merged_config)
             except (UnicodeError, json.JSONDecodeError, ValueError):
                 quarantine_corrupt_file(CONFIG_PATH)
             except OSError as error:
@@ -647,14 +564,7 @@ def save_app_config(config):
         finally:
             if os.path.exists(temporary_path):
                 os.remove(temporary_path)
-def is_packaged_app():
-    return os.name == "nt" and bool(getattr(sys, "frozen", False))
 
-def supports_in_place_update():
-    if not is_packaged_app():
-        return False
-    executable_dir = os.path.dirname(os.path.abspath(sys.executable))
-    return not os.path.isdir(os.path.join(executable_dir, "_internal"))
 
 def get_windows_known_folder(csidl, label):
     if os.name != "nt":
@@ -768,201 +678,7 @@ def ensure_initial_desktop_shortcut():
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             log_to_app(f"Chưa thể tạo shortcut ngoài Desktop: {error}", "error")
             return ""
-def download_release_asset(url, destination, max_bytes):
-    request_headers = {
-        "Accept": "application/octet-stream",
-        "User-Agent": f"VietSub-Studio/{APP_VERSION}",
-    }
-    digest = hashlib.sha256()
-    total_bytes = 0
-    req = urllib.request.Request(url, headers=request_headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response, open(destination, "wb") as output:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total_bytes += len(chunk)
-                if total_bytes > max_bytes:
-                    raise RuntimeError("File cập nhật vượt quá kích thước cho phép.")
-                digest.update(chunk)
-                output.write(chunk)
-    except OSError as error:
-        raise RuntimeError("Không thể tải file cập nhật từ GitHub.") from error
-    return digest.hexdigest(), total_bytes
 
-def prepare_update_executable(payload):
-    if not supports_in_place_update():
-        raise RuntimeError("Tự cập nhật tại chỗ chỉ hỗ trợ bản portable one-file.")
-
-    latest_version = str(payload.get("tag_name", "")).strip().lstrip("v")
-    parse_release_version(latest_version)
-    if not is_newer_release(latest_version):
-        raise RuntimeError("Bạn đang dùng phiên bản mới nhất.")
-    zip_asset, checksum_asset = select_update_assets(payload, latest_version)
-    zip_name, checksum_name = release_asset_names(latest_version)
-
-    update_dir = tempfile.mkdtemp(prefix="VietSub-Studio-update-")
-    staged_path = ""
-    try:
-        checksum_path = os.path.join(update_dir, checksum_name)
-        download_release_asset(
-            checksum_asset["browser_download_url"],
-            checksum_path,
-            1024 * 1024,
-        )
-        with open(checksum_path, "r", encoding="utf-8-sig") as checksum_file:
-            expected_hash = parse_update_checksum(checksum_file.read(), zip_name)
-
-        zip_path = os.path.join(update_dir, zip_name)
-        downloaded_hash, downloaded_size = download_release_asset(
-            zip_asset["browser_download_url"],
-            zip_path,
-            UPDATE_DOWNLOAD_MAX_BYTES,
-        )
-        if downloaded_hash.lower() != expected_hash:
-            raise RuntimeError("Checksum ZIP cập nhật không khớp; đã huỷ cài đặt.")
-        api_digest = str(zip_asset.get("digest") or "").lower()
-        if api_digest and api_digest != f"sha256:{downloaded_hash.lower()}":
-            raise RuntimeError("Digest GitHub của file cập nhật không khớp.")
-        declared_size = int(zip_asset.get("size") or 0)
-        if declared_size and downloaded_size != declared_size:
-            raise RuntimeError("Kích thước file cập nhật không khớp với GitHub.")
-
-        extracted_exe = os.path.join(update_dir, "VietSub Studio.exe")
-        expected_member = "VietSub Studio/VietSub Studio.exe"
-        try:
-            with zipfile.ZipFile(zip_path) as archive:
-                members = {
-                    item.filename.replace("\\", "/"): item
-                    for item in archive.infolist()
-                    if not item.is_dir()
-                }
-                member = members.get(expected_member)
-                if member is None or member.file_size <= 0:
-                    raise RuntimeError("ZIP cập nhật không chứa đúng file VietSub Studio.exe.")
-                if member.file_size > UPDATE_DOWNLOAD_MAX_BYTES:
-                    raise RuntimeError("File EXE cập nhật vượt quá kích thước cho phép.")
-                with archive.open(member) as source, open(extracted_exe, "wb") as destination:
-                    shutil.copyfileobj(source, destination, length=1024 * 1024)
-        except (OSError, zipfile.BadZipFile) as error:
-            raise RuntimeError("Không thể đọc ZIP cập nhật đã tải.") from error
-
-        with open(extracted_exe, "rb") as executable_file:
-            if executable_file.read(2) != b"MZ":
-                raise RuntimeError("File EXE cập nhật không hợp lệ.")
-
-        target_path = os.path.abspath(sys.executable)
-        if not os.path.isfile(target_path):
-            raise FileNotFoundError("Không tìm thấy file VietSub Studio.exe hiện tại.")
-        staged_path = os.path.join(
-            os.path.dirname(target_path),
-            f".VietSub Studio.update-{uuid.uuid4().hex}.exe",
-        )
-        shutil.copy2(extracted_exe, staged_path)
-        return {
-            "version": latest_version,
-            "target_path": target_path,
-            "staged_path": staged_path,
-            "update_dir": update_dir,
-        }
-    except Exception:
-        if staged_path and os.path.exists(staged_path):
-            try:
-                os.remove(staged_path)
-            except OSError:
-                pass
-        shutil.rmtree(update_dir, ignore_errors=True)
-        raise
-
-def launch_update_helper(update_package):
-    helper_env = os.environ.copy()
-    helper_env.update({
-        "VIETSUB_UPDATE_PID": str(os.getpid()),
-        "VIETSUB_UPDATE_TARGET": update_package["target_path"],
-        "VIETSUB_UPDATE_STAGED": update_package["staged_path"],
-        "VIETSUB_UPDATE_TEMP": update_package["update_dir"],
-    })
-    helper_script = r"""
-$ErrorActionPreference = 'Stop'
-$appPid = [int]$env:VIETSUB_UPDATE_PID
-$target = $env:VIETSUB_UPDATE_TARGET
-$staged = $env:VIETSUB_UPDATE_STAGED
-$updateTemp = $env:VIETSUB_UPDATE_TEMP
-$backup = "$target.old"
-$targetDir = Split-Path -Parent $target
-Wait-Process -Id $appPid -ErrorAction SilentlyContinue
-$replaced = $false
-for ($attempt = 0; $attempt -lt 40; $attempt++) {
-    try {
-        if (-not (Test-Path -LiteralPath $target)) {
-            if (Test-Path -LiteralPath $backup) {
-                Move-Item -LiteralPath $backup -Destination $target -Force
-            } else {
-                throw 'Không còn file ứng dụng gốc để thay thế.'
-            }
-        }
-        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-        Move-Item -LiteralPath $target -Destination $backup -Force
-        try {
-            Move-Item -LiteralPath $staged -Destination $target -Force
-        } catch {
-            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-            if (Test-Path -LiteralPath $backup) {
-                Move-Item -LiteralPath $backup -Destination $target -Force
-            }
-            throw
-        }
-        $replaced = $true
-        break
-    } catch {
-        Start-Sleep -Milliseconds 500
-    }
-}
-if (-not $replaced) {
-    if (-not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath $backup)) {
-        Move-Item -LiteralPath $backup -Destination $target -Force
-    }
-    if (Test-Path -LiteralPath $target) {
-        Start-Process -FilePath $target -WorkingDirectory $targetDir
-    }
-    exit 1
-}
-try {
-    $newProcess = Start-Process -FilePath $target -WorkingDirectory $targetDir -PassThru
-    Start-Sleep -Seconds 8
-    if ($newProcess.HasExited) { throw 'Bản cập nhật thoát trước khi khởi động ổn định.' }
-} catch {
-    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-    if (Test-Path -LiteralPath $backup) {
-        Move-Item -LiteralPath $backup -Destination $target -Force
-        Start-Process -FilePath $target -WorkingDirectory $targetDir
-    }
-    exit 1
-}
-if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force }
-"""
-    creation_flags = (
-        getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    )
-    return subprocess.Popen(
-        [
-            POWERSHELL_EXE,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            helper_script,
-        ],
-        env=helper_env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        creationflags=creation_flags,
-    )
 
 def schedule_app_exit(delay_seconds=1.5):
     def exit_after_response():
@@ -981,7 +697,7 @@ def write_durable_log(message):
         return
     try:
         with log_file_lock:
-            os.makedirs(CONFIG_DIR, exist_ok=True)
+            os.makedirs(os.path.dirname(LOG_PATH) or ".", exist_ok=True)
             if os.path.isfile(LOG_PATH) and os.path.getsize(LOG_PATH) >= MAX_LOG_FILE_BYTES:
                 oldest = f"{LOG_PATH}.{MAX_LOG_BACKUPS}"
                 if os.path.exists(oldest):
@@ -1098,6 +814,7 @@ def edge_command_line_uses_profile(command_line):
 
 
 def edge_debug_owner_uses_profile():
+    """Return True/False when the CDP port owner is known, or None when the probe itself failed."""
     if os.name != "nt":
         return False
     debug_port = get_edge_debug_port()
@@ -1126,12 +843,12 @@ def edge_debug_owner_uses_profile():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=5,
+            timeout=EDGE_OWNER_PROBE_TIMEOUT_SECONDS,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         metadata = json.loads(completed.stdout or "")
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return False
+        return None
     if not isinstance(metadata, dict):
         return False
     expected_executable = resolve_edge_executable()
@@ -1145,12 +862,46 @@ def edge_debug_owner_uses_profile():
         and os.path.normcase(actual_executable) == os.path.normcase(expected_executable)
         and edge_command_line_uses_profile(metadata.get("CommandLine"))
     )
+def reset_edge_owner_cache():
+    with edge_owner_cache_lock:
+        edge_owner_cache.update({"websocket_url": "", "owner_ok": False, "checked_at": 0.0})
+
+
+def edge_debug_owner_verified(websocket_url):
+    """Check the CDP port owner at most once per Edge session and cache TTL.
+
+    The PowerShell probe takes seconds, while the UI polls every few seconds.
+    The DevTools websocket URL contains a per-launch browser ID, so a restarted
+    or different browser on port 9222 always triggers a fresh probe.
+    """
+    now = time.monotonic()
+    with edge_owner_cache_lock:
+        if (
+            edge_owner_cache["websocket_url"] == websocket_url
+            and now - edge_owner_cache["checked_at"] < EDGE_OWNER_CACHE_TTL_SECONDS
+        ):
+            return edge_owner_cache["owner_ok"]
+    owner_ok = edge_debug_owner_uses_profile()
+    if owner_ok is None:
+        # The probe failed (timeout, PowerShell error); do not cache a guess.
+        return False
+    with edge_owner_cache_lock:
+        edge_owner_cache.update({
+            "websocket_url": websocket_url,
+            "owner_ok": bool(owner_ok),
+            "checked_at": time.monotonic(),
+        })
+    return bool(owner_ok)
+
+
 def check_edge_status():
     try:
         req = urllib.request.Request(edge_debug_url("/json/version"))
         with urllib.request.urlopen(req, timeout=1.5) as response:
             payload = json.load(response)
-        return is_valid_edge_debug_payload(payload) and edge_debug_owner_uses_profile()
+        if not is_valid_edge_debug_payload(payload):
+            return False
+        return edge_debug_owner_verified(str(payload["webSocketDebuggerUrl"]))
     except Exception:
         return False
 
@@ -1725,7 +1476,7 @@ def get_videocr_crop_coords():
         return None
     crop_boxes = None
     try:
-        with open(VIDEOCR_CONFIG, "r", encoding="utf-8", errors="replace") as f:
+        with open(VIDEOCR_CONFIG, encoding="utf-8", errors="replace") as f:
             for line in f:
                 if line.startswith("--saved_crop_boxes"):
                     parts = line.split("=", 1)
@@ -2032,7 +1783,7 @@ def run_videocr(
     normalize_to_simplified = "true"
     if os.path.exists(VIDEOCR_CONFIG):
         try:
-            with open(VIDEOCR_CONFIG, "r", encoding="utf-8", errors="replace") as f:
+            with open(VIDEOCR_CONFIG, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if "=" not in line:
                         continue
@@ -2281,154 +2032,6 @@ def get_translation_browser_url(config=None):
         return ""
     return validate_notebook_url(config.get("notebook_url", ""), allow_empty=True)
 
-def chat_completions_url(base_url):
-    normalized = base_url.rstrip("/")
-    if normalized.lower().endswith("/chat/completions"):
-        return normalized
-    return normalized + "/chat/completions"
-
-def extract_chat_completion_content(payload):
-    if not isinstance(payload, dict):
-        raise RuntimeError("API dịch trả về JSON không hợp lệ.")
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise RuntimeError("API dịch không trả về lựa chọn nào.")
-    choice = choices[0]
-    if not isinstance(choice, dict):
-        raise RuntimeError("API dịch trả về lựa chọn không hợp lệ.")
-    message = choice.get("message")
-    content = message.get("content") if isinstance(message, dict) else choice.get("text")
-    if isinstance(content, list):
-        content = "\n".join(
-            str(item.get("text", ""))
-            for item in content
-            if isinstance(item, dict) and item.get("text")
-        )
-    if not isinstance(content, str) or not content.strip():
-        raise RuntimeError("API dịch trả về nội dung trống.")
-    if choice.get("finish_reason") == "length":
-        raise RuntimeError("API đã cắt câu trả lời vì chạm giới hạn output token.")
-    return content.strip()
-
-
-def read_streaming_chat_completion(response):
-    content_parts = []
-    total_bytes = 0
-    deadline = time.monotonic() + TRANSLATION_API_TIMEOUT_SECONDS * 2
-    for raw_line in iter(response.readline, b""):
-        check_cancel_requested()
-        if time.monotonic() >= deadline:
-            raise RuntimeError("Phản hồi streaming từ API dịch vượt quá thời gian chờ tối đa.")
-        if isinstance(raw_line, bytes):
-            total_bytes += len(raw_line)
-            line = raw_line.decode("utf-8", errors="replace").strip()
-        else:
-            raw_str = str(raw_line)
-            total_bytes += len(raw_str.encode("utf-8", errors="replace"))
-            line = raw_str.strip()
-        if total_bytes > TRANSLATION_API_MAX_RESPONSE_BYTES:
-            raise RuntimeError("Phản hồi API dịch vượt quá giới hạn an toàn 16 MiB.")
-        if not line or not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if data == "[DONE]":
-            break
-        try:
-            payload = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and payload.get("error"):
-            detail = payload["error"]
-            if isinstance(detail, dict):
-                detail = detail.get("message") or detail.get("code") or str(detail)
-            raise RuntimeError(f"API dịch trả lỗi streaming: {str(detail)[:500]}")
-        choices = payload.get("choices") if isinstance(payload, dict) else None
-        if not isinstance(choices, list) or not choices:
-            continue
-        choice = choices[0] if isinstance(choices[0], dict) else {}
-        if choice.get("finish_reason") == "length":
-            raise RuntimeError("API đã cắt câu trả lời vì chạm giới hạn output token.")
-        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
-        piece = delta.get("content")
-        if piece is None:
-            message = choice.get("message")
-            piece = message.get("content") if isinstance(message, dict) else choice.get("text")
-        if isinstance(piece, list):
-            piece = "\n".join(
-                str(item.get("text", ""))
-                for item in piece
-                if isinstance(item, dict) and item.get("text")
-            )
-        if isinstance(piece, str):
-            content_parts.append(piece)
-    content = "".join(content_parts).strip()
-    if not content:
-        raise RuntimeError("API dịch streaming không trả về nội dung.")
-    return content
-def call_openai_compatible_api(runtime_config, messages, *, max_tokens=16_000, stream=False):
-    body = {
-        "model": runtime_config["model"],
-        "messages": messages,
-        "temperature": 0.1,
-        "stream": bool(stream),
-        "max_tokens": max_tokens,
-    }
-    if runtime_config.get("provider") == "deepseek":
-        # DeepSeek enables reasoning by default; disable it so the output budget is
-        # spent on the translated SRT instead of hidden chain-of-thought tokens.
-        body["thinking"] = {"type": "disabled"}
-        body["response_format"] = {"type": "text"}
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": f"VietSub-Studio/{APP_VERSION}",
-    }
-    if runtime_config.get("api_key"):
-        headers["Authorization"] = f"Bearer {runtime_config['api_key']}"
-    if runtime_config.get("provider") == "openrouter":
-        headers["HTTP-Referer"] = f"https://github.com/{GITHUB_REPOSITORY}"
-        headers["X-Title"] = "VietSub Studio"
-    request_object = urllib.request.Request(
-        chat_completions_url(runtime_config["base_url"]),
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(
-            request_object,
-            timeout=TRANSLATION_API_TIMEOUT_SECONDS,
-        ) as response:
-            content_type = ""
-            headers = getattr(response, "headers", None)
-            if headers is not None:
-                content_type = str(headers.get("Content-Type", "")).lower()
-            if stream and "text/event-stream" in content_type:
-                return read_streaming_chat_completion(response)
-            raw = response.read(TRANSLATION_API_MAX_RESPONSE_BYTES + 1)
-    except urllib.error.HTTPError as error:
-        raw_error = error.read(128 * 1024)
-        try:
-            error_payload = json.loads(raw_error.decode("utf-8", errors="replace"))
-            detail = error_payload.get("error", error_payload)
-            if isinstance(detail, dict):
-                detail = detail.get("message") or detail.get("code") or str(detail)
-            detail = str(detail)
-        except (json.JSONDecodeError, UnicodeError):
-            detail = raw_error.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(
-            f"API dịch trả lỗi HTTP {error.code}: {detail[:500] or error.reason}"
-        ) from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"Không kết nối được API dịch: {error.reason}") from error
-    if len(raw) > TRANSLATION_API_MAX_RESPONSE_BYTES:
-        raise RuntimeError("Phản hồi API dịch vượt quá giới hạn an toàn 16 MiB.")
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeError) as error:
-        raise RuntimeError("API dịch không trả về JSON UTF-8 hợp lệ.") from error
-    return extract_chat_completion_content(payload)
-
 def validate_project_result(result):
     if not isinstance(result, dict):
         raise ValueError("Dữ liệu bộ file kết quả không hợp lệ.")
@@ -2447,9 +2050,9 @@ def validate_project_result(result):
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
             raise FileNotFoundError(f"Không tìm thấy {label} hoàn chỉnh: {path or '(trống)'}")
 
-    with open(result["raw_srt"], "r", encoding="utf-8-sig") as source_file:
+    with open(result["raw_srt"], encoding="utf-8-sig") as source_file:
         source_srt = source_file.read().strip()
-    with open(result["translated_srt"], "r", encoding="utf-8-sig") as translated_file:
+    with open(result["translated_srt"], encoding="utf-8-sig") as translated_file:
         translated_srt = translated_file.read().strip()
 
     validate_translated_srt(source_srt, translated_srt)
@@ -2524,10 +2127,11 @@ def translate_gemini_chunk(
     chunk_index,
     chunk_count,
     translation_instructions=None,
+    source_lang="ch",
 ):
     previous_response = find_last_response(gemini_page, response_selectors)
     previous_response_text = previous_response.inner_text() if previous_response else ""
-    prompt = build_translation_prompt(source_srt, translation_instructions)
+    prompt = build_translation_prompt(source_srt, translation_instructions, source_lang)
     log_to_app(
         f"Nạp đoạn dịch {chunk_index}/{chunk_count} ({len(source_srt):,} ký tự)..."
     )
@@ -2546,7 +2150,7 @@ def translate_gemini_chunk(
         require_enabled=True,
     )
     if not submit_btn:
-        raise RuntimeError("Không tìm thấy nút gửi của Gemini; không thể gửi an toàn.")
+        raise GeminiSubmitUnavailable("Không tìm thấy nút gửi của Gemini; không thể gửi an toàn.")
 
     log_to_app(f"Gửi đoạn dịch {chunk_index}/{chunk_count} sang NotebookLM...")
     submit_btn.click()
@@ -2616,13 +2220,14 @@ def write_text_atomic(path, content):
         if os.path.exists(temporary_path):
             os.remove(temporary_path)
 
-def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
-    messages = [
+def build_api_translation_messages(runtime_config, source_srt):
+    source_label = source_language_label(runtime_config.get("source_lang", "ch"))
+    return [
         {
             "role": "system",
             "content": (
-                "Bạn là biên dịch viên phụ đề Trung sang Việt chuyên nghiệp, am hiểu game và phim hành động. "
-                "Đầu vào là tiếng Trung, đầu ra chỉ được là tiếng Việt; tuyệt đối không chép lại tiếng Trung "
+                f"Bạn là biên dịch viên phụ đề chuyên nghiệp, dịch từ {source_label} sang tiếng Việt. "
+                f"Đầu vào là {source_label}, đầu ra chỉ được là tiếng Việt; tuyệt đối không chép lại câu gốc "
                 "và không xuất song ngữ. Tuân thủ từ điển và quy tắc trong yêu cầu người dùng. "
                 "Giữ nguyên số thứ tự và timestamp, đặt SRT trong đúng một block code srt, rồi liệt kê "
                 "ngắn gọn tên riêng, thuật ngữ và đại từ đã dùng ở bên ngoài block."
@@ -2633,9 +2238,40 @@ def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
             "content": build_translation_prompt(
                 source_srt,
                 runtime_config.get("translation_instructions"),
+                runtime_config.get("source_lang", "ch"),
             ),
         },
     ]
+
+
+def request_api_translation(runtime_config, messages):
+    try:
+        return call_openai_compatible_api(
+            runtime_config,
+            messages,
+            max_tokens=32_768,
+            stream=True,
+            check_cancel=check_cancel_requested,
+        )
+    except TranslationApiError as error:
+        # Some compatible gateways reject stream=true; retry that request once as JSON.
+        if error.status != 400:
+            raise
+        log_to_app(
+            f"{runtime_config['label']} không hỗ trợ streaming; chuyển sang JSON đầy đủ.",
+            "error",
+        )
+        return call_openai_compatible_api(
+            runtime_config,
+            messages,
+            max_tokens=32_768,
+            stream=False,
+            check_cancel=check_cancel_requested,
+        )
+
+
+def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
+    messages = build_api_translation_messages(runtime_config, source_srt)
     for attempt in range(1, TRANSLATION_API_MAX_ATTEMPTS + 1):
         check_cancel_requested()
         log_to_app(
@@ -2643,54 +2279,33 @@ def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
             f"(lần thử {attempt}/{TRANSLATION_API_MAX_ATTEMPTS})..."
         )
         try:
-            try:
-                response = call_openai_compatible_api(
-                    runtime_config,
-                    messages,
-                    max_tokens=32_768,
-                    stream=True,
-                )
-            except RuntimeError as error:
-                # Some compatible gateways reject stream=true; retry that request once as JSON.
-                if "HTTP 400" not in str(error):
-                    raise
-                log_to_app(
-                    f"{runtime_config['label']} không hỗ trợ streaming; chuyển sang JSON đầy đủ.",
-                    "error",
-                )
-                response = call_openai_compatible_api(
-                    runtime_config,
-                    messages,
-                    max_tokens=32_768,
-                    stream=False,
-                )
+            response = request_api_translation(runtime_config, messages)
             translated = extract_api_translated_srt(response, source_srt)
             log_to_app(f"Đã dịch xong đoạn {chunk_index}/{chunk_count}.")
             return translated
-        except (RuntimeError, OSError, ValueError) as error:
-            message = str(error)
-            non_retryable = (
-                "HTTP 400" in message
-                or "HTTP 401" in message
-                or "HTTP 403" in message
-                or "cắt câu trả lời" in message
-                or "SRT" in message
-                or "tiếng Trung" in message
-                or "song ngữ" in message
-            )
-            if non_retryable or attempt >= TRANSLATION_API_MAX_ATTEMPTS:
-                raise RuntimeError(
-                    f"Dịch đoạn {chunk_index}/{chunk_count} qua {runtime_config['label']} thất bại: {message}"
-                ) from error
-            delay = 2 ** (attempt - 1)
-            log_to_app(
-                f"API lỗi ở đoạn {chunk_index}/{chunk_count}; thử lại sau {delay} giây: {message}",
-                "error",
-            )
-            for _ in range(delay):
-                check_cancel_requested()
-                time.sleep(1)
+        except TranslationApiError as error:
+            failure, retryable = error, error.retryable
+        except ValueError as error:
+            # The model answered but broke the SRT contract or kept the source language.
+            failure, retryable = error, False
+        except (OSError, http.client.HTTPException) as error:
+            # Socket timeouts, resets and truncated bodies while reading the response.
+            failure, retryable = error, True
+        message = str(failure)
+        if not retryable or attempt >= TRANSLATION_API_MAX_ATTEMPTS:
+            raise RuntimeError(
+                f"Dịch đoạn {chunk_index}/{chunk_count} qua {runtime_config['label']} thất bại: {message}"
+            ) from failure
+        delay = 2 ** (attempt - 1)
+        log_to_app(
+            f"API lỗi ở đoạn {chunk_index}/{chunk_count}; thử lại sau {delay} giây: {message}",
+            "error",
+        )
+        for _ in range(delay):
+            check_cancel_requested()
+            time.sleep(1)
     raise RuntimeError("Không thể dịch đoạn phụ đề qua API.")
+
 
 def translation_cache_fingerprint(runtime_config):
     """Separate resumable chunks whenever the translation configuration changes."""
@@ -2698,6 +2313,8 @@ def translation_cache_fingerprint(runtime_config):
         "provider": str(runtime_config.get("provider") or ""),
         "base_url": str(runtime_config.get("base_url") or ""),
         "model": str(runtime_config.get("model") or ""),
+        "notebook_url": str(runtime_config.get("notebook_url") or ""),
+        "source_lang": str(runtime_config.get("source_lang") or "ch"),
         "prompt_version": TRANSLATION_PROMPT_VERSION,
         "translation_instructions": validate_translation_instructions(
             runtime_config.get("translation_instructions")
@@ -2706,60 +2323,90 @@ def translation_cache_fingerprint(runtime_config):
     encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:12]
 
-def translate_srt_via_api(srt_path, runtime_config, output_srt=None):
-    check_cancel_requested()
-    with open(srt_path, "r", encoding="utf-8-sig") as source_file:
+
+def describe_translation_split(chunk_count, was_split, provider_label):
+    if not was_split:
+        return f"Gửi toàn bộ SRT trong một lần qua {provider_label}."
+    return (
+        f"Chia SRT thành {chunk_count} đoạn để dịch qua {provider_label} "
+        f"(mỗi đoạn tối đa {TRANSLATION_CHUNK_MAX_BLOCKS} block / {TRANSLATION_CHUNK_MAX_CHARS:,} ký tự; "
+        "video dài hơn 45 phút còn được cắt theo mốc 30 phút)."
+    )
+
+
+def read_source_srt_for_translation(srt_path):
+    with open(srt_path, encoding="utf-8-sig") as source_file:
         srt_content = source_file.read().strip()
     if not srt_content:
         raise ValueError("File phụ đề trống. Không có gì để dịch.")
-
     video_path = infer_translation_video_path(srt_path)
     video_duration = get_video_duration_seconds(video_path) if os.path.isfile(video_path) else None
-    translation_chunks, is_long_video = split_srt_for_translation(
+    translation_chunks, was_split = split_srt_for_translation(
         srt_content,
         video_duration_seconds=video_duration,
     )
-    if is_long_video:
-        log_to_app(
-            f"Video dài hơn 45 phút; chia thành {len(translation_chunks)} đoạn để dịch qua "
-            f"{runtime_config['label']}."
-        )
-    else:
-        log_to_app(f"Video không quá 45 phút; gửi SRT một lần qua {runtime_config['label']}.")
+    return srt_content, translation_chunks, was_split
 
-    output_translated_srt = translation_output_path(srt_path, output_srt)
+
+def translation_part_path(parts_dir, chunk_index, source_chunk, config_hash):
+    source_hash = hashlib.sha256(source_chunk.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(parts_dir, f"part-{chunk_index:04d}-{source_hash}-{config_hash}.srt")
+
+
+def load_translation_part(part_path, source_chunk):
+    """Return a previously translated chunk if it still matches its source block-for-block."""
+    if not os.path.isfile(part_path):
+        return None
+    try:
+        with open(part_path, encoding="utf-8-sig") as cached_file:
+            return normalize_translated_srt(source_chunk, cached_file.read().strip())
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def translate_chunks_with_resume(
+    srt_content,
+    translation_chunks,
+    output_translated_srt,
+    config_hash,
+    translate_pending_chunks,
+):
+    """Translate chunks, keeping each finished chunk in ``<output>.parts`` for resume.
+
+    ``translate_pending_chunks(pending, store)`` receives ``[(index, source_chunk)]``
+    for chunks without a valid cached part and must call ``store(index, translated)``
+    for each finished chunk. Cached chunks are reused without contacting the provider.
+    """
     parts_dir = output_translated_srt + ".parts"
     os.makedirs(parts_dir, exist_ok=True)
-    translated_chunks = []
-    config_hash = translation_cache_fingerprint(runtime_config)
-    try:
-        for chunk_index, source_chunk in enumerate(translation_chunks, 1):
-            source_hash = hashlib.sha256(source_chunk.encode("utf-8")).hexdigest()[:16]
-            part_path = os.path.join(
-                parts_dir,
-                f"part-{chunk_index:04d}-{source_hash}-{config_hash}.srt",
-            )
-            translated = None
-            if os.path.isfile(part_path):
-                try:
-                    with open(part_path, "r", encoding="utf-8-sig") as cached_file:
-                        translated = normalize_translated_srt(source_chunk, cached_file.read().strip())
-                    log_to_app(f"Dùng lại đoạn dịch đã lưu {chunk_index}/{len(translation_chunks)}.")
-                except (OSError, UnicodeError, ValueError):
-                    translated = None
-            if translated is None:
-                translated = translate_api_chunk(
-                    runtime_config,
-                    source_chunk,
-                    chunk_index,
-                    len(translation_chunks),
-                )
-                write_text_atomic(part_path, translated)
-            translated_chunks.append(translated)
+    chunk_count = len(translation_chunks)
+    translated_chunks = {}
+    pending = []
+    for chunk_index, source_chunk in enumerate(translation_chunks, 1):
+        cached = load_translation_part(
+            translation_part_path(parts_dir, chunk_index, source_chunk, config_hash),
+            source_chunk,
+        )
+        if cached is None:
+            pending.append((chunk_index, source_chunk))
+        else:
+            translated_chunks[chunk_index] = cached
+            log_to_app(f"Dùng lại đoạn dịch đã lưu {chunk_index}/{chunk_count}.")
 
+    def store(chunk_index, translated):
+        source_chunk = translation_chunks[chunk_index - 1]
+        write_text_atomic(
+            translation_part_path(parts_dir, chunk_index, source_chunk, config_hash),
+            translated,
+        )
+        translated_chunks[chunk_index] = translated
+
+    try:
+        if pending:
+            translate_pending_chunks(pending, store)
         translated_srt = normalize_translated_srt(
             srt_content,
-            "\n\n".join(chunk.strip() for chunk in translated_chunks),
+            "\n\n".join(translated_chunks[index].strip() for index in range(1, chunk_count + 1)),
         )
         write_text_atomic(output_translated_srt, translated_srt)
     except Exception:
@@ -2768,42 +2415,90 @@ def translate_srt_via_api(srt_path, runtime_config, output_srt=None):
             "error",
         )
         raise
-    else:
-        shutil.rmtree(parts_dir, ignore_errors=True)
-
+    shutil.rmtree(parts_dir, ignore_errors=True)
     log_to_app(f"Đã tạo file phụ đề dịch thành công: {output_translated_srt}")
     return output_translated_srt
+
+
+def copy_vietnamese_source_srt(srt_path, output_srt):
+    """Vietnamese OCR output needs no translation; publish it as the .vi.srt file."""
+    check_cancel_requested()
+    with open(srt_path, encoding="utf-8-sig") as source_file:
+        srt_content = source_file.read().strip()
+    blocks = validate_srt_structure(srt_content, "SRT OCR tiếng Việt")
+    write_text_atomic(output_srt, format_srt_blocks(blocks))
+    log_to_app("Phụ đề gốc đã là tiếng Việt; bỏ qua bước dịch và dùng trực tiếp SRT OCR.")
+    return output_srt
+
+def translate_srt_via_api(srt_path, runtime_config, output_srt=None, source_lang="ch"):
+    check_cancel_requested()
+    srt_content, translation_chunks, was_split = read_source_srt_for_translation(srt_path)
+    chunk_config = {**runtime_config, "source_lang": source_lang}
+    log_to_app(describe_translation_split(len(translation_chunks), was_split, runtime_config["label"]))
+
+    def translate_pending_chunks(pending, store):
+        for chunk_index, source_chunk in pending:
+            store(
+                chunk_index,
+                translate_api_chunk(chunk_config, source_chunk, chunk_index, len(translation_chunks)),
+            )
+
+    return translate_chunks_with_resume(
+        srt_content,
+        translation_chunks,
+        translation_output_path(srt_path, output_srt),
+        translation_cache_fingerprint(chunk_config),
+        translate_pending_chunks,
+    )
+
 
 def translate_srt_via_gemini_edge(
     srt_path,
     notebook_url,
     output_srt=None,
     translation_instructions=None,
+    source_lang="ch",
 ):
     check_cancel_requested()
     log_to_app("Đang đọc nội dung phụ đề thô...")
-    with open(srt_path, "r", encoding="utf-8-sig") as f:
-        srt_content = f.read().strip()
-    if not srt_content:
-        raise ValueError("File phụ đề trống. Không có gì để dịch.")
-    translation_instructions = validate_translation_instructions(
-        translation_instructions
-    )
-
-    video_path = infer_translation_video_path(srt_path)
-    video_duration = get_video_duration_seconds(video_path) if os.path.isfile(video_path) else None
-    translation_chunks, is_long_video = split_srt_for_translation(
-        srt_content,
-        video_duration_seconds=video_duration,
-    )
-    if is_long_video:
-        log_to_app(
-            f"SRT thuộc video dài hơn 45 phút; chia thành {len(translation_chunks)} đoạn để dịch."
-        )
-    else:
-        log_to_app("Video không quá 45 phút; dịch toàn bộ SRT trong một lần.")
-
+    srt_content, translation_chunks, was_split = read_source_srt_for_translation(srt_path)
+    translation_instructions = validate_translation_instructions(translation_instructions)
     notebook_url = validate_notebook_url(notebook_url)
+    log_to_app(describe_translation_split(len(translation_chunks), was_split, "Gemini Notebook"))
+    config_hash = translation_cache_fingerprint({
+        "provider": "notebook",
+        "notebook_url": notebook_url,
+        "source_lang": source_lang,
+        "translation_instructions": translation_instructions,
+    })
+
+    def translate_pending_chunks(pending, store):
+        translate_gemini_chunks_in_edge(
+            notebook_url,
+            pending,
+            len(translation_chunks),
+            translation_instructions,
+            source_lang,
+            store,
+        )
+
+    return translate_chunks_with_resume(
+        srt_content,
+        translation_chunks,
+        translation_output_path(srt_path, output_srt),
+        config_hash,
+        translate_pending_chunks,
+    )
+
+
+def translate_gemini_chunks_in_edge(
+    notebook_url,
+    pending_chunks,
+    chunk_count,
+    translation_instructions,
+    source_lang,
+    store,
+):
     edge_background = bool(load_app_config().get("edge_background", True))
     if not ensure_edge_running(notebook_url):
         raise RuntimeError("Trình duyệt Microsoft Edge chưa được chạy ở chế độ debug.")
@@ -2859,36 +2554,26 @@ def translate_srt_via_gemini_edge(
             "button[aria-label*='send']",
             "button[aria-label*='gửi']",
         ]
-        translated_chunks = []
-        for chunk_index, source_chunk in enumerate(translation_chunks, 1):
+        for chunk_index, source_chunk in pending_chunks:
             check_cancel_requested()
             try:
-                translated_chunks.append(
-                    translate_gemini_chunk(
-                        gemini_page,
-                        prompt_input,
-                        response_selectors,
-                        submit_selectors,
-                        source_chunk,
-                        chunk_index,
-                        len(translation_chunks),
-                        translation_instructions,
-                    )
+                translated = translate_gemini_chunk(
+                    gemini_page,
+                    prompt_input,
+                    response_selectors,
+                    submit_selectors,
+                    source_chunk,
+                    chunk_index,
+                    chunk_count,
+                    translation_instructions,
+                    source_lang,
                 )
-            except RuntimeError as error:
-                if edge_background and "nút gửi" in str(error):
+            except GeminiSubmitUnavailable as error:
+                if edge_background:
                     set_edge_window_visibility(context, gemini_page, True)
                     raise EdgeLoginRequired(str(error)) from error
                 raise
-
-    translated_srt = normalize_translated_srt(
-        srt_content,
-        "\n\n".join(chunk.strip() for chunk in translated_chunks),
-    )
-    output_translated_srt = translation_output_path(srt_path, output_srt)
-    write_text_atomic(output_translated_srt, translated_srt)
-    log_to_app(f"Đã tạo file phụ đề dịch thành công: {output_translated_srt}")
-    return output_translated_srt
+            store(chunk_index, translated)
 
 
 def extract_douyin_metadata_via_edge(video_url, video_id, notebook_url=""):
@@ -2929,6 +2614,14 @@ def extract_douyin_metadata_via_edge(video_url, video_id, notebook_url=""):
                 extracted = extract_douyin_metadata_from_html(html_content, expected_video_id=video_id)
                 if extracted:
                     return extracted
+                if video_id and video_id not in page.url:
+                    # The share page redirected elsewhere (removed video, feed, login):
+                    # its <video> element would belong to some other video.
+                    log_to_app(
+                        f"Trang Douyin đã chuyển hướng khỏi video {video_id}; không dùng thẻ video của trang.",
+                        "error",
+                    )
+                    return None
                 video_src = page.evaluate(
                     "() => { const v = document.querySelector('video source, video'); "
                     "return v ? (v.currentSrc || v.src || '') : ''; }"
@@ -3018,6 +2711,12 @@ def download_video_source(video_url, notebook_url):
             "Không thể lấy link tải video Douyin trực tiếp. "
             "Hãy kiểm tra lại link hoặc mở video trong Edge rồi thử lại."
         )
+    metadata_video_id = str(metadata.get("video_id") or "").strip()
+    if metadata_video_id != video_id:
+        raise RuntimeError(
+            f"Douyin trả về dữ liệu của video khác ({metadata_video_id or 'không rõ ID'}) "
+            f"thay vì video {video_id}; đã dừng để không tải nhầm."
+        )
 
     os.makedirs(video_folder, exist_ok=True)
     video_title = str(metadata.get("video_title") or "").strip()
@@ -3086,7 +2785,8 @@ def get_video_preview(preview_id):
         return dict(preview) if preview else None
 
 
-def create_video_preview(video_url):
+def admit_preview_creation():
+    """Reserve the single preview slot; the caller must release ``preview_lock``."""
     with operation_admission_lock:
         if update_install_lock.locked():
             raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; không thể tạo preview mới.")
@@ -3094,6 +2794,10 @@ def create_video_preview(video_url):
             raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
         if not preview_lock.acquire(blocking=False):
             raise RuntimeError("Một preview khác đang được chuẩn bị.")
+
+
+def create_video_preview(video_url):
+    admit_preview_creation()
     cancel_event.clear()
     try:
         config = load_app_config()
@@ -3123,20 +2827,46 @@ def create_video_preview(video_url):
         preview_lock.release()
 
 
-def create_local_video_preview(upload):
-    with operation_admission_lock:
-        if update_install_lock.locked():
-            raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; không thể tạo preview mới.")
-        if workflow_lock.locked() or queue_worker_is_active():
-            raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
-        if not preview_lock.acquire(blocking=False):
-            raise RuntimeError("Một preview khác đang được chuẩn bị.")
-    try:
-        original_name = os.path.basename((upload.filename or "").replace("\\", "/"))
-        extension = os.path.splitext(original_name)[1].lower()
-        if extension not in ALLOWED_LOCAL_VIDEO_EXTENSIONS:
-            raise ValueError("Hiện tại video trên máy phải là file MP4.")
+def validate_local_video_name(original_name):
+    if os.path.splitext(original_name)[1].lower() not in ALLOWED_LOCAL_VIDEO_EXTENSIONS:
+        raise ValueError("Hiện tại video trên máy phải là file MP4.")
+    return original_name
 
+
+def register_local_video_preview(preview_id, managed_video, original_name):
+    preview = {
+        "id": preview_id,
+        "created_at": time.time(),
+        "source_url": f"local://{preview_id}",
+        "video_id": f"local-{preview_id[:12]}",
+        "source_video": managed_video,
+        "video_title": os.path.splitext(original_name)[0] or "Video local",
+        "original_name": original_name,
+        "crop_coords": get_saved_crop_coords(),
+        "source_type": "local",
+        "managed_source": True,
+    }
+    with preview_registry_lock:
+        preview_registry[preview_id] = preview
+    return {
+        "id": preview_id,
+        "source_url": preview["source_url"],
+        "video_id": preview["video_id"],
+        "video_title": preview["video_title"],
+        "original_name": preview["original_name"],
+        "crop_coords": preview["crop_coords"],
+        "source_type": preview["source_type"],
+        "video_url": f"/api/previews/{preview_id}/video",
+    }
+
+
+def create_local_video_preview(upload):
+    """Browser fallback: the MP4 arrives as a multipart upload and is saved into managed storage."""
+    admit_preview_creation()
+    try:
+        original_name = validate_local_video_name(
+            os.path.basename((upload.filename or "").replace("\\", "/"))
+        )
         preview_id = uuid.uuid4().hex
         os.makedirs(LOCAL_VIDEO_DIR, exist_ok=True)
         destination = os.path.join(LOCAL_VIDEO_DIR, f"{preview_id}.mp4")
@@ -3150,32 +2880,39 @@ def create_local_video_preview(upload):
         finally:
             if os.path.exists(temporary_path):
                 os.remove(temporary_path)
-
-        preview = {
-            "id": preview_id,
-            "created_at": time.time(),
-            "source_url": f"local://{preview_id}",
-            "video_id": f"local-{preview_id[:12]}",
-            "source_video": destination,
-            "video_title": os.path.splitext(original_name)[0] or "Video local",
-            "original_name": original_name,
-            "crop_coords": get_saved_crop_coords(),
-            "source_type": "local",
-            "managed_source": True,
-        }
-        with preview_registry_lock:
-            preview_registry[preview_id] = preview
-        return {
-            "id": preview_id,
-            "source_url": preview["source_url"],
-            "video_id": preview["video_id"],
-            "video_title": preview["video_title"],
-            "original_name": preview["original_name"],
-            "crop_coords": preview["crop_coords"],
-            "source_type": preview["source_type"],
-            "video_url": f"/api/previews/{preview_id}/video",
-        }
+        return register_local_video_preview(preview_id, destination, original_name)
     finally:
+        preview_lock.release()
+
+
+def create_local_video_preview_from_path(source_path):
+    """Desktop path: import a file chosen in the native dialog without an HTTP upload.
+
+    The managed copy is a hard link when the file is on the same volume as the app
+    data folder (no extra bytes written) and a single atomic copy otherwise, instead
+    of the upload path's temporary spool file plus a second copy.
+    """
+    if not isinstance(source_path, str) or not source_path.strip():
+        raise ValueError("Hãy chọn một file MP4 trên máy.")
+    source_path = os.path.abspath(source_path)
+    original_name = validate_local_video_name(os.path.basename(source_path))
+    if not os.path.isfile(source_path):
+        raise FileNotFoundError("Không tìm thấy file MP4 đã chọn.")
+    validate_local_mp4_file(source_path)
+    admit_preview_creation()
+    cancel_event.clear()
+    try:
+        preview_id = uuid.uuid4().hex
+        os.makedirs(LOCAL_VIDEO_DIR, exist_ok=True)
+        destination = os.path.join(LOCAL_VIDEO_DIR, f"{preview_id}.mp4")
+        if try_hardlink_video(source_path, destination):
+            log_to_app("Đã liên kết MP4 local vào bộ nhớ app, không cần sao chép.")
+        else:
+            log_to_app("MP4 nằm khác ổ đĩa với dữ liệu app; đang sao chép một lần...")
+            copy_file_atomic(source_path, destination)
+        return register_local_video_preview(preview_id, destination, original_name)
+    finally:
+        cancel_event.clear()
         preview_lock.release()
 
 
@@ -3273,11 +3010,13 @@ def normalize_persisted_job(value):
     source_type = value.get("source_type") if value.get("source_type") in {"douyin", "local"} else "douyin"
     result = value.get("result") if isinstance(value.get("result"), dict) else {}
     source_video = str(value.get("source_video") or "")
-    if source_type == "local" and not os.path.isfile(source_video) and not os.path.isfile(str(result.get("video") or "")):
+    local_video_missing = not os.path.isfile(source_video) and not os.path.isfile(str(result.get("video") or ""))
+    if source_type == "local" and local_video_missing:
         status = "error"
         error = "Video local không còn tồn tại. Hãy chọn lại file MP4."
 
     result_ready = bool(value.get("result_ready", False))
+    invalid_translation = False
     if status == "success" and (
         "result_ready" not in value or result_ready
     ):
@@ -3286,10 +3025,11 @@ def normalize_persisted_job(value):
         else:
             result_ready = project_result_ready(result)
             if not result_ready:
+                invalid_translation = True
                 status = "error"
                 error = (
-                    "File sub dịch không hợp lệ hoặc vẫn là tiếng Trung. "
-                    "Hãy chạy lại bước dịch với model deepseek-v4-pro."
+                    "File sub dịch không hợp lệ hoặc vẫn còn chữ của ngôn ngữ gốc. "
+                    "Hãy chạy lại bước dịch (có thể thử model khác)."
                 )
 
     return {
@@ -3309,14 +3049,18 @@ def normalize_persisted_job(value):
         "source_type": source_type,
         "managed_source": bool(value.get("managed_source", source_type == "local")),
         "status": status,
-        "step": value.get("step") if value.get("step") in {"resolve", "download", "ocr", "translate", "done"} else "resolve",
+        "step": (
+            value.get("step")
+            if value.get("step") in {"resolve", "download", "ocr", "translate", "done"}
+            else "resolve"
+        ),
         "error": error,
         "result": dict(result),
         "result_ready": result_ready if status == "success" else False,
         "needs_edge_login": bool(value.get("needs_edge_login", False)),
         "resume_step": (
             "translate"
-            if status == "error" and "tiếng Trung" in error
+            if invalid_translation
             else value.get("resume_step")
             if value.get("resume_step") in {"download", "ocr", "translate"}
             else "download"
@@ -3342,7 +3086,7 @@ def load_queue_file(path):
     if not os.path.isfile(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
     except (UnicodeError, json.JSONDecodeError):
         quarantine_corrupt_file(path)
@@ -3970,18 +3714,22 @@ def run_workflow_thread(
             update_progress(result={"raw_srt": raw_srt})
 
         update_progress(step="translate")
-        if translation_config["provider"] == "notebook":
+        if ocr_lang == TARGET_TRANSLATION_LANG:
+            translated_srt = copy_vietnamese_source_srt(raw_srt, project["translated_srt"])
+        elif translation_config["provider"] == "notebook":
             translated_srt = translate_srt_via_gemini_edge(
                 raw_srt,
                 notebook_url,
                 output_srt=project["translated_srt"],
                 translation_instructions=translation_config["translation_instructions"],
+                source_lang=ocr_lang,
             )
         else:
             translated_srt = translate_srt_via_api(
                 raw_srt,
                 translation_config,
                 output_srt=project["translated_srt"],
+                source_lang=ocr_lang,
             )
         update_progress(result={"translated_srt": translated_srt})
         project["raw_srt"] = raw_srt
@@ -4522,7 +4270,7 @@ def handle_settings():
                 config.get("translation_instructions")
             )
         except ValueError:
-            translation_instructions = TRANSLATION_GLOSSARY_PROMPT
+            translation_instructions = DEFAULT_TRANSLATION_INSTRUCTIONS
         crop = get_saved_crop_coords()
         down_dir = get_download_cache_dir()
         try:
@@ -4546,7 +4294,8 @@ def handle_settings():
             "translation_api_model": translation_api_model,
             "translation_api_key_set": translation_api_key_set,
             "translation_instructions": translation_instructions,
-            "translation_default_instructions": TRANSLATION_GLOSSARY_PROMPT,
+            "translation_default_instructions": DEFAULT_TRANSLATION_INSTRUCTIONS,
+            "translation_game_glossary_preset": GAME_GLOSSARY_TRANSLATION_PRESET,
             "translation_provider_presets": {
                 key: {
                     "base_url": value["base_url"],
@@ -4739,6 +4488,21 @@ class DesktopApi:
             allow_multiple=False,
         )
         return os.path.abspath(selected[0]) if selected else ""
+
+    def select_local_video(self):
+        """Pick an MP4 with the native dialog and import it without an HTTP upload.
+
+        The path never comes from page JavaScript: only a file the user picks in
+        this dialog can be imported, so the bridge cannot be abused to read files.
+        """
+        selected = self._window.create_file_dialog(
+            self._webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=("Video MP4 (*.mp4)",),
+        )
+        if not selected:
+            return None
+        return create_local_video_preview_from_path(selected[0])
 
 def run_desktop_app():
     ensure_initial_desktop_shortcut()

@@ -38,6 +38,10 @@ VIDEOCR_CONFIG = os.path.join(APPDATA, "VideOCR", "videocr_gui_config.ini")
 
 USER_DATA_DIR_DEBUG = os.path.join(LOCALAPPDATA, "Microsoft", "Edge", "User Data Debug")
 EDGE_DEBUG_PORT = 9222
+# Verifying which process owns the CDP port spawns PowerShell (1-4 s), so the
+# result is cached per Edge browser session (its unique DevTools websocket URL).
+EDGE_OWNER_CACHE_TTL_SECONDS = 120
+EDGE_OWNER_PROBE_TIMEOUT_SECONDS = 10
 
 CONFIG_DIR = (
     os.path.join(APPDATA, "VietSub Studio")
@@ -53,6 +57,15 @@ INSTANCE_LOCK_PATH = os.path.join(CONFIG_DIR, "instance.lock")
 LOG_PATH = os.path.join(CONFIG_DIR, "vietsub-studio.log")
 
 SUPPORTED_OCR_LANGS = {"ch", "en", "ja", "ko", "vi"}
+SOURCE_LANGUAGE_LABELS = {
+    "ch": "tiếng Trung",
+    "en": "tiếng Anh",
+    "ja": "tiếng Nhật",
+    "ko": "tiếng Hàn",
+    "vi": "tiếng Việt",
+}
+# Subtitles OCRed in this language are already Vietnamese and skip translation.
+TARGET_TRANSLATION_LANG = "vi"
 SUPPORTED_OCR_MODEL_MODES = {"auto", "fast", "accurate"}
 MAX_OCR_FRAMES_TO_SKIP = 10
 VIDEOCR_CHUNK_SECONDS = 10 * 60
@@ -67,8 +80,15 @@ TRANSLATION_API_TIMEOUT_SECONDS = 180
 TRANSLATION_API_MAX_ATTEMPTS = 3
 TRANSLATION_API_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_TRANSLATION_INSTRUCTIONS_CHARS = 16_000
-TRANSLATION_PROMPT_VERSION = "zh-vi-v4-deepseek-nonthinking"
+TRANSLATION_PROMPT_VERSION = "vi-v5-source-aware"
 SUPPORTED_TRANSLATION_PROVIDERS = {"notebook", "deepseek", "openrouter", "custom"}
+# DeepSeek retired these aliases on 2026-07-24; both had been served by V4-Flash.
+RETIRED_TRANSLATION_MODEL_ALIASES = {
+    "deepseek": {
+        "deepseek-chat": "deepseek-v4-flash",
+        "deepseek-reasoner": "deepseek-v4-flash",
+    },
+}
 TRANSLATION_PROVIDER_PRESETS = {
     "deepseek": {
         "label": "DeepSeek API",
@@ -148,7 +168,23 @@ SRT_TIMECODE_LINE_PATTERN = re.compile(
 )
 CJK_CHAR_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
-TRANSLATION_GLOSSARY_PROMPT = """\
+DEFAULT_TRANSLATION_INSTRUCTIONS = """\
+Bạn là biên dịch viên phụ đề chuyên nghiệp, dịch sang tiếng Việt tự nhiên và đúng ngữ cảnh.
+
+QUY TẮC BẮT BUỘC:
+- Dịch theo ý, mượt mà, bám sát ngữ cảnh; không dịch word-by-word.
+- Chọn đại từ nhân xưng theo quan hệ và sắc thái nhân vật (tôi/bạn, anh/em,
+  tao/mày, ngài/tôi...). Giữ cách xưng hô nhất quán trong toàn bộ đoạn.
+- Giữ nguyên tên riêng, thương hiệu và thuật ngữ chuyên ngành khi chưa có cách dịch phổ biến.
+- Giữ nguyên tuyệt đối số thứ tự và timestamp của từng block.
+- Chỉ được tạo đúng một block SRT ở phần trả lời; không chèn lời giải thích vào block.
+- Sau block code, liệt kê ngắn gọn các tên riêng, thuật ngữ và đại từ nhân xưng
+  đã dùng để hậu kiểm. Phần liệt kê này nằm ngoài block SRT.
+"""
+
+# Opt-in preset for Chinese game/sci-fi videos (Delta Force universe). It is no
+# longer the default because its fixed glossary distorts unrelated content.
+GAME_GLOSSARY_TRANSLATION_PRESET = """\
 Bạn là chuyên gia dịch phụ đề Trung sang Việt, đặc biệt am hiểu ngữ cảnh game,
 phim hành động khoa học viễn tưởng và video cốt truyện.
 
@@ -217,6 +253,10 @@ class WorkflowCancelled(RuntimeError):
 
 class EdgeLoginRequired(RuntimeError):
     pass
+
+
+class GeminiSubmitUnavailable(RuntimeError):
+    """The Notebook page has no enabled send button, so the prompt cannot be submitted safely."""
 
 
 class QueuePersistenceError(OSError):

@@ -15,7 +15,7 @@ from vietsub.constants import (
     TRANSLATION_CHUNK_TARGET_SECONDS,
     TRANSLATION_CHUNK_THRESHOLD_SECONDS,
 )
-from vietsub.validators import validate_translation_instructions
+from vietsub.validators import source_language_label, validate_translation_instructions
 
 
 def format_videocr_time(seconds):
@@ -134,7 +134,7 @@ def validate_srt_structure(srt_content, label="SRT"):
 
 
 def read_videocr_srt_entries(srt_path, *, offset_milliseconds=0):
-    with open(srt_path, "r", encoding="utf-8-sig") as source_file:
+    with open(srt_path, encoding="utf-8-sig") as source_file:
         content = source_file.read().strip()
     if not content:
         return []
@@ -187,13 +187,14 @@ def write_merged_videocr_srt(entries, output_srt):
     return output_srt
 
 
-def build_translation_prompt(srt_content, translation_instructions=None):
+def build_translation_prompt(srt_content, translation_instructions=None, source_lang="ch"):
     instructions = validate_translation_instructions(translation_instructions)
+    source_label = source_language_label(source_lang)
     return (
         instructions
-        + "\n\nĐẦU VÀO LÀ TIẾNG TRUNG. ĐẦU RA BẮT BUỘC LÀ TIẾNG VIỆT.\n"
+        + f"\n\nĐẦU VÀO LÀ {source_label.upper()}. ĐẦU RA BẮT BUỘC LÀ TIẾNG VIỆT.\n"
         + "Mỗi block chỉ được có nội dung tiếng Việt tự nhiên.\n"
-        + "Tuyệt đối không chép lại câu tiếng Trung và không xuất song ngữ Trung-Việt.\n"
+        + f"Tuyệt đối không chép lại câu {source_label} gốc và không xuất song ngữ.\n"
         + "Giữ nguyên số thứ tự và timestamp; chỉ dịch phần nội dung phụ đề.\n"
         + "Đặt toàn bộ SRT đã dịch trong đúng một block code srt.\n\n"
         + "Hãy dịch SRT sau đây, không được bỏ sót block nào:\n\n"
@@ -210,6 +211,14 @@ def format_srt_blocks(blocks):
 
 
 def split_srt_for_translation(srt_content, video_duration_seconds=None):
+    """Split an SRT into timestamp-preserving translation requests.
+
+    Every request stays within TRANSLATION_CHUNK_MAX_BLOCKS blocks and
+    TRANSLATION_CHUNK_MAX_CHARS characters, whatever the video length, so a dense
+    subtitle file cannot overflow the model's output budget. Videos longer than
+    TRANSLATION_CHUNK_THRESHOLD_SECONDS are also cut at
+    TRANSLATION_CHUNK_TARGET_SECONDS boundaries. Returns ``(chunks, was_split)``.
+    """
     blocks = parse_srt_blocks(srt_content)
     if not blocks:
         raise ValueError("SRT gốc không có cấu trúc block hợp lệ.")
@@ -224,7 +233,13 @@ def split_srt_for_translation(srt_content, video_duration_seconds=None):
         declared_duration = None
     if declared_duration is None or not math.isfinite(declared_duration) or declared_duration <= 0:
         declared_duration = end_milliseconds / 1000
-    if declared_duration <= TRANSLATION_CHUNK_THRESHOLD_SECONDS:
+    split_by_time = declared_duration > TRANSLATION_CHUNK_THRESHOLD_SECONDS
+    total_chars = sum(len(format_srt_blocks([block])) for block in blocks)
+    if (
+        not split_by_time
+        and len(blocks) <= TRANSLATION_CHUNK_MAX_BLOCKS
+        and total_chars <= TRANSLATION_CHUNK_MAX_CHARS
+    ):
         return [srt_content], False
 
     chunks = []
@@ -241,7 +256,8 @@ def split_srt_for_translation(srt_content, video_duration_seconds=None):
         )
         block_chars = len(format_srt_blocks([block]))
         reached_time_boundary = (
-            current
+            split_by_time
+            and current
             and next_time_boundary is not None
             and start_milliseconds >= next_time_boundary
         )
@@ -264,11 +280,13 @@ def split_srt_for_translation(srt_content, video_duration_seconds=None):
 
     if current:
         chunks.append(format_srt_blocks(current))
+    if len(chunks) == 1:
+        return [srt_content], False
     return chunks, True
 
 
 def translation_language_stats(srt_content):
-    """Return CJK/word counts used to catch an API echoing the Chinese source."""
+    """Return CJK/word counts used to catch a model echoing Chinese or Japanese source text."""
     blocks = parse_srt_blocks(srt_content)
     texts = [text for _, _, text in blocks]
     joined = "\n".join(texts)
@@ -302,8 +320,8 @@ def validate_translation_language(source_srt, translated_srt):
     )
     if unchanged or translated_ratio >= 0.35 or bilingual:
         raise ValueError(
-            "Model vẫn trả về tiếng Trung hoặc song ngữ Trung-Việt; "
-            "hãy dùng model deepseek-v4-pro và dịch lại."
+            "Bản dịch vẫn giữ chữ Hán của bản gốc (tiếng Trung/tiếng Nhật) hoặc là song ngữ; "
+            "hãy dịch lại hoặc thử model khác."
         )
     return translated_srt
 
@@ -317,7 +335,7 @@ def validate_translated_srt(source_srt, translated_srt):
         raise ValueError("SRT gốc không có mốc thời gian hợp lệ.")
     if source_timecodes != translated_timecodes:
         raise ValueError(
-            "Phản hồi Gemini không phải SRT đầy đủ hoặc đã thay đổi mốc thời gian; không lưu file."
+            "Bản dịch không phải SRT đầy đủ hoặc đã thay đổi mốc thời gian; không lưu file."
         )
     if [block[0] for block in source_blocks] != [block[0] for block in translated_blocks]:
         raise ValueError("SRT dịch không khớp số thứ tự block với SRT gốc.")
@@ -349,7 +367,7 @@ def normalize_translated_srt(source_srt, translated_srt):
             rebuilt = "\n\n".join(
                 f"{source_index}\n{source_timecode}\n{translated_text}"
                 for (source_index, source_timecode, _), (_, _, translated_text) in zip(
-                    source_blocks, translated_blocks
+                    source_blocks, translated_blocks, strict=True
                 )
             )
             return validate_translated_srt(source_srt, rebuilt)

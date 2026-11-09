@@ -1,6 +1,7 @@
 """Validation and file-safety helpers for VietSub Studio."""
 
 import hashlib
+import ipaddress
 import os
 import re
 import unicodedata
@@ -9,17 +10,18 @@ from urllib.parse import parse_qs, urlparse
 from vietsub.constants import (
     ALLOWED_DOUYIN_THUMBNAIL_DOMAINS,
     ALLOWED_DOUYIN_VIDEO_DOMAINS,
-     APP_VERSION,
+    APP_VERSION,
+    DEFAULT_TRANSLATION_INSTRUCTIONS,
     GITHUB_REPOSITORY,
     MAX_LOCAL_VIDEO_BYTES,
     MAX_OCR_FRAMES_TO_SKIP,
     MAX_PROJECT_NAME_LENGTH,
     MAX_THUMBNAIL_BYTES,
     MAX_TRANSLATION_INSTRUCTIONS_CHARS,
+    SOURCE_LANGUAGE_LABELS,
     SUPPORTED_OCR_LANGS,
     SUPPORTED_OCR_MODEL_MODES,
     SUPPORTED_TRANSLATION_PROVIDERS,
-    TRANSLATION_GLOSSARY_PROMPT,
     TRANSLATION_PROVIDER_PRESETS,
     URL_PATTERN,
     WINDOWS_RESERVED_NAMES,
@@ -139,12 +141,12 @@ def validate_translation_api_key(value, allow_empty=True):
 
 def validate_translation_instructions(value):
     if value in (None, ""):
-        return TRANSLATION_GLOSSARY_PROMPT
+        return DEFAULT_TRANSLATION_INSTRUCTIONS
     if not isinstance(value, str):
         raise ValueError("Cách dịch mong muốn không hợp lệ.")
     normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
-        return TRANSLATION_GLOSSARY_PROMPT
+        return DEFAULT_TRANSLATION_INSTRUCTIONS
     if len(normalized) > MAX_TRANSLATION_INSTRUCTIONS_CHARS:
         raise ValueError(
             f"Cách dịch mong muốn không được vượt quá {MAX_TRANSLATION_INSTRUCTIONS_CHARS:,} ký tự."
@@ -158,6 +160,11 @@ def validate_ocr_lang(value):
     if not isinstance(value, str) or value not in SUPPORTED_OCR_LANGS:
         raise ValueError("Ngôn ngữ OCR này chưa được hỗ trợ.")
     return value
+
+
+def source_language_label(ocr_lang):
+    """Return the Vietnamese name of an OCR source language for prompts and logs."""
+    return SOURCE_LANGUAGE_LABELS.get(ocr_lang, "ngôn ngữ gốc")
 
 
 def validate_ocr_model_mode(value):
@@ -308,9 +315,37 @@ def validate_douyin_video_stream_url(value):
         host == domain or host.endswith("." + domain)
         for domain in ALLOWED_DOUYIN_VIDEO_DOMAINS
     )
-    if parsed.scheme != "https" or not allowed_host:
+    if parsed.scheme != "https" or not allowed_host or parsed.username or parsed.password:
         return ""
     return candidate
+
+
+def validate_public_https_url(value):
+    """Accept only HTTPS URLs on public DNS names (no IP literals, localhost or credentials)."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    candidate = value.strip()
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or not host or parsed.username or parsed.password:
+        return ""
+    if host == "localhost" or host.endswith(".localhost") or "." not in host:
+        return ""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return candidate
+    return ""
+
+
+def validate_douyin_stream_redirect_url(value):
+    """Validate a CDN redirect target for a Douyin video stream.
+
+    Known Douyin/ByteDance CDN hosts are accepted (HTTP is upgraded to HTTPS).
+    Other hosts must still be public HTTPS names, which blocks redirects to
+    localhost, IP literals and plaintext downgrades without breaking new CDNs.
+    """
+    return validate_douyin_video_stream_url(value) or validate_public_https_url(value)
 
 
 def thumbnail_extension(data):

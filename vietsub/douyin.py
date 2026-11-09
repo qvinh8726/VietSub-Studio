@@ -16,8 +16,10 @@ from vietsub.constants import (
     DOUYIN_STREAM_TIMEOUT_SECONDS,
     MAX_DOWNLOAD_HISTORY_ITEMS,
     MAX_LOCAL_VIDEO_BYTES,
+    WorkflowCancelled,
 )
 from vietsub.validators import (
+    validate_douyin_stream_redirect_url,
     validate_douyin_thumbnail_url,
     validate_douyin_url,
     validate_douyin_video_stream_url,
@@ -61,6 +63,25 @@ class _SafeDouyinRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class _SafeDouyinStreamRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow CDN redirects only to HTTPS public hosts (known Douyin CDNs are upgraded to HTTPS)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validated = validate_douyin_stream_redirect_url(newurl)
+        if not validated:
+            host = urllib.parse.urlparse(newurl).hostname or newurl
+            raise urllib.error.URLError(
+                f"Luồng video Douyin chuyển hướng tới địa chỉ không an toàn: {host}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, validated)
+
+
+def open_douyin_stream(request, timeout):
+    """Open a Douyin CDN stream while validating every redirect hop."""
+    opener = urllib.request.build_opener(_SafeDouyinStreamRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
 def normalize_douyin_stream_url(url):
     """Convert a watermarked Douyin playwm URL into a clean watermark-free stream URL."""
     validated = validate_douyin_video_stream_url(url)
@@ -102,25 +123,33 @@ def _find_aweme_candidates(data):
                 yield from _find_aweme_candidates(item)
 
 
+def _aweme_item_id(item):
+    return str(item.get("aweme_id") or item.get("id") or "").strip()
+
+
 def extract_douyin_video_payload(data, expected_video_id=""):
-    """Extract (video_id, title, stream_urls, cover_url) from a parsed Douyin JSON object."""
+    """Extract (video_id, title, stream_urls, cover_url) from a parsed Douyin JSON object.
+
+    When ``expected_video_id`` is given, only the item with that exact ID is used.
+    Pages also embed related/recommended videos, so falling back to another item
+    would silently download the wrong video under the requested ID.
+    """
     candidates = list(_find_aweme_candidates(data))
     if not candidates:
         return None
 
-    selected = None
+    expected_video_id = str(expected_video_id or "").strip()
     if expected_video_id:
-        for item in candidates:
-            item_id = str(item.get("aweme_id") or item.get("id") or "").strip()
-            if item_id == str(expected_video_id):
-                selected = item
-                break
-    if selected is None:
+        selected = next(
+            (item for item in candidates if _aweme_item_id(item) == expected_video_id),
+            None,
+        )
+        if selected is None:
+            return None
+    else:
         selected = candidates[0]
 
-    video_id = str(
-        selected.get("aweme_id") or selected.get("id") or expected_video_id or ""
-    ).strip()
+    video_id = _aweme_item_id(selected) or expected_video_id
     title = str(
         selected.get("desc")
         or selected.get("caption")
@@ -282,7 +311,7 @@ def get_cached_video_metadata(video_id, download_cache_dir):
     if not os.path.isfile(meta_path):
         return {}
     try:
-        with open(meta_path, "r", encoding="utf-8") as handle:
+        with open(meta_path, encoding="utf-8") as handle:
             data = json.load(handle)
         return data if isinstance(data, dict) else {}
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -293,7 +322,7 @@ def load_download_history(history_path):
     if not history_path or not os.path.isfile(history_path):
         return []
     try:
-        with open(history_path, "r", encoding="utf-8") as handle:
+        with open(history_path, encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, UnicodeError, json.JSONDecodeError):
         return []
@@ -431,7 +460,7 @@ def download_douyin_stream(
         )
         try:
             with (
-                urllib.request.urlopen(req, timeout=timeout) as response,
+                open_douyin_stream(req, timeout) as response,
                 open(temporary_path, "wb") as output,
             ):
                 declared_size = 0
@@ -472,8 +501,7 @@ def download_douyin_stream(
                     os.remove(temporary_path)
                 except OSError:
                     pass
-            # Propagate cancellation immediately
-            if check_cancel and type(error).__name__ == "WorkflowCancelled":
+            if isinstance(error, WorkflowCancelled):
                 raise
             continue
 

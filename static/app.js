@@ -24,6 +24,7 @@
         let translationApiKeySet = false;
         let lastTranslationProvider = 'notebook';
         let defaultTranslationInstructions = '';
+        let gameGlossaryInstructions = '';
         let cancellingJobId = '';
         let manualResultPinned = false;
         let shownAutoResultJobId = '';
@@ -245,6 +246,43 @@
                 button.disabled = false;
                 button.textContent = 'Chọn MP4';
             }
+        }
+
+        function nativeVideoPicker() {
+            const api = window.pywebview && window.pywebview.api;
+            return api && typeof api.select_local_video === 'function' ? api : null;
+        }
+
+        // Desktop app: the native dialog hands the file path to Python, which hard-links
+        // or copies it once. The browser fallback below has to upload the whole MP4.
+        async function prepareNativeLocalPreview(api) {
+            const requestId = previewRequestId;
+            const button = byId('local-video-btn');
+            const previousStatus = byId('preview-status').value;
+            button.disabled = true;
+            button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang nạp MP4</span>';
+            byId('preview-status').value = 'Đang chọn MP4…';
+            try {
+                const data = await api.select_local_video();
+                if (requestId !== previewRequestId) return;
+                if (!data) { byId('preview-status').value = previousStatus; return; }
+                invalidatePreview('Đang mở preview…');
+                applyPreview(data);
+                showToast('MP4 local đã sẵn sàng để chỉnh vùng OCR.');
+            } catch (error) {
+                if (requestId !== previewRequestId) return;
+                byId('preview-status').value = 'Không nạp được MP4';
+                showToast((error && error.message) || String(error), 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Chọn MP4';
+            }
+        }
+
+        function chooseLocalVideo() {
+            const api = nativeVideoPicker();
+            if (api) { prepareNativeLocalPreview(api); return; }
+            byId('local-video-input').click();
         }
 
         function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
@@ -531,6 +569,7 @@
         }
 
         async function checkEdge() {
+            if (document.hidden) return;
             try { const data = await fetchJson('/api/check-edge'); byId('edge-pill').className = `status-pill ${data.connected ? 'ready' : 'error'}`; byId('edge-pill').querySelector('span').textContent = data.connected ? 'Edge sẵn sàng' : 'Edge chưa kết nối'; }
             catch (_) {}
         }
@@ -575,6 +614,8 @@
                 byId('setting-api-base-url').value = data.translation_api_base_url || '';
                 byId('setting-api-model').value = data.translation_api_model || '';
                 defaultTranslationInstructions = data.translation_default_instructions || '';
+                gameGlossaryInstructions = data.translation_game_glossary_preset || '';
+                byId('load-game-glossary-btn').disabled = !gameGlossaryInstructions;
                 byId('setting-translation-instructions').value = data.translation_instructions || defaultTranslationInstructions;
                 byId('setting-api-key').value = '';
                 translationApiKeySet = Boolean(data.translation_api_key_set);
@@ -655,6 +696,17 @@
             await saveSettingsNow();
         }
 
+        async function loadGameGlossaryPreset() {
+            if (!gameGlossaryInstructions) return;
+            const current = byId('setting-translation-instructions').value.trim();
+            const untouched = !current || current === defaultTranslationInstructions.trim() || current === gameGlossaryInstructions.trim();
+            if (!untouched && !window.confirm('Thay cách dịch hiện tại bằng từ điển game mẫu (Delta Force)?')) return;
+            byId('setting-translation-instructions').value = gameGlossaryInstructions;
+            clearTimeout(saveSettingsTimer);
+            saveSettingsTimer = null;
+            await saveSettingsNow();
+        }
+
         async function testTranslationApi() {
             const button = byId('test-api-btn');
             button.disabled = true;
@@ -721,7 +773,7 @@
 
         window.addEventListener('load', () => {
             byId('preview-form').addEventListener('submit', preparePreview);
-            byId('local-video-btn').onclick=()=>byId('local-video-input').click(); byId('local-video-input').addEventListener('change', prepareLocalPreview);
+            byId('local-video-btn').onclick=chooseLocalVideo; byId('local-video-input').addEventListener('change', prepareLocalPreview);
             byId('url-input').addEventListener('input', () => {
                 byId('char-count').textContent=`${byId('url-input').value.length} ký tự`;
                 setUrlError();
@@ -771,6 +823,7 @@
             byId('setting-translation-provider').addEventListener('change', () => { updateTranslationProviderUI(true); saveSettings(); });
             byId('setting-translation-instructions').addEventListener('change', saveSettings);
             byId('reset-translation-instructions-btn').onclick=resetTranslationInstructions;
+            byId('load-game-glossary-btn').onclick=loadGameGlossaryPreset;
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
             byId('setting-api-base-url').addEventListener('change', saveSettings); byId('setting-api-model').addEventListener('change', saveSettings); byId('setting-api-key').addEventListener('change', saveSettings);
             byId('test-api-btn').onclick=testTranslationApi; byId('clear-api-key-btn').onclick=clearTranslationApiKey;
