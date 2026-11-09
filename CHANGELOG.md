@@ -4,6 +4,18 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the external Douzy dependency with a built-in native Douyin downloader (`vietsub/douyin.py`) that resolves short links, extracts watermark-free MP4 streams and thumbnails directly from Douyin/iesdouyin (with local Edge CDP fallback), caches downloads in `downloads/`, and tracks history in `download_history.json`.
+- Modularized core functionality into the `vietsub` package (`constants.py`, `validators.py`, `srt.py`, `douyin.py`) and added `pyproject.toml` for unified Ruff linting and pytest configuration.
+
+### Fixed
+
+- Fixed workflow cancellation responsiveness when coordinating or waiting on a background prefetch thread, and protected `prefetch_job_id` state transitions under `queue_state_lock`.
+- Made `workflow_lock` release ownership explicit (`release_lock_on_exit`) in `run_workflow_thread`.
+- Tightened `normalize_translated_srt` so sequential `1..N` chunk renumbering is only accepted when source and translated timecode intervals still match.
+- Added `CREATE_NO_WINDOW` to `ffprobe` subprocess calls on Windows to prevent console window flashes during video duration and resolution probing.
+
 ## [1.5.3] - 2026-08-04
 
 ### Security

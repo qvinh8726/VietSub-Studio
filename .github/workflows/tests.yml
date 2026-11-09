@@ -28,9 +28,27 @@ jobs:
       - name: Validate dependencies
         run: python -m pip check
       - name: Compile
-        run: python -m py_compile app.py automate.py
+        run: python -m py_compile app.py automate.py vietsub/__init__.py vietsub/constants.py vietsub/validators.py vietsub/srt.py vietsub/douyin.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+  landing-page:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: landing-page
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: landing-page/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build landing page
+        run: npm run build
 
   package-smoke:
     needs: unit-tests
@@ -52,6 +70,13 @@ jobs:
         run: |
           python -m pip freeze | Out-File -Encoding utf8 "dist_portable\dependencies.txt"
           $exe = Resolve-Path "dist_portable\VietSub Studio.exe"
+          $bundleRoot = "dist_portable\bundle\VietSub Studio"
+          New-Item -ItemType Directory -Force -Path $bundleRoot | Out-Null
+          Copy-Item -LiteralPath $exe.Path -Destination (Join-Path $bundleRoot "VietSub Studio.exe") -Force
+          $zipPath = "dist_portable\VietSub-Studio-Portable.zip"
+          Compress-Archive -Path $bundleRoot -DestinationPath $zipPath -Force
+          $zipHash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash.ToLowerInvariant()
+          "$zipHash  VietSub-Studio-Portable.zip" | Out-File -Encoding ascii "dist_portable\VietSub-Studio-Portable.zip.sha256.txt"
           $manifest = [ordered]@{
             commit = "${{ github.sha }}"
             ref = "${{ github.ref }}"
@@ -59,6 +84,7 @@ jobs:
             architecture = "x64"
             artifact = $exe.Path
             sha256 = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+            zip_sha256 = $zipHash
           }
           $manifest | ConvertTo-Json | Out-File -Encoding utf8 "dist_portable\build-manifest.json"
       - name: Smoke-test packaged local server
@@ -106,6 +132,8 @@ jobs:
           name: VietSub-Studio-Portable-${{ github.sha }}
           path: |
             dist_portable/VietSub Studio.exe
+            dist_portable/VietSub-Studio-Portable.zip
+            dist_portable/VietSub-Studio-Portable.zip.sha256.txt
             dist_portable/build-manifest.json
             dist_portable/dependencies.txt
           if-no-files-found: error

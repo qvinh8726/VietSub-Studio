@@ -18,7 +18,8 @@ Báo cáo nên có phiên bản bị ảnh hưởng, các bước tái hiện, m
 
 ## Data handling summary / Tóm tắt xử lý dữ liệu
 
-- Video downloading is delegated to the locally installed Douzy application.
+- Douyin video downloading is handled directly by VietSub Studio's built-in downloader (validating HTTPS CDN hosts, MP4 `ftyp` headers, and max payload size, with local Edge CDP fallback only when needed).
+- Note on Edge CDP: When Notebook mode or Edge fallback is active, Microsoft Edge exposes a remote debugging port on `127.0.0.1` using a dedicated isolated profile (`edge_debug_profile`). Other processes running under the same local Windows user account could connect to that loopback port while Edge is open; keep untrusted software off the local account.
 - OCR is delegated to the locally installed VideOCR CLI.
 - Subtitle text is submitted to the user's Gemini Notebook through a local Edge browser session.
 - VietSub Studio does not require a Gemini API key and does not bundle Google credentials.

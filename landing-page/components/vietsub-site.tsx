@@ -183,8 +183,8 @@ const faqs = [
     a: "Không. Đây là lớp điều phối cho workflow OCR -> dịch -> validation -> lưu project. Bạn vẫn dùng editor riêng để dựng video hoặc burn subtitle.",
   },
   {
-    q: "Có cần Douzy cho mọi video không?",
-    a: "Không. Douzy chỉ cần khi nguồn là Douyin. Nếu chọn MP4 local, Studio đưa file vào cache do app quản lý và chạy thẳng preview, OCR, dịch.",
+    q: "Có cần cài thêm công cụ ngoài để tải Douyin không?",
+    a: "Không. VietSub Studio đã tích hợp sẵn bộ tải Douyin không logo trực tiếp trong ứng dụng và tự động tái sử dụng bộ nhớ đệm nếu video đã tải trước đó.",
   },
   {
     q: "Timestamp có bị model dịch sửa không?",
@@ -196,7 +196,7 @@ const faqs = [
   },
   {
     q: "Bản portable đã kèm VideOCR và FFmpeg chưa?",
-    a: "Chưa. Bản portable chỉ đóng gói VietSub Studio. VideOCR, Douzy, FFmpeg, Edge và tài khoản AI là phụ thuộc bên ngoài do bạn tự cài và quản lý.",
+    a: "Chưa. Bản portable đóng gói VietSub Studio kèm bộ tải Douyin tích hợp. VideOCR, FFmpeg, Edge và tài khoản AI là phụ thuộc bên ngoài do bạn tự cài và quản lý.",
   },
 ];
 
@@ -761,7 +761,7 @@ function RequirementCard() {
           <p>Khuyến nghị</p>
           <ul>
             <li><Check size={14} /> FFmpeg + FFprobe</li>
-            <li><Check size={14} /> Douzy cho Douyin</li>
+            <li><Check size={14} /> Bộ tải Douyin tích hợp sẵn</li>
             <li><Check size={14} /> Edge cho Notebook</li>
           </ul>
         </div>
@@ -1015,7 +1015,7 @@ export default function VietSubSite() {
                   <p>
                     Tải asset <code>VietSub-Studio-Portable-v*.zip</code> từ GitHub Releases, giải nén vào thư mục
                     có quyền ghi và mở <code>VietSub Studio.exe</code>. Bản portable chỉ đóng gói ứng dụng điều phối;
-                    VideOCR, Douzy, FFmpeg, Edge và tài khoản AI vẫn là phụ thuộc bên ngoài.
+                    VideOCR, FFmpeg, Edge và tài khoản AI vẫn là phụ thuộc bên ngoài.
                   </p>
                   <div className="mini-doc-grid three">
                     <MiniDocCard icon={Download} title="1. Tải app" body="Windows 10/11 x64" />
@@ -1065,7 +1065,7 @@ export default function VietSubSite() {
                 <DocsSection id="output" label="05 / OUTPUT VÀ PRIVACY" title="Một folder cho mỗi project">
                   <p>
                     Sau validation, Studio lưu video, thumbnail nếu có, <code>.raw.srt</code>, <code>.vi.srt</code>,
-                    asset Douzy và <code>project.json</code> vào một folder riêng. App bind Flask trên
+                    metadata nguồn và <code>project.json</code> vào một folder riêng. App bind Flask trên
                     <code>127.0.0.1</code>, lưu config local và cảnh báo nếu output nằm trong OneDrive.
                   </p>
                   <CodeBlock />

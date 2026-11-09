@@ -24,6 +24,9 @@
         let translationApiKeySet = false;
         let lastTranslationProvider = 'notebook';
         let defaultTranslationInstructions = '';
+        let cancellingJobId = '';
+        let manualResultPinned = false;
+        let shownAutoResultJobId = '';
 
         function showToast(message, type = 'success') {
             clearTimeout(toastTimer);
@@ -66,6 +69,9 @@
                     byId('update-btn').textContent = automaticUpdateSupported ? 'Tải & cài ngay →' : 'Mở trang tải →';
                     byId('update-banner').hidden = false;
                     showToast(`Có bản cập nhật v${data.latest_version}.`);
+                } else if (data.check_failed) {
+                    pill.className = 'status-pill';
+                    pill.querySelector('span').textContent = `v${data.current_version}`;
                 } else {
                     pill.className = 'status-pill ready';
                     pill.querySelector('span').textContent = `v${data.current_version} · mới nhất`;
@@ -121,6 +127,37 @@
             input.setAttribute('aria-invalid', message ? 'true' : 'false');
         }
 
+        function formatVideoTime(seconds) {
+            const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+            const mins = String(Math.floor(total / 60)).padStart(2, '0');
+            const secs = String(total % 60).padStart(2, '0');
+            return `${mins}:${secs}`;
+        }
+
+        function syncPlaybackControls() {
+            const player = byId('preview-player');
+            const playBtn = byId('video-play-btn');
+            const seekInput = byId('video-seek');
+            const timeLabel = byId('video-time');
+            if (!playBtn || !seekInput || !timeLabel) return;
+            const duration = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0;
+            const current = Number.isFinite(player.currentTime) && player.currentTime > 0 ? player.currentTime : 0;
+            playBtn.textContent = player.paused ? '▶ Phát' : '⏸ Tạm dừng';
+            seekInput.max = duration > 0 ? String(duration) : '100';
+            seekInput.value = duration > 0 ? String(Math.min(current, duration)) : '0';
+            timeLabel.textContent = `${formatVideoTime(current)} / ${formatVideoTime(duration)}`;
+        }
+
+        function togglePreviewPlayback() {
+            const player = byId('preview-player');
+            if (!currentPreview || player.hidden) return;
+            if (player.paused) {
+                player.play().catch(() => {});
+            } else {
+                player.pause();
+            }
+        }
+
         function invalidatePreview(status = 'Nguồn đã thay đổi · hãy tạo preview lại') {
             previewRequestId += 1;
             currentPreview = null;
@@ -128,6 +165,7 @@
             player.pause(); player.removeAttribute('src'); player.removeAttribute('data-preview-id'); player.load(); player.hidden = true;
             byId('video-stage').style.aspectRatio = ''; byId('video-stage').style.minHeight = '';
             byId('preview-placeholder').hidden = false; byId('crop-box').hidden = true; byId('crop-tools').hidden = true;
+            syncPlaybackControls();
             byId('preview-title').textContent = 'Chưa có video'; byId('crop-summary').textContent = 'Crop: —';
             byId('preview-status').value = status; byId('add-queue-btn').disabled = true;
         }
@@ -240,15 +278,20 @@
         function startCropDrag(event) {
             if (!currentPreview || event.button !== 0) return;
             const stage = byId('video-stage').getBoundingClientRect();
-            dragState = { startX: event.clientX, startY: event.clientY, crop: {...crop}, handle: event.target.dataset.handle || 'move', stage };
+            const handle = event.target.dataset.handle || 'move';
+            if (handle === 'move' && event.clientY > stage.bottom - 42) return;
+            dragState = { startX: event.clientX, startY: event.clientY, crop: {...crop}, handle, stage, moved: false };
             event.preventDefault();
             event.currentTarget.setPointerCapture?.(event.pointerId);
         }
 
         function moveCrop(event) {
             if (!dragState) return;
-            const dx = (event.clientX - dragState.startX) / dragState.stage.width;
-            const dy = (event.clientY - dragState.startY) / dragState.stage.height;
+            const rawDx = event.clientX - dragState.startX;
+            const rawDy = event.clientY - dragState.startY;
+            if (Math.hypot(rawDx, rawDy) >= 4) dragState.moved = true;
+            const dx = rawDx / dragState.stage.width;
+            const dy = rawDy / dragState.stage.height;
             const base = dragState.crop;
             let next = {...base};
             if (dragState.handle === 'move') {
@@ -265,7 +308,12 @@
             setCrop(next);
         }
 
-        function endCropDrag() { dragState = null; }
+        function endCropDrag() {
+            if (dragState && dragState.handle === 'move' && !dragState.moved) {
+                togglePreviewPlayback();
+            }
+            dragState = null;
+        }
 
         async function saveDefaultCrop() {
             try {
@@ -311,14 +359,19 @@
             const list = byId('queue-list');
             byId('queue-count').textContent = queueJobs.length;
             const queuedCount = queueJobs.filter(job => job.status === 'queued').length;
-            const running = queueJobs.some(job => job.status === 'running');
+            const runningJob = queueJobs.find(job => job.status === 'running');
+            const running = Boolean(runningJob);
             const queuedSources = new Set(queueJobs.filter(job => job.status === 'queued').map(job => job.source_type || 'douyin'));
             const queueReady = [...queuedSources].every(source => source === 'local' ? healthReadiness.local : healthReadiness.douyin);
             byId('start-queue-btn').disabled = !queuedCount || running || !queueReady;
             byId('start-queue-btn').textContent = running ? 'Đang chạy tuần tự…' : !queueReady ? 'Thiếu thành phần bắt buộc' : `Chạy hàng đợi${queuedCount ? ` (${queuedCount})` : ''}`;
             const cancelButton = byId('cancel-btn');
             cancelButton.hidden = !running;
-            if (!running) { cancelButton.disabled = false; cancelButton.textContent = 'Huỷ job'; }
+            if (!running || (runningJob && cancellingJobId && runningJob.id !== cancellingJobId)) {
+                cancellingJobId = '';
+                cancelButton.disabled = false;
+                cancelButton.textContent = 'Huỷ job';
+            }
             if (!queueJobs.length) { list.innerHTML = '<div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div>'; return; }
             list.replaceChildren();
             queueJobs.forEach((job, index) => {
@@ -369,7 +422,7 @@
         }
 
         async function startQueue() {
-            try { await fetchJson('/api/queue/start', {method: 'POST'}); hideResult(); displayedLogCount = 0; progressJobId = ''; byId('console-box').replaceChildren(); await loadQueue(); showToast('Hàng đợi đã bắt đầu chạy tuần tự.'); }
+            try { await flushPendingSettings(); await fetchJson('/api/queue/start', {method: 'POST'}); hideResult(); displayedLogCount = 0; progressJobId = ''; byId('console-box').replaceChildren(); await loadQueue(); showToast('Hàng đợi đã bắt đầu chạy tuần tự.'); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -380,12 +433,12 @@
         }
 
         async function retryQueueJob(id) {
-            try { await fetchJson(`/api/queue/${id}/retry`, {method:'POST'}); hideResult(); await loadQueue(); showToast('Job đã được đưa lại vào hàng đợi.'); }
+            try { await flushPendingSettings(); await fetchJson(`/api/queue/${id}/retry`, {method:'POST'}); hideResult(); await loadQueue(); showToast('Job đã được đưa lại vào hàng đợi.'); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
         async function showEdgeLogin() {
-            try { await fetchJson('/api/edge/show', {method:'POST'}); showToast('Đã mở Edge. Đăng nhập xong rồi bấm chạy lại job.'); }
+            try { await flushPendingSettings(); await fetchJson('/api/edge/show', {method:'POST'}); showToast('Đã mở Edge. Đăng nhập xong rồi bấm chạy lại job.'); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -397,8 +450,9 @@
 
         async function cancelJob() {
             const button = byId('cancel-btn'); button.disabled = true; button.textContent = 'Đang huỷ…';
+            cancellingJobId = queueJobs.find(job => job.status === 'running')?.id || progressJobId || 'pending';
             try { await fetchJson('/api/cancel', {method:'POST'}); showToast('Đã gửi yêu cầu huỷ job hiện tại.'); }
-            catch (error) { button.disabled = false; button.textContent = 'Huỷ job'; showToast(error.message, 'error'); }
+            catch (error) { cancellingJobId = ''; button.disabled = false; button.textContent = 'Huỷ job'; showToast(error.message, 'error'); }
         }
 
         function updateSteps(step, status) {
@@ -424,11 +478,24 @@
         async function pollProgress() {
             try {
                 const data = await fetchJson(`/api/progress?after=${displayedLogCount}`);
-                if (data.job_id && data.job_id !== progressJobId) { hideResult(); progressJobId = data.job_id; displayedLogCount = 0; byId('console-box').replaceChildren(); return pollProgress(); }
+                if (data.job_id && data.job_id !== progressJobId) {
+                    if (!manualResultPinned) hideResult();
+                    progressJobId = data.job_id;
+                    displayedLogCount = 0;
+                    byId('console-box').replaceChildren();
+                    return pollProgress();
+                }
                 (data.logs || []).forEach(addLog); displayedLogCount = data.next_log_index ?? displayedLogCount;
                 if (data.status !== 'idle') updateSteps(data.step, data.status);
-                if (data.status === 'success' && data.result_ready) showResult(data.result, false);
-                else if (['running', 'error', 'cancelled'].includes(data.status)) hideResult();
+                if (data.status === 'success' && data.result_ready) {
+                    const resultKey = data.job_id || data.result?.project_dir || 'completed';
+                    if (shownAutoResultJobId !== resultKey) {
+                        shownAutoResultJobId = resultKey;
+                        showResult(data.result, false);
+                    }
+                } else if (['running', 'error', 'cancelled'].includes(data.status) && !manualResultPinned) {
+                    hideResult();
+                }
                 pollFailureCount = 0;
             } catch (error) {
                 pollFailureCount += 1;
@@ -438,12 +505,14 @@
         }
 
         function hideResult() {
+            manualResultPinned = false;
             resultOpenPath = '';
             byId('res-video').textContent = ''; byId('res-thumbnail').textContent = ''; byId('res-thumbnail-row').hidden = true; byId('res-raw').textContent = ''; byId('res-vi').textContent = '';
             byId('result-box').hidden = true;
         }
 
         function showResult(result, scroll = false) {
+            if (scroll) manualResultPinned = true;
             resultOpenPath = result.project_dir || result.translated_srt || '';
             byId('result-title').textContent = `${result.project_name || 'Bộ file'} đã sẵn sàng`;
             byId('res-video').textContent = result.video || ''; byId('res-thumbnail').textContent = result.thumbnail || ''; byId('res-thumbnail-row').hidden = !result.thumbnail; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
@@ -566,12 +635,23 @@
 
         function saveSettings() {
             clearTimeout(saveSettingsTimer);
-            saveSettingsTimer = setTimeout(saveSettingsNow, 250);
+            saveSettingsTimer = setTimeout(() => {
+                saveSettingsTimer = null;
+                saveSettingsNow();
+            }, 250);
+        }
+
+        async function flushPendingSettings() {
+            if (!saveSettingsTimer) return;
+            clearTimeout(saveSettingsTimer);
+            saveSettingsTimer = null;
+            await saveSettingsNow({silent: true, throwOnError: true});
         }
 
         async function resetTranslationInstructions() {
             byId('setting-translation-instructions').value = defaultTranslationInstructions;
             clearTimeout(saveSettingsTimer);
+            saveSettingsTimer = null;
             await saveSettingsNow();
         }
 
@@ -580,6 +660,8 @@
             button.disabled = true;
             button.textContent = 'Đang kiểm tra…';
             try {
+                clearTimeout(saveSettingsTimer);
+                saveSettingsTimer = null;
                 await saveSettingsNow({silent:true, throwOnError:true});
                 const data = await fetchJson('/api/translation/test', {method:'POST'});
                 showToast(`${data.provider} · ${data.model}: kết nối OK`);
@@ -593,6 +675,8 @@
 
         async function clearTranslationApiKey() {
             if (!translationApiKeySet || !window.confirm('Xoá API key đã lưu trên máy này?')) return;
+            clearTimeout(saveSettingsTimer);
+            saveSettingsTimer = null;
             await saveSettingsNow({clearApiKey:true});
         }
 
@@ -616,7 +700,7 @@
                 const data = await fetchJson('/api/health'); list.replaceChildren();
                 healthReadiness = {local: Boolean(data.ready_local), douyin: Boolean(data.ready_douyin)};
                 renderQueue();
-                const labels = {douzy_sidecar:'Douzy sidecar',douzy_config:'Cấu hình Douzy',douzy_database:'Database Douzy',videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',edge:'Microsoft Edge'};
+                const labels = {douyin_downloader:'Bộ tải Douyin',videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',edge:'Microsoft Edge'};
                 Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; const strong=document.createElement('strong'); strong.textContent=`${labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
             } catch (error) { healthReadiness = {local: false, douyin: false}; renderQueue(); list.textContent = error.message; }
         }
@@ -625,7 +709,7 @@
             const list = byId('history-list');
             try {
                 const data = await fetchJson('/api/history'); list.replaceChildren();
-                if (!data.length) { list.textContent = 'Chưa có video trong lịch sử Douzy.'; return; }
+                if (!data.length) { list.textContent = 'Chưa có video Douyin nào gần đây.'; return; }
                 data.slice(0,8).forEach(item => { const row=document.createElement('div'); row.className='history-row'; const info=document.createElement('div'); const title=document.createElement('strong'); title.textContent=item.title||`Douyin ${item.aweme_id}`; const meta=document.createElement('small'); meta.textContent=`ID ${item.aweme_id}`; info.append(title,meta); const button=document.createElement('button'); button.className='btn-ghost'; button.textContent='Nạp'; button.onclick=()=>{invalidatePreview(); byId('url-input').value=`https://www.douyin.com/video/${item.aweme_id}`; byId('project-name').value=item.title||''; autoProjectName=item.title||''; byId('char-count').textContent=`${byId('url-input').value.length} ký tự`; updateNamePreview(); window.scrollTo({top:0,behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}; row.append(info,button); list.appendChild(row); });
             } catch (error) { list.textContent = error.message; }
         }
@@ -652,7 +736,24 @@
                 const stage = byId('video-stage'); stage.style.aspectRatio = `${player.videoWidth} / ${player.videoHeight}`; stage.style.minHeight = '0';
                 byId('preview-status').value = currentPreview.source_type === 'local' ? 'MP4 local sẵn sàng' : 'Sẵn sàng chỉnh crop';
                 byId('add-queue-btn').disabled = false;
+                syncPlaybackControls();
             });
+            ['timeupdate', 'play', 'pause', 'ended', 'durationchange'].forEach(evt => {
+                byId('preview-player').addEventListener(evt, syncPlaybackControls);
+            });
+            if (byId('video-play-btn')) {
+                byId('video-play-btn').addEventListener('click', togglePreviewPlayback);
+            }
+            if (byId('video-seek')) {
+                byId('video-seek').addEventListener('input', event => {
+                    const player = byId('preview-player');
+                    const target = Number(event.target.value);
+                    if (Number.isFinite(target) && Number.isFinite(player.duration) && player.duration > 0) {
+                        player.currentTime = target;
+                    }
+                    syncPlaybackControls();
+                });
+            }
             byId('preview-player').addEventListener('error', () => {
                 const player = byId('preview-player');
                 if (!currentPreview || player.dataset.previewId !== currentPreview.id) return;

@@ -2,13 +2,12 @@ import io
 import hashlib
 import json
 import os
-import sqlite3
 import sys
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import Mock, patch
 
 import app
 import automate
@@ -72,7 +71,7 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.validate_output_dir("relative-folder")
 
-    def test_default_output_directory_is_independent_from_douzy(self):
+    def test_default_output_directory_uses_documents_folder(self):
         with patch.object(app, "get_documents_directory", return_value=r"C:\Users\Test\Documents"):
             self.assertEqual(
                 app.get_default_output_directory(),
@@ -355,51 +354,53 @@ class ValidationTests(unittest.TestCase):
         browser_fallback.assert_called_once_with()
         release_lock.assert_called_once_with()
 
-    def test_only_fresh_douzy_downloads_are_moved(self):
+    def test_only_fresh_downloaded_sources_are_moved(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
-            download_root = Path(temporary_dir) / "douzy"
+            download_root = Path(temporary_dir) / "downloads"
             source_folder = download_root / "video-id"
             source_folder.mkdir(parents=True)
             source = source_folder / "video-id.mp4"
             source.write_bytes(b"video")
 
-            with patch.object(app, "get_douzy_download_dir", return_value=str(download_root)):
-                self.assertTrue(app.should_move_douzy_source(str(source)))
+            with patch.object(app, "get_download_cache_dir", return_value=str(download_root)):
+                self.assertTrue(app.should_move_downloaded_source(str(source)))
                 (source_folder / "project.json").write_text("{}", encoding="utf-8")
-                self.assertFalse(app.should_move_douzy_source(str(source)))
+                self.assertFalse(app.should_move_downloaded_source(str(source)))
 
-    def test_sidecar_startup_cleans_process_when_cancelled(self):
-        process = Mock()
-        process.poll.return_value = None
-        process.stdout = Mock()
-        process.stdout.readline.return_value = ""
+    def test_download_douyin_stream_cleans_partial_file_when_cancelled(self):
+        mp4_header = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+
+        class FakeResponse:
+            headers = {"Content-Length": str(len(mp4_header)), "Content-Type": "video/mp4"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return "https://v26-web.douyinvod.com/video/tos/cn/test.mp4"
+
+            def read(self, _size=-1):
+                return mp4_header
+
         with tempfile.TemporaryDirectory() as temporary_dir:
-            sidecar = Path(temporary_dir) / "sidecar.exe"
-            config = Path(temporary_dir) / "config.yml"
-            sidecar.write_bytes(b"exe")
-            config.write_text("path: test", encoding="utf-8")
-            with (
-                patch.object(app, "SIDECAR_BIN", str(sidecar)),
-                patch.object(app, "DOUZY_CONFIG", str(config)),
-                patch.object(app.subprocess, "Popen", return_value=process),
-                patch.object(
-                    app,
-                    "check_cancel_requested",
-                    side_effect=[None, app.WorkflowCancelled("cancelled")],
-                ),
-                patch.object(app, "stop_process") as stop_process,
-            ):
+            destination = Path(temporary_dir) / "123.mp4"
+            with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse()):
                 with self.assertRaises(app.WorkflowCancelled):
-                    app.start_douzy_sidecar()
+                    app.download_douyin_stream(
+                        ["https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200f"],
+                        str(destination),
+                        check_cancel=Mock(side_effect=[None, app.WorkflowCancelled("cancelled")]),
+                    )
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(Path(temporary_dir).glob("*.part")), [])
 
-        stop_process.assert_called_once_with(process, "sidecar Douzy")
-        with app.active_process_lock:
-            self.assertNotIn("sidecar Douzy", app.active_processes)
-
-    def test_douzy_asset_matching_does_not_move_prefix_siblings(self):
+    def test_downloaded_asset_matching_does_not_move_prefix_siblings(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
-            source_folder = directory / "douzy"
+            source_folder = directory / "downloads"
             source_folder.mkdir()
             source = source_folder / "123.mp4"
             unrelated = source_folder / "1234.mp4"
@@ -409,7 +410,7 @@ class ValidationTests(unittest.TestCase):
                 str(source), "Video", "123", output_dir=str(directory / "exports"), defer_video_move=True
             )
             with (
-                patch.object(app, "DOUZY_DB", str(directory / "missing.db")),
+                patch.object(app, "DOWNLOAD_HISTORY_PATH", str(directory / "history.json")),
                 patch.object(app, "replace_source_video_references"),
             ):
                 app.finalize_project_assets(project, "123")
@@ -478,7 +479,7 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(Path(project["thumbnail"]).read_bytes(), thumbnail.read_bytes())
 
             with (
-                patch.object(app, "DOUZY_DB", str(directory / "missing.db")),
+                patch.object(app, "DOWNLOAD_HISTORY_PATH", str(directory / "history.json")),
                 patch.object(app, "replace_source_video_references"),
             ):
                 app.finalize_project_assets(project, "123")
@@ -1303,87 +1304,131 @@ class ValidationTests(unittest.TestCase):
 
 
 class DownloadLookupTests(unittest.TestCase):
-    def test_updates_douzy_history_after_moving_the_video(self):
+    def test_updates_download_history_after_moving_the_video(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
-            database = directory / "douzy.db"
+            history_path = directory / "download_history.json"
             destination = directory / "project.mp4"
             destination.write_bytes(b"video")
 
-            connection = sqlite3.connect(database)
-            try:
-                connection.execute(
-                    "CREATE TABLE aweme (id INTEGER PRIMARY KEY, aweme_id TEXT, download_time INTEGER, file_path TEXT)"
-                )
-                connection.execute(
-                    "INSERT INTO aweme (aweme_id, download_time, file_path) VALUES (?, ?, ?)",
-                    ("target", 101, "old-folder"),
-                )
-                connection.commit()
-            finally:
-                connection.close()
+            app.record_download_history(
+                str(history_path),
+                video_id="7345678901234567890",
+                title="Video demo",
+                file_path="old-folder/7345678901234567890.mp4",
+                cover_url="https://p3.douyinpic.com/cover.jpeg",
+                source_url="https://www.douyin.com/video/7345678901234567890",
+            )
+            app.update_download_history_path(
+                str(history_path),
+                "7345678901234567890",
+                str(destination),
+            )
 
-            with patch.object(app, "DOUZY_DB", str(database)):
-                app.update_douzy_video_path("target", str(destination))
+            items = app.load_download_history(str(history_path))
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["aweme_id"], "7345678901234567890")
+            self.assertEqual(items[0]["file_path"], str(destination))
 
-            connection = sqlite3.connect(database)
-            try:
-                saved_path = connection.execute(
-                    "SELECT file_path FROM aweme WHERE aweme_id = ?", ("target",)
-                ).fetchone()[0]
-            finally:
-                connection.close()
-            self.assertEqual(saved_path, str(destination))
+    def test_extracts_watermark_free_stream_and_metadata_from_douyin_html(self):
+        router_payload = {
+            "loaderData": {
+                "video_(id)/page": {
+                    "videoInfoRes": {
+                        "item_list": [
+                            {
+                                "aweme_id": "7345678901234567890",
+                                "desc": "Tập 1: Hành trình mới #douyin",
+                                "video": {
+                                    "play_addr": {
+                                        "uri": "v0200fg10000c",
+                                        "url_list": [
+                                            "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=v0200fg10000c&ratio=1080p&line=0"
+                                        ],
+                                    },
+                                    "cover": {
+                                        "url_list": ["https://p3-sign.douyinpic.com/tos-cn-p-0015/cover.jpeg"]
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        html_text = f"<script>window._ROUTER_DATA = {json.dumps(router_payload)}</script>"
+        metadata = app.extract_douyin_metadata_from_html(html_text, expected_video_id="7345678901234567890")
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata["video_id"], "7345678901234567890")
+        self.assertEqual(metadata["video_title"], "Tập 1: Hành trình mới #douyin")
+        self.assertEqual(metadata["cover_url"], "https://p3-sign.douyinpic.com/tos-cn-p-0015/cover.jpeg")
+        self.assertTrue(
+            any("/aweme/v1/play/?" in url for url in metadata["stream_urls"]),
+            metadata["stream_urls"],
+        )
+        self.assertFalse(any("/playwm/" in url for url in metadata["stream_urls"]))
 
-    def test_looks_up_the_requested_video_id_only(self):
+    def test_download_douyin_stream_validates_mp4_and_writes_file(self):
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2video-payload"
+
+        class FakeResponse:
+            headers = {"Content-Length": str(len(mp4_bytes)), "Content-Type": "video/mp4"}
+
+            def __init__(self, payload):
+                self._stream = io.BytesIO(payload)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return "https://v26-web.douyinvod.com/video/tos/cn/stream.mp4"
+
+            def read(self, size=-1):
+                return self._stream.read(size)
+
         with tempfile.TemporaryDirectory() as temporary_dir:
-            directory = Path(temporary_dir)
-            database = directory / "douzy.db"
-            video = directory / "target.mp4"
-            video.write_bytes(b"video")
-
-            connection = sqlite3.connect(database)
-            try:
-                connection.execute(
-                    "CREATE TABLE aweme (id INTEGER PRIMARY KEY, aweme_id TEXT, download_time INTEGER, file_path TEXT)"
+            destination = Path(temporary_dir) / "7345678901234567890.mp4"
+            with patch.object(
+                app.urllib.request,
+                "urlopen",
+                side_effect=lambda *_a, **_kw: FakeResponse(mp4_bytes),
+            ):
+                result = app.download_douyin_stream(
+                    ["https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200fg10000c"],
+                    str(destination),
                 )
-                connection.execute(
-                    "INSERT INTO aweme (aweme_id, download_time, file_path) VALUES (?, ?, ?)",
-                    ("target", 101, str(video)),
-                )
-                connection.execute(
-                    "INSERT INTO aweme (aweme_id, download_time, file_path) VALUES (?, ?, ?)",
-                    ("other", 102, str(video)),
-                )
-                connection.commit()
-            finally:
-                connection.close()
+            self.assertEqual(result, str(destination))
+            self.assertEqual(destination.read_bytes(), mp4_bytes)
 
-            with patch.object(app, "DOUZY_DB", str(database)):
-                self.assertEqual(app.get_downloaded_video_file(100, "target"), str(video))
-                self.assertEqual(
-                    app.get_downloaded_video_file(200, "target", allow_existing=True), str(video)
-                )
-                with self.assertRaises(FileNotFoundError):
-                    app.get_downloaded_video_file(100, "missing")
-
-    def test_retries_when_douzy_database_is_locked(self):
-        with (
-            patch.object(
-                app,
-                "get_downloaded_video_file",
-                side_effect=[sqlite3.OperationalError("database is locked"), "video.mp4"],
-            ),
-            patch.object(app.time, "sleep"),
-        ):
-            self.assertEqual(app.wait_for_downloaded_video_file(100, "target"), "video.mp4")
-
-    def test_resolves_an_mp4_inside_a_douzy_folder(self):
+    def test_download_video_source_reuses_valid_cached_mp4(self):
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2cached"
+        video_id = "7345678901234567890"
         with tempfile.TemporaryDirectory() as temporary_dir:
-            directory = Path(temporary_dir)
-            video = directory / "custom-name.mp4"
-            video.write_bytes(b"video")
-            self.assertEqual(app.resolve_video_file_path(str(directory)), str(video))
+            cache_dir = Path(temporary_dir) / "downloads"
+            video_folder = cache_dir / video_id
+            video_folder.mkdir(parents=True)
+            cached_mp4 = video_folder / f"{video_id}.mp4"
+            cached_mp4.write_bytes(mp4_bytes)
+            (video_folder / f"{video_id}_data.json").write_text(
+                json.dumps({"title": "Cached Title"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(app, "DOWNLOAD_CACHE_DIR", str(cache_dir)),
+                patch.object(app, "DOWNLOAD_HISTORY_PATH", str(Path(temporary_dir) / "history.json")),
+                patch.object(app, "fetch_douyin_share_page_metadata") as fetch_meta,
+            ):
+                downloaded = app.download_video_source(
+                    f"https://www.douyin.com/video/{video_id}",
+                    "",
+                )
+            fetch_meta.assert_not_called()
+            self.assertEqual(downloaded["video_id"], video_id)
+            self.assertEqual(downloaded["source_video"], str(cached_mp4))
+            self.assertEqual(downloaded["video_title"], "Cached Title")
 
 
 class QueuePersistenceTests(unittest.TestCase):
@@ -2397,7 +2442,11 @@ class ApiTests(unittest.TestCase):
         )
 
     def test_health_reports_required_dependencies(self):
-        response = self.client.get("/api/health")
+        with (
+            patch.object(app, "load_app_config", return_value={"translation_provider": "notebook"}),
+            patch.object(app, "check_edge_status", return_value=False),
+        ):
+            response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertIn("ready", data)
@@ -2519,72 +2568,213 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Đã huỷ", snapshot["error"])
         self.assertFalse(app.workflow_lock.locked())
 
-    def test_short_share_link_is_sent_directly_to_douzy(self):
+    def test_short_share_link_is_resolved_and_downloaded_natively(self):
         short_url = "https://v.douyin.com/AbCdEfG/"
-        sidecar = Mock()
         self.assertTrue(app.workflow_lock.acquire(blocking=False))
         app.reset_progress()
         try:
-            with (
-                patch.object(app, "load_app_config", return_value={
-                    "notebook_url": "https://gemini.google.com/notebook/test-id"
-                }),
-                patch.object(app, "get_douzy_download_dir", return_value=""),
-                patch.object(app, "start_douzy_sidecar", return_value=(sidecar, 1234, "token")),
-                patch.object(app, "trigger_download", return_value="job-id") as trigger,
-                patch.object(app, "poll_download_job", return_value={"skipped": 1}),
-                patch.object(app, "wait_for_downloaded_video_file", return_value="video.mp4") as wait_for_video,
-                patch.object(app, "get_video_title", return_value="Test video"),
-                patch.object(app, "prepare_project_files", return_value={
-                    "project_name": "Test video",
-                    "project_dir": "project",
-                    "video": "project/Test video.mp4",
-                    "source_video": "video.mp4",
-                    "raw_srt": "project/Test video.raw.srt",
-                    "translated_srt": "project/Test video.vi.srt",
-                }) as prepare_project,
-                patch.object(app, "write_project_manifest"),
-                patch.object(app, "validate_project_result", return_value=True),
-                patch.object(app, "run_videocr", return_value="raw.srt") as run_ocr,
-                patch.object(app, "translate_srt_via_gemini_edge", return_value="vi.srt") as translate,
-                patch.object(
-                    app,
-                    "resolve_url_via_edge",
-                    return_value="https://www.douyin.com/video/123",
-                ) as resolve,
-            ):
-                app.run_workflow_thread(short_url, "ch")
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                cache_dir = Path(temporary_dir) / "downloads"
+                history_path = Path(temporary_dir) / "history.json"
 
-            trigger.assert_called_once_with(1234, "token", short_url, scope="single")
-            resolve.assert_called_once()
-            wait_for_video.assert_called_once_with(ANY, "123", allow_existing=True)
-            prepare_project.assert_called_once_with(
-                "video.mp4",
-                None,
-                "123",
-                video_title="Test video",
-                output_dir="",
-                defer_video_move=False,
-                include_thumbnail=True,
-            )
-            run_ocr.assert_called_once_with(
-                "project/Test video.mp4",
-                ocr_lang="ch",
-                output_srt="project/Test video.raw.srt",
-                crop_coords=None,
-                use_saved_crop=True,
-                video_resolution=None,
-            )
-            translate.assert_called_once_with(
-                "raw.srt",
-                "https://gemini.google.com/notebook/test-id",
-                output_srt="project/Test video.vi.srt",
-                translation_instructions=app.TRANSLATION_GLOSSARY_PROMPT,
-            )
-            self.assertEqual(app.progress_snapshot()["status"], "success")
+                def fake_download_stream(_urls, destination, **_kwargs):
+                    Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                    Path(destination).write_bytes(
+                        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2video"
+                    )
+                    return destination
+
+                with (
+                    patch.object(app, "DOWNLOAD_CACHE_DIR", str(cache_dir)),
+                    patch.object(app, "DOWNLOAD_HISTORY_PATH", str(history_path)),
+                    patch.object(app, "load_app_config", return_value={
+                        "notebook_url": "https://gemini.google.com/notebook/test-id"
+                    }),
+                    patch.object(
+                        app,
+                        "resolve_short_url_via_http",
+                        return_value="https://www.iesdouyin.com/share/video/123/",
+                    ) as resolve_http,
+                    patch.object(
+                        app,
+                        "fetch_douyin_share_page_metadata",
+                        return_value={
+                            "video_id": "123",
+                            "video_title": "Test video",
+                            "stream_urls": ["https://aweme.snssdk.com/aweme/v1/play/?video_id=v123"],
+                            "cover_url": "",
+                        },
+                    ) as fetch_meta,
+                    patch.object(
+                        app,
+                        "download_douyin_stream",
+                        side_effect=fake_download_stream,
+                    ) as download_stream,
+                    patch.object(app, "should_move_downloaded_source", return_value=False),
+                    patch.object(app, "prepare_project_files", return_value={
+                        "project_name": "Test video",
+                        "project_dir": "project",
+                        "video": "project/Test video.mp4",
+                        "source_video": "video.mp4",
+                        "raw_srt": "project/Test video.raw.srt",
+                        "translated_srt": "project/Test video.vi.srt",
+                    }) as prepare_project,
+                    patch.object(app, "write_project_manifest"),
+                    patch.object(app, "validate_project_result", return_value=True),
+                    patch.object(app, "run_videocr", return_value="raw.srt") as run_ocr,
+                    patch.object(app, "translate_srt_via_gemini_edge", return_value="vi.srt") as translate,
+                ):
+                    app.run_workflow_thread(short_url, "ch")
+
+                resolve_http.assert_called_once_with(short_url)
+                fetch_meta.assert_called_once()
+                download_stream.assert_called_once()
+                expected_video = str(cache_dir / "123" / "123.mp4")
+                prepare_project.assert_called_once_with(
+                    expected_video,
+                    None,
+                    "123",
+                    video_title="Test video",
+                    output_dir="",
+                    defer_video_move=False,
+                    include_thumbnail=True,
+                )
+                run_ocr.assert_called_once_with(
+                    "project/Test video.mp4",
+                    ocr_lang="ch",
+                    output_srt="project/Test video.raw.srt",
+                    crop_coords=None,
+                    use_saved_crop=True,
+                    video_resolution=None,
+                )
+                translate.assert_called_once_with(
+                    "raw.srt",
+                    "https://gemini.google.com/notebook/test-id",
+                    output_srt="project/Test video.vi.srt",
+                    translation_instructions=app.TRANSLATION_GLOSSARY_PROMPT,
+                )
+                self.assertEqual(app.progress_snapshot()["status"], "success")
         finally:
             if app.workflow_lock.locked():
                 app.workflow_lock.release()
+
+    def test_replace_source_video_references_does_not_wipe_uninitialized_queue_file(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            original_payload = '{"version": 2, "jobs": [{"id": "keep-me"}]}'
+            queue_path.write_text(original_payload, encoding="utf-8")
+            with (
+                patch.object(app, "QUEUE_PATH", str(queue_path)),
+                patch.object(app, "workflow_jobs", []),
+            ):
+                app.replace_source_video_references("old.mp4", "new.mp4")
+            self.assertEqual(queue_path.read_text(encoding="utf-8"), original_payload)
+
+    def test_normalize_persisted_job_keeps_success_when_files_moved_and_retries_translate(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            moved_job = app.normalize_persisted_job({
+                "id": "moved-success",
+                "status": "success",
+                "step": "done",
+                "result_ready": True,
+                "result": {
+                    "project_dir": str(directory / "missing"),
+                    "video": str(directory / "missing" / "video.mp4"),
+                    "raw_srt": str(directory / "missing" / "video.raw.srt"),
+                    "translated_srt": str(directory / "missing" / "video.vi.srt"),
+                },
+            })
+            self.assertEqual(moved_job["status"], "success")
+            self.assertFalse(moved_job["result_ready"])
+
+            video = directory / "video.mp4"
+            raw_srt = directory / "video.raw.srt"
+            video.write_bytes(b"video")
+            raw_srt.write_text(SOURCE_SRT, encoding="utf-8")
+            retry_job = {
+                "id": "retry-translate",
+                "status": "error",
+                "step": "done",
+                "resume_step": "translate",
+                "result": {
+                    "project_dir": str(directory),
+                    "video": str(video),
+                    "raw_srt": str(raw_srt),
+                    "translated_srt": str(directory / "video.vi.srt"),
+                },
+            }
+            self.assertEqual(app.get_job_retry_step(retry_job), "translate")
+
+    def test_normalize_translated_srt_restores_renumbered_chunk_indexes(self):
+        chunk_source = (
+            "401\n00:30:01,000 --> 00:30:02,000\n你好世界\n\n"
+            "402\n00:30:03,000 --> 00:30:04,000\n谢谢大家\n"
+        )
+        renumbered_translation = (
+            "1\n00:30:01,000 --> 00:30:02,000\nXin chào thế giới\n\n"
+            "2\n00:30:03,000 --> 00:30:04,000\nCảm ơn mọi người\n"
+        )
+        normalized = app.normalize_translated_srt(chunk_source, renumbered_translation)
+        blocks = app.parse_srt_blocks(normalized)
+        self.assertEqual([block[0] for block in blocks], ["401", "402"])
+
+    def test_normalize_translated_srt_rejects_renumbered_blocks_when_timecodes_change(self):
+        chunk_source = (
+            "401\n00:30:01,000 --> 00:30:02,000\n你好世界\n\n"
+            "402\n00:30:03,000 --> 00:30:04,000\n谢谢大家\n"
+        )
+        mismatched_translation = (
+            "1\n00:00:01,000 --> 00:00:02,000\nXin chào thế giới\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\nCảm ơn mọi người\n"
+        )
+        with self.assertRaisesRegex(ValueError, "mốc thời gian"):
+            app.normalize_translated_srt(chunk_source, mismatched_translation)
+
+    def test_cancel_during_prefetch_coordination_stops_prefetch(self):
+        thread = Mock()
+        thread.is_alive.return_value = True
+        app.cancel_event.set()
+        try:
+            with (
+                patch.object(app, "prefetch_thread", thread),
+                patch.object(app, "prefetch_job_id", "same-job"),
+                patch.object(app, "stop_prefetch_processes") as stop_prefetch,
+            ):
+                app.coordinate_prefetch_before_job({"id": "same-job", "source_video": ""})
+            self.assertTrue(app.prefetch_cancel_event.is_set())
+            stop_prefetch.assert_called_once_with()
+            thread.join.assert_called_once_with()
+        finally:
+            app.cancel_event.clear()
+            app.prefetch_cancel_event.clear()
+
+    def test_validate_douyin_url_and_get_video_id_support_iesdouyin_and_modal_id(self):
+        ies_url = "https://www.iesdouyin.com/share/video/7345678901234567890/"
+        modal_url = "https://www.douyin.com/jingxuan?modal_id=7345678901234567890"
+        self.assertEqual(app.validate_douyin_url(ies_url), ies_url)
+        self.assertEqual(app.validate_douyin_url(modal_url), modal_url)
+        self.assertEqual(app.get_video_id(ies_url), "7345678901234567890")
+        self.assertEqual(app.get_video_id(modal_url), "7345678901234567890")
+
+    def test_wait_for_gemini_prompt_returns_none_when_login_required(self):
+        page = Mock()
+        page.url = "https://accounts.google.com/v3/signin/identifier"
+        with patch.object(app, "first_visible_locator", return_value=Mock()):
+            self.assertIsNone(app.wait_for_gemini_prompt(page, timeout_seconds=0.1))
+
+    def test_read_videocr_srt_entries_skips_empty_blocks(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            srt_file = Path(temporary_dir) / "ocr.srt"
+            srt_file.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n   \n\n"
+                "2\n00:00:03,000 --> 00:00:04,000\nPhụ đề hợp lệ\n",
+                encoding="utf-8",
+            )
+            entries = app.read_videocr_srt_entries(str(srt_file))
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["text"], "Phụ đề hợp lệ")
+
 
 
 if __name__ == "__main__":
