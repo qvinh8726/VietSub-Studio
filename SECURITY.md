@@ -18,11 +18,12 @@ Báo cáo nên có phiên bản bị ảnh hưởng, các bước tái hiện, m
 
 ## Data handling summary / Tóm tắt xử lý dữ liệu
 
-- Video downloading is delegated to the locally installed Douzy application.
+- Douyin video downloading is handled directly by VietSub Studio's built-in downloader. It validates HTTPS CDN hosts (including every redirect hop), the requested video ID, MP4 `ftyp` headers and the maximum payload size, and uses the local Edge CDP fallback only when needed.
+- Note on Edge CDP: When Notebook mode or Edge fallback is active, Microsoft Edge exposes a remote debugging port on `127.0.0.1:9222` using a dedicated profile at `%LOCALAPPDATA%\Microsoft\Edge\User Data Debug`. Other processes running under the same local Windows user account could connect to that loopback port while Edge is open; keep untrusted software off the local account. The app verifies that the port belongs to that Edge profile before using it.
 - OCR is delegated to the locally installed VideOCR CLI.
-- Subtitle text is submitted to the user's Gemini Notebook through a local Edge browser session.
-- VietSub Studio does not require a Gemini API key and does not bundle Google credentials.
+- Subtitle text is submitted to the translation provider selected in Settings: the user's Gemini Notebook through the local Edge session, or the configured DeepSeek, OpenRouter or OpenAI-compatible API. Subtitles OCRed in Vietnamese are not sent anywhere.
+- Notebook mode needs no API key. API keys for the other providers are encrypted with Windows DPAPI and are never returned by the local settings endpoint. No Google credentials are bundled or stored.
 - Packaged settings are stored locally under `%APPDATA%\VietSub Studio`.
 - The local Flask control plane binds to loopback and requires a fresh per-launch capability token for API requests; Host, Origin, Fetch Metadata, path, and mutation content-type checks are also enforced.
-- Local MP4 uploads are capped at 8 GiB and must contain an MP4 `ftyp` container header before being admitted to managed cache.
+- Local MP4 files are capped at 8 GiB and must contain an MP4 `ftyp` container header before being admitted to managed cache. In the desktop app the file is chosen through the native dialog, and the JavaScript bridge only imports the file the user picked there; it never accepts a path from page script.
 - The self-updater verifies the official repository URL and mandatory release checksum, but community builds remain unsigned; a compromised publisher account is outside the protection offered by same-release hashes.

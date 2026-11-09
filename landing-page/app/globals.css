@@ -1,32 +1,9 @@
 @import "tailwindcss";
 
-:root {
-  --canvas: #eee8dc;
-  --paper: #fffaf0;
-  --paper-deep: #f7f0e3;
-  --ink: #14211d;
-  --ink-soft: #69736e;
-  --line: rgba(216, 206, 189, 0.94);
-  --forest: #173f35;
-  --forest-2: #245e4f;
-  --mint: #b9dbc8;
-  --sun: #edae49;
-  --sun-soft: #f8dfad;
-  --coral: #983b2e;
-  --blue: #427d96;
-  --white: #fffdf8;
-  --shadow-soft: 0 20px 70px rgba(31, 43, 37, 0.14);
-  --shadow-card: 0 12px 35px rgba(31, 43, 37, 0.09);
-}
-
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at 8% 4%, rgba(185, 219, 200, .72), transparent 32rem),
-    radial-gradient(circle at 94% 12%, rgba(237, 174, 73, .22), transparent 26rem),
-    linear-gradient(125deg, #eee8dc 0%, #faf5eb 52%, #e6ddcf 100%);
   color: var(--ink);
   font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
   text-rendering: optimizeLegibility;
@@ -38,10 +15,10 @@ button, a { -webkit-tap-highlight-color: transparent; }
 
 .site-shell { overflow: clip; }
 .display-font { font-family: var(--font-display), ui-sans-serif, sans-serif; }
-.mono-font { font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; }
+.mono-font { font-family: var(--font-mono), "Geist Mono", "SFMono-Regular", Consolas, monospace; }
 .section-kicker {
   color: var(--signal);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono), "Geist Mono", monospace;
   font-size: 0.72rem;
   letter-spacing: 0.17em;
   text-transform: uppercase;
@@ -102,7 +79,7 @@ body {
 }
 button, a { font: inherit; }
 button { cursor: pointer; }
-code, pre, .mono-font { font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace; }
+code, pre, .mono-font { font-family: var(--font-mono), "Geist Mono", "SFMono-Regular", Consolas, monospace; }
 .site-shell { overflow: clip; }
 .page-container { width: min(1240px, calc(100% - 48px)); margin: 0 auto; }
 .scroll-progress {

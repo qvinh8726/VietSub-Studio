@@ -3,13 +3,13 @@ import { Geist_Mono, Manrope, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
 const bodyFont = Manrope({
-  subsets: ["latin"],
+  subsets: ["latin", "vietnamese"],
   variable: "--font-body",
   display: "swap",
 });
 
 const displayFont = Space_Grotesk({
-  subsets: ["latin"],
+  subsets: ["latin", "vietnamese"],
   variable: "--font-display",
   display: "swap",
 });

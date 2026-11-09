@@ -11,14 +11,19 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 
 2. CAC THANH PHAN CAN CO TREN MAY
 - Windows 10/11 va Microsoft Edge.
-- Neu dung link Douyin: cai Douzy o thu muc mac dinh, mo it nhat mot lan va chon thu muc tai video.
+- Bo tai Douyin khong logo da duoc tich hop san trong ung dung (khong can cai cong cu ngoai).
 - VideOCR duoc cai tai: C:\Program Files\VideOCR\videocr-cli.exe
 - Tuy chon: FFmpeg/FFprobe trong PATH de quy doi vung crop OCR chinh xac hon.
 
 3. THIET LAP LAN DAU
 - Trong VietSub Studio, mo tab "Thiet lap".
-- Dan link Gemini Notebook cua ban, dang:
-  https://gemini.google.com/notebook/ID-CUA-BAN
+- Chon bo may dich:
+  + Gemini Notebook (qua Edge): dan link Notebook cua ban, dang
+    https://gemini.google.com/notebook/ID-CUA-BAN
+  + DeepSeek API, OpenRouter hoac API OpenAI-compatible khac: nhap Base URL, model va API key,
+    roi bam "Kiem tra ket noi API". API key duoc ma hoa bang tai khoan Windows hien tai.
+- "Cach dich mong muon" mac dinh la prompt dich chung cho moi the loai. Neu dich video game Trung,
+  bam "Nap tu dien game mau" de dung bang thuat ngu Delta Force co san.
 - Kiem tra cac muc bat buoc. Khi tat ca muc mau do da het, app san sang.
 - De bat "Chay Edge an" neu muon. Edge van render binh thuong nhung duoc thu nho.
 - App chi tu hien Edge khi thay man hinh dang nhap hoac khong tim thay khung chat sau khi cho Notebook tai xong.
@@ -26,25 +31,31 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 
 4. XU LY VIDEO
 - Dan link/video share Douyin hoac bam "Chon MP4" de nhan video tren may.
+  Trong ban EXE, "Chon MP4" mo hop thoai cua Windows; neu video nam cung o dia voi du lieu app
+  thi app chi tao hard-link, khong ton them dung luong.
 - Nhap ten bo file neu muon. Neu de trong, app dung ten video Douyin.
+- Chon dung ngon ngu OCR cua phu de goc (Trung, Anh, Nhat, Han, Viet). Ban dich dung ngon ngu nay
+  lam ngon ngu nguon. Neu chon tieng Viet, app bo qua buoc dich va dung truc tiep sub OCR.
+- Sub dai hoac day duoc tu chia thanh nhieu doan (toi da 400 doan phu de / 24.000 ky tu moi lan gui).
+  Doan nao dich xong duoc luu lai; chay lai job se tiep tuc tu doan chua xong.
 - Bam "Tai preview", sau do keo va doi kich thuoc khung vang vao vung phu de.
 - Bam "Them vao hang doi" va lap lai voi cac video khac.
 - Bam "Chay hang doi". App se tu xu ly tung video mot, khong chay song song.
 - Hang doi duoc luu khi dong app. Job loi/da huy co the chay lai tu video, OCR hoac dich neu file trung gian con ton tai.
-- Trong Thiet lap, bam "Chon thu muc..." de chon noi luu doc lap voi Douzy.
+- Trong Thiet lap, bam "Chon thu muc..." de chon noi luu project.
   Neu de trong, app dung Documents\VietSub Studio.
 - Ket qua duoc dat ten dong bo trong mot folder mang ten project:
-  Ten video.mp4 (MP4 Douyin duoc chuyen khoi Douzy sau khi dich thanh cong)
+  Ten video.mp4 (MP4 Douyin duoc chuyen tu bo nho dem vao project sau khi dich thanh cong)
   Ten video.thumbnail.jpg/png/webp (neu nguon co thumbnail)
   Ten video.raw.srt
   Ten video.vi.srt
-  Ten video.data.json, Ten video.music.mp3 va asset Douzy khac (neu co)
+  Ten video.data.json va cac metadata di kem (neu co)
 - App chi bao "da san sang" khi ca ba file ton tai va sub Viet vuot qua kiem tra timestamp/so doan.
 - Job loi van co nut mo thu muc lam do, nhung khong duoc gan nhan la ket qua hoan tat.
 
 5. LUU Y KHI GUI CHO NGUOI KHAC
-- File EXE chua VietSub Studio, nhung khong kem Douzy, VideOCR hay tai khoan Gemini.
-- Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini cua ho.
+- File EXE chua VietSub Studio (kem bo tai Douyin tich hop), nhung khong kem VideOCR, tai khoan Gemini hay API key.
+- Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini hoac API key cua ho.
 - Cau hinh cua moi may duoc luu rieng trong %APPDATA%\VietSub Studio.
 - Khi co phien ban moi, bam "Tai & cai ngay". App se tai ZIP chinh thuc, kiem tra SHA256, thay EXE va tu mo lai.
 - Neu khong the tu cai (vi du thu muc khong co quyen ghi), app se mo GitHub Releases de cap nhat thu cong.

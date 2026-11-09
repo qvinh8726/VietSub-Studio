@@ -1,0 +1,25 @@
+[project]
+name = "vietsub-studio"
+version = "1.5.3"
+description = "Windows desktop workflow for Douyin/local MP4 OCR and Vietnamese subtitle translation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Keep these ranges in step with the pinned versions in requirements.txt.
+dependencies = [
+    "flask>=3.1,<4",
+    "playwright>=1.58,<2",
+    "pywebview>=6.2,<7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = ["landing-page", ".venv", "build_portable", "dist_portable"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "I", "UP"]

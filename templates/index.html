@@ -92,6 +92,11 @@
                             </div>
                         </div>
                         <div id="crop-tools" class="crop-tools" hidden>
+                            <div class="video-playback-bar">
+                                <button id="video-play-btn" class="btn-ghost" type="button">▶ Phát</button>
+                                <input id="video-seek" class="video-seek-input" type="range" min="0" max="100" step="0.1" value="0" aria-label="Tua video preview">
+                                <span id="video-time" class="video-time">00:00 / 00:00</span>
+                            </div>
                             <div class="crop-values">
                                 <label><span>X (%)</span><input id="crop-x" class="number-input" type="number" min="0" max="100" step="0.1"></label>
                                 <label><span>Y (%)</span><input id="crop-y" class="number-input" type="number" min="0" max="100" step="0.1"></label>
@@ -113,7 +118,7 @@
                 <div class="queue-head">
                     <div class="queue-kicker">Sequential jobs</div>
                     <div class="queue-title"><h2>Hàng đợi video</h2><span id="queue-count" class="queue-count">0</span></div>
-                    <p class="queue-copy">Mỗi lần chỉ một video dùng VideOCR và Gemini; nguồn Douyin mới gọi thêm Douzy. Video kế tiếp tự chạy khi video trước kết thúc.</p>
+                    <p class="queue-copy">Mỗi lần chỉ một video chạy OCR và dịch; video kế tiếp tự tải sẵn và chạy tiếp khi video trước kết thúc.</p>
                 </div>
                 <div class="queue-actions">
                     <button id="start-queue-btn" class="btn-primary" type="button" disabled>Chạy hàng đợi</button>
@@ -159,8 +164,11 @@
                         <label for="setting-translation-instructions">Cách dịch mong muốn</label>
                         <textarea id="setting-translation-instructions" class="translation-instructions" rows="9" spellcheck="false" placeholder="Đang nạp prompt dịch mặc định…"></textarea>
                         <div class="translation-instructions-footer">
-                            <small>Mặc định là prompt dịch ban đầu. App luôn ghim riêng yêu cầu giữ timestamp và xuất đúng một block code <code>srt</code>.</small>
-                            <button id="reset-translation-instructions-btn" class="btn-ghost" type="button">Khôi phục mặc định</button>
+                            <small>Mặc định là prompt dịch chung cho mọi thể loại; ngôn ngữ nguồn lấy theo ngôn ngữ OCR của từng job. Dịch video game Trung có thể nạp từ điển mẫu (Delta Force). App luôn ghim riêng yêu cầu giữ timestamp và xuất đúng một block code <code>srt</code>.</small>
+                            <div class="translation-instructions-actions">
+                                <button id="reset-translation-instructions-btn" class="btn-ghost" type="button">Khôi phục mặc định</button>
+                                <button id="load-game-glossary-btn" class="btn-ghost" type="button">Nạp từ điển game mẫu</button>
+                            </div>
                         </div>
                     </div>
                     <div id="notebook-settings" class="provider-settings">
@@ -186,7 +194,7 @@
                     <div class="setting-field">
                         <label for="setting-output">Thư mục lưu project</label>
                         <div class="path-picker"><input id="setting-output" class="text-input" placeholder="Để trống = Documents\VietSub Studio"><button id="choose-output-btn" class="btn-secondary" type="button">Chọn thư mục…</button></div>
-                        <small id="output-help">Mỗi tên project sẽ có một folder riêng chứa video, sub gốc, sub Việt, thumbnail và các asset Douzy.</small>
+                        <small id="output-help">Mỗi tên project sẽ có một folder riêng chứa video, sub gốc, sub Việt, thumbnail và metadata đi kèm.</small>
                     </div>
                     <div id="edge-settings" class="setting-field">
                         <label class="toggle-setting" for="setting-edge-background">
@@ -222,12 +230,12 @@
                         <small>Bỏ nhiều khung giúp quét nhanh hơn; phụ đề hiện quá ngắn có thể bị sót.</small>
                     </div>
                     <div class="setting-field"><label for="setting-crop">Crop OCR mặc định</label><input id="setting-crop" class="text-input readonly" readonly></div>
-                    <div class="setting-field"><label for="setting-download">Thư mục Douzy</label><input id="setting-download" class="text-input readonly" readonly></div>
+                    <div class="setting-field"><label for="setting-download">Thư mục bộ nhớ đệm tải về</label><input id="setting-download" class="text-input readonly" readonly></div>
                     <div class="diagnostics">
                         <div class="diagnostics-head"><strong>Kiểm tra hệ thống</strong><button id="health-btn" class="btn-ghost" type="button">Kiểm tra lại</button></div>
                         <div id="diagnostics-list" class="diagnostics-list"></div>
                     </div>
-                    <div class="setting-field"><label>Video gần đây trong Douzy</label><div id="history-list" class="history-mini"></div></div>
+                    <div class="setting-field"><label>Video Douyin gần đây</label><div id="history-list" class="history-mini"></div></div>
                 </div>
             </div>
         </section>
