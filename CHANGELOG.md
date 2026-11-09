@@ -8,9 +8,23 @@ All notable changes to VietSub Studio are documented here.
 
 - Replaced the external Douzy dependency with a built-in native Douyin downloader (`vietsub/douyin.py`) that resolves short links, extracts watermark-free MP4 streams and thumbnails directly from Douyin/iesdouyin (with local Edge CDP fallback), caches downloads in `downloads/`, and tracks history in `download_history.json`.
 - Modularized core functionality into the `vietsub` package (`constants.py`, `validators.py`, `srt.py`, `douyin.py`) and added `pyproject.toml` for unified Ruff linting and pytest configuration.
+- Translation now follows each job's OCR language: prompts, the API system message and the resume cache name the real source language, and Vietnamese OCR output is published as the `.vi.srt` without a translation request.
+- The default translation instructions are now generic. The Delta Force game glossary is kept as an opt-in preset (**Thiết lập → Nạp từ điển game mẫu**); saved custom instructions are unchanged.
+- Choosing an MP4 in the desktop app uses the native file dialog and hard-links the file into managed storage (one copy across drives) instead of uploading it through the local server. The browser fallback still uploads.
+- The OpenAI-compatible client and the self-updater moved to `vietsub/translation_api.py` and `vietsub/updater.py`; `app.py` no longer re-exports helpers it does not use.
+- Ruff now checks `E, W, F, B, I, UP` and runs in CI; `requirements-dev.txt` pins pytest and Ruff.
 
 ### Fixed
 
+- Translation requests are split at 400 blocks / 24,000 characters for every video. Dense subtitles under 45 minutes were previously sent in one request and could hit the output-token limit.
+- The Douyin downloader no longer falls back to another video when the page does not contain the requested ID, and it rejects metadata whose video ID does not match.
+- Douyin CDN redirects must stay on public HTTPS hosts; known Douyin CDN hosts redirected over HTTP are upgraded to HTTPS.
+- Gemini Notebook translation saves each finished chunk and resumes from it, like the API path, and skips opening Edge when every chunk is already saved.
+- The Edge CDP ownership check (a PowerShell probe that takes seconds) runs once per Edge browser session instead of on every 5-second status poll; failed probes are not cached.
+- `deepseek-v4-flash` is no longer silently rewritten to `deepseek-v4-pro`. Only the retired `deepseek-chat` / `deepseek-reasoner` aliases are migrated, to `deepseek-v4-flash`, the model they served.
+- API retries use typed errors with the HTTP status: rate limits and 5xx are retried, other 4xx and truncated output are not, and cancellation is never retried.
+- `pyproject.toml` now matches the app version and no longer lists the unused `waitress` dependency.
+- Unit tests run against temporary app-data paths and fail if they attempt real network access, so they no longer write to the developer's log or touch a running Edge debug session.
 - Fixed workflow cancellation responsiveness when coordinating or waiting on a background prefetch thread, and protected `prefetch_job_id` state transitions under `queue_state_lock`.
 - Made `workflow_lock` release ownership explicit (`release_lock_on_exit`) in `run_workflow_thread`.
 - Tightened `normalize_translated_srt` so sequential `1..N` chunk renumbering is only accepted when source and translated timecode intervals still match.

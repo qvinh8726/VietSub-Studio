@@ -28,9 +28,9 @@
 >
 > File EXE portable chứa VietSub Studio nhưng **không** đóng gói VideOCR, Microsoft Edge, tài khoản Google, Gemini Notebook hoặc tài khoản API ngoài. Thành phần cần có tuỳ nguồn video và provider dịch đã chọn.
 >
-> Douyin videos are processed from the MP4 downloaded by the built-in Douyin downloader, then that MP4 and its metadata are moved into the selected project folder after the Vietnamese SRT passes validation. This keeps one full-size video copy while making every completed project self-contained. Local MP4 files are first copied into app-managed storage because browser uploads do not expose the original filesystem path safely, then hard-linked into the project on the same drive or copied as a fallback.
+> Douyin videos are processed from the MP4 downloaded by the built-in Douyin downloader, then that MP4 and its metadata are moved into the selected project folder after the Vietnamese SRT passes validation. This keeps one full-size video copy while making every completed project self-contained. In the desktop app, a local MP4 chosen in the native file dialog is hard-linked into app-managed storage (copied once when it is on another drive) and later hard-linked into the project. The browser fallback (`--browser`/`--server`) cannot read the original path, so it uploads the file into the same managed storage.
 >
-> Video Douyin được xử lý từ file MP4 do bộ tải Douyin tích hợp tải về; sau khi SRT tiếng Việt vượt qua kiểm tra, app chuyển MP4 và metadata liên quan vào thư mục project đã chọn. Nhờ vậy chỉ có một bản video dung lượng lớn nhưng mỗi project hoàn tất vẫn tự chứa đầy đủ file. MP4 chọn từ máy được chép vào vùng app quản lý vì trình duyệt không cung cấp đường dẫn file gốc an toàn, sau đó được hard-link vào project nếu cùng ổ đĩa hoặc fallback sang sao chép.
+> Video Douyin được xử lý từ file MP4 do bộ tải Douyin tích hợp tải về; sau khi SRT tiếng Việt vượt qua kiểm tra, app chuyển MP4 và metadata liên quan vào thư mục project đã chọn. Nhờ vậy chỉ có một bản video dung lượng lớn nhưng mỗi project hoàn tất vẫn tự chứa đầy đủ file. Trong app desktop, MP4 chọn qua hộp thoại Windows được hard-link vào vùng app quản lý (chỉ sao chép một lần nếu nằm khác ổ đĩa), sau đó hard-link tiếp vào project. Chế độ trình duyệt dự phòng (`--browser`/`--server`) không đọc được đường dẫn gốc nên phải upload file vào cùng vùng quản lý đó.
 
 ---
 
@@ -100,7 +100,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Reuses the built-in Douyin download cache (`downloads/`) when the requested video is already available.
 - Extracts the Douyin video title, watermark-free MP4 stream, metadata, and cover image directly.
 - Moves the cached Douyin MP4, cover, and per-video metadata into the completed project folder without leaving a second full-size copy.
-- Copies a local MP4 into managed app storage so it remains available to the persisted queue.
+- Imports a local MP4 into managed app storage through the native file dialog (hard link on the same drive, one copy otherwise) so it remains available to the persisted queue.
 - Hard-links the managed local MP4 into the completed project on the same drive, with a full-copy fallback across drives or unsupported filesystems.
 
 ### OCR preview and recognition
@@ -133,7 +133,10 @@ The project is designed around the parts of long-form subtitle work that become 
 - Waits for the actual Notebook chat interface before deciding that login is required.
 - Shows Edge only when Google authentication expires or the Notebook needs manual inspection.
 - Provides an explicit **Open Edge login** action for failed jobs.
-- Sends subtitles from videos up to 45 minutes in one Gemini request; longer subtitle files are split into timestamp-preserving chunks and merged after translation.
+- Sends the SRT in one request when it fits 400 blocks / 24,000 characters and the video is at most 45 minutes; otherwise splits it into timestamp-preserving chunks (longer videos are also cut every 30 minutes) and merges them after translation.
+- Saves every finished chunk for both Notebook and API providers, so a retry continues from the first unfinished chunk.
+- Uses each job's OCR language as the translation source language. Subtitles OCRed in Vietnamese skip translation and are published as the `.vi.srt` directly.
+- Ships generic translation instructions by default, plus an opt-in Delta Force game glossary preset in Settings.
 - Cancels active Gemini generation when the workflow is stopped.
 
 ### Subtitle integrity and result management
@@ -363,7 +366,8 @@ For a Douyin job, the original MP4 stays in the download cache while OCR and tra
 
 Main implementation areas:
 
-- `app.py` and `vietsub/`: modular validation (`vietsub/validators.py`), SRT processing (`vietsub/srt.py`), built-in Douyin downloader (`vietsub/douyin.py`), process orchestration, Flask API, and pywebview desktop launcher.
+- `app.py`: process orchestration, Edge/Gemini automation, VideOCR runner, queue, Flask API, and pywebview desktop launcher.
+- `vietsub/`: validation (`validators.py`), SRT processing (`srt.py`), built-in Douyin downloader (`douyin.py`), OpenAI-compatible translation client (`translation_api.py`), release checks and self-update (`updater.py`), and shared constants (`constants.py`).
 - `templates/index.html`: semantic HTML structure and server-rendered bootstrap metadata.
 - `static/style.css` and `static/app.js`: responsive styling, frontend state, settings, diagnostics, progress, history, and result interactions.
 - `automate.py`: command-line entry point.
@@ -411,7 +415,7 @@ The Flask server binds to `127.0.0.1`, not to the public network. Every control-
 
 - Video download and OCR run through locally installed applications.
 - The video itself is not uploaded to this repository or to a VietSub Studio server.
-- Selected local MP4 files are limited to 8 GiB, checked for an MP4 `ftyp` container header, and copied only into the app's managed local cache so queued jobs survive a restart.
+- Selected local MP4 files are limited to 8 GiB, checked for an MP4 `ftyp` container header, and hard-linked or copied only into the app's managed local cache so queued jobs survive a restart. The desktop bridge imports only the file picked in the native dialog, never a path supplied by page script.
 - Subtitle text is submitted either to the user's Gemini Notebook through the local Edge session or to the configured DeepSeek/OpenRouter/OpenAI-compatible API. Review the selected provider's terms and privacy policy before processing sensitive content.
 - API keys are encrypted with Windows DPAPI and are never returned by the local settings endpoint.
 - Google credentials remain managed by Edge; VietSub Studio does not read or store the password.
@@ -509,7 +513,7 @@ Yes. In **Settings**, select DeepSeek API, OpenRouter, or another OpenAI-compati
 
 ### Can it translate to languages other than Vietnamese?
 
-The current translation prompt and `.vi.srt` convention target Vietnamese. OCR supports several source languages, but translated-output language selection is not yet implemented.
+Not yet. The translation target and the `.vi.srt` convention are Vietnamese. The source language follows the OCR language chosen for each job (Chinese, English, Japanese or Korean); Vietnamese OCR output skips translation.
 
 ### Can it process TikTok, YouTube, Bilibili, or local files?
 
@@ -546,11 +550,13 @@ Use the bug-report template and include the version, installation type, reproduc
 Pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), keep changes focused, and run:
 
 ```powershell
-python -m py_compile app.py automate.py vietsub/__init__.py vietsub/constants.py vietsub/validators.py vietsub/srt.py vietsub/douyin.py
+python -m pip install -r requirements-dev.txt
+python -m ruff check .
+python -m compileall -q app.py automate.py vietsub
 python -m unittest discover -s tests -v
 ```
 
-The repository includes a Windows GitHub Actions workflow that compiles the sources, runs unit tests, builds the portable PyInstaller executable, starts the packaged `--server` mode, verifies the UI and static assets, and uploads the smoke-tested artifact. Dependabot also tracks Python and GitHub Actions updates.
+The repository includes a Windows GitHub Actions workflow that lints and compiles the sources, runs unit tests, builds the portable PyInstaller executable, starts the packaged `--server` mode, verifies the UI and static assets, and uploads the smoke-tested artifact. Dependabot also tracks Python and GitHub Actions updates.
 
 ---
 
@@ -620,7 +626,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Tự dùng lại cache tải về (`downloads/`) nếu video Douyin đã có sẵn.
 - Trích xuất trực tiếp tiêu đề, luồng MP4 không logo, metadata và ảnh cover từ Douyin.
 - Chuyển MP4 gốc, cover và metadata từ bộ nhớ đệm vào folder project hoàn tất mà không tạo bản sao video dung lượng lớn thứ hai.
-- Sao chép MP4 local vào vùng app quản lý để job vẫn tồn tại sau khi đóng/mở ứng dụng.
+- Nạp MP4 local vào vùng app quản lý qua hộp thoại Windows (hard-link nếu cùng ổ đĩa, nếu không thì sao chép một lần) để job vẫn tồn tại sau khi đóng/mở ứng dụng.
 - Hard-link MP4 local do app quản lý vào project nếu cùng ổ đĩa; nếu khác ổ hoặc filesystem không hỗ trợ thì tự fallback sang sao chép đầy đủ.
 
 ### Preview vùng OCR và nhận dạng
@@ -653,7 +659,10 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Chờ đúng giao diện chat Notebook tải xong rồi mới kết luận có cần đăng nhập hay không.
 - Chỉ hiện Edge khi phiên Google hết hạn hoặc Notebook cần người dùng kiểm tra thủ công.
 - Có nút **Mở Edge đăng nhập** rõ ràng trên job lỗi.
-- Video không quá 45 phút được gửi cho Gemini trong một lần; video dài hơn được chia thành các đoạn giữ nguyên timestamp rồi ghép lại sau khi dịch.
+- Gửi SRT trong một lần khi không quá 400 block / 24.000 ký tự và video không quá 45 phút; nếu vượt, app chia thành các đoạn giữ nguyên timestamp (video dài hơn còn được cắt theo mốc 30 phút) rồi ghép lại sau khi dịch.
+- Lưu từng đoạn đã dịch cho cả Notebook lẫn API, nên chạy lại sẽ tiếp tục từ đoạn chưa xong.
+- Dùng ngôn ngữ OCR của từng job làm ngôn ngữ nguồn khi dịch. Phụ đề OCR tiếng Việt được dùng trực tiếp làm `.vi.srt`, không gửi đi dịch.
+- Prompt dịch mặc định dùng chung cho mọi thể loại; từ điển game Delta Force là mẫu tuỳ chọn trong Thiết lập.
 - Huỷ quá trình Gemini đang sinh nội dung khi người dùng dừng workflow.
 
 ### Toàn vẹn phụ đề và quản lý kết quả
@@ -881,7 +890,8 @@ Với job Douyin, MP4 gốc chỉ ở lại thư mục bộ nhớ đệm trong l
 
 Các phần chính:
 
-- `app.py`: kiểm tra đầu vào, điều phối tiến trình, Flask API, cửa sổ pywebview, xử lý file và tích hợp ngoài.
+- `app.py`: điều phối tiến trình, tự động hoá Edge/Gemini, chạy VideOCR, hàng đợi, Flask API và cửa sổ pywebview.
+- `vietsub/`: kiểm tra đầu vào (`validators.py`), xử lý SRT (`srt.py`), bộ tải Douyin tích hợp (`douyin.py`), client API dịch OpenAI-compatible (`translation_api.py`), kiểm tra bản mới và tự cập nhật (`updater.py`), hằng số dùng chung (`constants.py`).
 - `templates/index.html`: cấu trúc HTML semantic và metadata bootstrap do server render.
 - `static/style.css` và `static/app.js`: giao diện responsive, state frontend, thiết lập, chẩn đoán, tiến trình, lịch sử và kết quả.
 - `automate.py`: entry point dòng lệnh.
@@ -929,7 +939,7 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng. M
 
 - Video được tải và OCR thông qua ứng dụng đã cài cục bộ.
 - File MP4 không bị upload lên repository hay server riêng của VietSub Studio.
-- MP4 được chọn trên máy bị giới hạn 8 GiB, được kiểm tra header container `ftyp` rồi mới sao chép vào cache cục bộ do app quản lý để hàng đợi sống qua lần khởi động lại.
+- MP4 được chọn trên máy bị giới hạn 8 GiB, được kiểm tra header container `ftyp` rồi mới hard-link hoặc sao chép vào cache cục bộ do app quản lý để hàng đợi sống qua lần khởi động lại. Cầu nối desktop chỉ nạp đúng file người dùng chọn trong hộp thoại Windows, không nhận đường dẫn do script trên trang gửi lên.
 - Nội dung SRT được gửi đến Gemini Notebook qua phiên Edge hoặc provider API mà người dùng chọn. Hãy đọc điều khoản/quyền riêng tư của provider trước khi xử lý nội dung nhạy cảm.
 - API key được mã hoá bằng Windows DPAPI và không bao giờ trả ngược qua API settings.
 - Thông tin đăng nhập Google do Edge giữ; VietSub Studio không đọc hoặc lưu mật khẩu.
@@ -1027,7 +1037,7 @@ Có. Trong **Thiết lập**, chọn DeepSeek API, OpenRouter hoặc API OpenAI-
 
 ### Có thể dịch sang ngôn ngữ khác tiếng Việt không?
 
-Prompt hiện tại và quy ước `.vi.srt` nhắm tới tiếng Việt. OCR hỗ trợ nhiều ngôn ngữ nguồn, nhưng chưa có tuỳ chọn ngôn ngữ đích.
+Chưa. Ngôn ngữ đích và quy ước `.vi.srt` là tiếng Việt. Ngôn ngữ nguồn lấy theo ngôn ngữ OCR của từng job (Trung, Anh, Nhật hoặc Hàn); OCR tiếng Việt thì bỏ qua bước dịch.
 
 ### Có dùng được TikTok, YouTube, Bilibili hoặc video local không?
 
@@ -1064,11 +1074,13 @@ Dùng mẫu Bug Report, ghi phiên bản, kiểu cài đặt, bước tái hiệ
 Pull request luôn được chào đón. Đọc [CONTRIBUTING.md](CONTRIBUTING.md), giữ thay đổi tập trung và chạy:
 
 ```powershell
-python -m py_compile app.py automate.py vietsub/__init__.py vietsub/constants.py vietsub/validators.py vietsub/srt.py vietsub/douyin.py
+python -m pip install -r requirements-dev.txt
+python -m ruff check .
+python -m compileall -q app.py automate.py vietsub
 python -m unittest discover -s tests -v
 ```
 
-Repository có workflow GitHub Actions compile source, chạy unit test, build EXE portable, khởi động chế độ packaged `--server`, kiểm tra UI/static asset và upload artifact đã smoke-test. Dependabot theo dõi dependency Python và GitHub Actions.
+Repository có workflow GitHub Actions lint và compile source, chạy unit test, build EXE portable, khởi động chế độ packaged `--server`, kiểm tra UI/static asset và upload artifact đã smoke-test. Dependabot theo dõi dependency Python và GitHub Actions.
 
 ---
 

@@ -24,11 +24,13 @@ jobs:
           architecture: x64
           cache: pip
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements-dev.txt
       - name: Validate dependencies
         run: python -m pip check
+      - name: Lint
+        run: python -m ruff check .
       - name: Compile
-        run: python -m py_compile app.py automate.py vietsub/__init__.py vietsub/constants.py vietsub/validators.py vietsub/srt.py vietsub/douyin.py
+        run: python -m compileall -q app.py automate.py vietsub
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
