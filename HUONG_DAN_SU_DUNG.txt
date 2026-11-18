@@ -117,7 +117,10 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 - Kuaishou va Xiaohongshu: neu trang chua hien video sau 30 giay, app dua trinh duyet len de ban
   dang nhap hoac keo captcha, roi cho toi da 3 phut. Bai dang anh Xiaohongshu khong co video.
 - Luot tai truoc chay nen khong cho captcha; job se tu tai video khi toi luot.
-- Tai video: moi lan doc du lieu cho toi da 30 giay. Mat ket noi thi app tai tiep tu byte cuoi
+- Tai video: file lon hon 2 MB duoc tai bang 6 ket noi song song neu may chu ho tro tai theo
+  doan (nhanh hon nhieu voi CDN Trung Quoc gioi han toc do tung ket noi); neu khong thi tai 1 ket noi.
+  Douyin uu tien ban H.264 720p-1080p bitrate vua phai (1.5-3.5 Mbps): file nhe hon, chu van ro.
+- Moi lan doc du lieu cho toi da 30 giay. Mat ket noi thi app tai tiep tu byte cuoi
   them toi da 2 lan, roi thu dia chi khac cua video.
 - YouTube bao thieu JavaScript: cai Deno 2.3+ hoac Node.js 22+, mo lai app
   va xem muc "JavaScript cho YouTube" trong bang kiem tra.

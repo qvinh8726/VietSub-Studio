@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 import tempfile
 import threading
 import time
@@ -21,6 +22,8 @@ from vietsub.sources import base, browser_capture, cookies, douyin, http_downloa
 
 AWEME_ID = "7312345678901234567"
 MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + bytes(range(256)) * 400
+# Larger than PARALLEL_MIN_BYTES and not a multiple of 6, so the ranges differ in size.
+BIG_MP4_BYTES = MP4_BYTES[:12] + random.Random(7).randbytes(3_000_007)
 
 
 class CookieTests(unittest.TestCase):
@@ -116,27 +119,50 @@ class MediaHandler(BaseHTTPRequestHandler):
         pass
 
 
+def requested_range(handler):
+    """(first, last) of a "Range: bytes=first-[last]" request header, or None."""
+    value = handler.headers.get("Range") or ""
+    if not value.startswith("bytes="):
+        return None
+    first, _, last = value[6:].partition("-")
+    return int(first), int(last) if last else None
+
+
 def serve_bytes(handler, data, *, honor_range=True, content_type="video/mp4"):
-    range_header = handler.headers.get("Range")
-    start = 0
-    if honor_range and range_header and range_header.startswith("bytes="):
-        start = int(range_header[6:].split("-", 1)[0])
-    body = data[start:]
-    handler.send_response(206 if start else 200)
+    """200 with the whole body, or 206 with the requested byte range when ranges are honored."""
+    wanted = requested_range(handler) if honor_range else None
+    first, last = 0, len(data) - 1
+    if wanted is not None:
+        first = wanted[0]
+        last = len(data) - 1 if wanted[1] is None else min(wanted[1], len(data) - 1)
+    body = data[first:last + 1]
+    handler.send_response(206 if wanted is not None else 200)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Accept-Ranges", "bytes")
-    if start:
-        handler.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+    if honor_range:
+        handler.send_header("Accept-Ranges", "bytes")
+    if wanted is not None:
+        handler.send_header("Content-Range", f"bytes {first}-{last}/{len(data)}")
     handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.wfile.write(body)
+    except OSError:
+        pass  # The downloader may close a response it does not need (for example a probe).
 
 
-class StreamDownloadTests(unittest.TestCase):
+class MediaServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # socketserver listens with a backlog of 5; six range connections opened at once
+    # could overflow it and be refused, which real CDNs never do.
+    request_queue_size = 64
+
+
+class MediaServerTestCase(unittest.TestCase):
+    """A local HTTP server whose routes each test scripts through MediaHandler.routes."""
+
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), MediaHandler)
-        cls.server.daemon_threads = True
+        cls.server = MediaServer(("127.0.0.1", 0), MediaHandler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
 
@@ -154,6 +180,15 @@ class StreamDownloadTests(unittest.TestCase):
     def tearDown(self):
         self.temporary_dir.cleanup()
 
+    def requested_ranges(self):
+        """Range headers the server received, without the size probe."""
+        return [
+            request["headers"].get("range") for request in MediaHandler.seen
+            if request["headers"].get("range") != http_download.PROBE_RANGE
+        ]
+
+
+class StreamDownloadTests(MediaServerTestCase):
     def test_downloads_with_referer_user_agent_scoped_cookies_and_progress(self):
         MediaHandler.routes["/video.mp4"] = lambda handler: serve_bytes(handler, MP4_BYTES)
         jar = cookies.jar_from_browser_cookies([
@@ -172,6 +207,8 @@ class StreamDownloadTests(unittest.TestCase):
         )
         self.assertEqual(self.destination.read_bytes(), MP4_BYTES)
         self.assertEqual(result["bytes"], len(MP4_BYTES))
+        # Files of 2 MB or less are not worth extra connections.
+        self.assertEqual(result["connections"], 1)
         headers = MediaHandler.seen[0]["headers"]
         self.assertEqual(headers["referer"], "https://www.douyin.com/")
         self.assertEqual(headers["user-agent"], "EdgeUA/1")
@@ -194,6 +231,9 @@ class StreamDownloadTests(unittest.TestCase):
         attempts = {"count": 0}
 
         def flaky(handler):
+            if handler.headers.get("Range") == http_download.PROBE_RANGE:
+                serve_bytes(handler, MP4_BYTES)  # A small file still goes over one connection.
+                return
             attempts["count"] += 1
             if attempts["count"] == 1:
                 handler.send_response(200)
@@ -214,7 +254,10 @@ class StreamDownloadTests(unittest.TestCase):
             retry_delays=(0, 0),
         )
         self.assertEqual(self.destination.read_bytes(), MP4_BYTES)
-        self.assertEqual(MediaHandler.seen[1]["headers"].get("range"), "bytes=40000-")
+        self.assertEqual(
+            [request["headers"].get("range") for request in MediaHandler.seen],
+            [http_download.PROBE_RANGE, None, "bytes=40000-"],
+        )
 
     def test_cancel_stops_a_stalled_download_quickly_and_removes_the_partial_file(self):
         release = threading.Event()
@@ -254,6 +297,163 @@ class StreamDownloadTests(unittest.TestCase):
                 [f"{self.base}/page.mp4"], self.destination, validate=local.require_mp4_header
             )
         self.assertFalse(self.destination.exists())
+
+
+def range_threads():
+    return [thread for thread in threading.enumerate() if thread.name.startswith("vietsub-range")]
+
+
+class ParallelRangeDownloadTests(MediaServerTestCase):
+    def test_split_ranges_covers_the_file_without_gaps_or_overlaps(self):
+        for total in (6, 7, 2_000_001, len(BIG_MP4_BYTES)):
+            with self.subTest(total=total):
+                ranges = http_download.split_ranges(total, 6)
+                self.assertEqual(len(ranges), 6)
+                self.assertEqual((ranges[0][0], ranges[-1][1]), (0, total - 1))
+                for (_first, last), (next_first, _next_last) in zip(ranges, ranges[1:]):
+                    self.assertEqual(next_first, last + 1)
+                sizes = [last - first + 1 for first, last in ranges]
+                self.assertLessEqual(max(sizes) - min(sizes), 1)
+        self.assertEqual(http_download.split_ranges(3, 6), [(0, 0), (1, 1), (2, 2)])
+
+    def test_a_large_file_is_fetched_over_six_parallel_ranges_and_assembled_in_order(self):
+        lock = threading.Lock()
+        live = {"now": 0, "peak": 0}
+
+        def ranged(handler):
+            if handler.headers.get("Range") == http_download.PROBE_RANGE:
+                serve_bytes(handler, BIG_MP4_BYTES)
+                return
+            with lock:
+                live["now"] += 1
+                live["peak"] = max(live["peak"], live["now"])
+            try:
+                time.sleep(0.3)  # Keeps the connections open at the same time.
+                serve_bytes(handler, BIG_MP4_BYTES)
+            finally:
+                with lock:
+                    live["now"] -= 1
+
+        MediaHandler.routes["/big.mp4"] = ranged
+        updates, notices = [], []
+        result = http_download.stream_download(
+            [f"{self.base}/big.mp4"],
+            self.destination,
+            headers={"Referer": "https://www.douyin.com/"},
+            validate=local.require_mp4_header,
+            on_progress=lambda downloaded, total, speed: updates.append((downloaded, total)),
+            on_notice=notices.append,
+            progress_interval=0,
+        )
+        self.assertEqual(self.destination.read_bytes(), BIG_MP4_BYTES)
+        self.assertEqual((result["bytes"], result["connections"]), (len(BIG_MP4_BYTES), 6))
+        expected = [f"bytes={first}-{last}" for first, last in http_download.split_ranges(len(BIG_MP4_BYTES), 6)]
+        self.assertEqual(sorted(self.requested_ranges()), sorted(expected))
+        self.assertEqual(live["peak"], 6)
+        self.assertTrue(all(request["headers"].get("referer") == "https://www.douyin.com/"
+                            for request in MediaHandler.seen))
+        # The bytes of all connections are added up, never go backwards, and end at the size.
+        counts = [downloaded for downloaded, _total in updates]
+        self.assertEqual(counts, sorted(counts))
+        self.assertEqual(updates[-1], (len(BIG_MP4_BYTES), len(BIG_MP4_BYTES)))
+        self.assertIn("song song 6 kết nối", notices[0])
+        self.assertEqual(list(Path(self.temporary_dir.name).iterdir()), [self.destination])
+
+    def test_a_server_without_range_support_falls_back_to_one_connection(self):
+        MediaHandler.routes["/plain.mp4"] = lambda handler: serve_bytes(handler, BIG_MP4_BYTES, honor_range=False)
+        notices = []
+        result = http_download.stream_download(
+            [f"{self.base}/plain.mp4"], self.destination, validate=local.require_mp4_header,
+            on_notice=notices.append,
+        )
+        self.assertEqual(self.destination.read_bytes(), BIG_MP4_BYTES)
+        self.assertEqual(result["connections"], 1)
+        # The probe got a 200 instead of 206, so one plain request fetched the whole file.
+        self.assertEqual([request["headers"].get("range") for request in MediaHandler.seen],
+                         [http_download.PROBE_RANGE, None])
+        self.assertEqual(notices, [])
+
+    def test_ranges_that_do_not_match_the_request_fall_back_to_one_connection(self):
+        def probe_only(handler):
+            # Answers the probe with 206 but ignores every other Range header.
+            serve_bytes(handler, BIG_MP4_BYTES, honor_range=handler.headers.get("Range") == http_download.PROBE_RANGE)
+
+        MediaHandler.routes["/odd.mp4"] = probe_only
+        notices = []
+        result = http_download.stream_download(
+            [f"{self.base}/odd.mp4"], self.destination, validate=local.require_mp4_header,
+            on_notice=notices.append, retry_delays=(0, 0),
+        )
+        self.assertEqual(self.destination.read_bytes(), BIG_MP4_BYTES)
+        self.assertEqual(result["connections"], 1)
+        self.assertIn("1 kết nối", notices[-1])
+        self.assertEqual(range_threads(), [])
+
+    def test_a_dropped_range_connection_resumes_where_it_stopped(self):
+        total = len(BIG_MP4_BYTES)
+        first, last = http_download.split_ranges(total, 6)[2]
+        dropped = {"done": False}
+
+        def flaky(handler):
+            if requested_range(handler) == (first, last) and not dropped["done"]:
+                dropped["done"] = True
+                handler.send_response(206)
+                handler.send_header("Content-Length", str(last - first + 1))
+                handler.send_header("Content-Range", f"bytes {first}-{last}/{total}")
+                handler.end_headers()
+                handler.wfile.write(BIG_MP4_BYTES[first:first + 100_000])
+                handler.wfile.flush()
+                handler.close_connection = True
+                return
+            serve_bytes(handler, BIG_MP4_BYTES)
+
+        MediaHandler.routes["/flaky-big.mp4"] = flaky
+        result = http_download.stream_download(
+            [f"{self.base}/flaky-big.mp4"], self.destination, validate=local.require_mp4_header,
+            retry_delays=(0, 0),
+        )
+        self.assertEqual(self.destination.read_bytes(), BIG_MP4_BYTES)
+        self.assertEqual(result["connections"], 6)
+        # Only the broken range is asked for again, from the first byte it is missing.
+        self.assertIn(f"bytes={first + 100_000}-{last}", self.requested_ranges())
+        self.assertEqual(len(self.requested_ranges()), 7)
+
+    def test_cancel_stops_every_range_connection_and_removes_the_partial_file(self):
+        release = threading.Event()
+        total = len(BIG_MP4_BYTES)
+
+        def stalled(handler):
+            wanted = requested_range(handler)
+            if handler.headers.get("Range") == http_download.PROBE_RANGE or wanted is None:
+                serve_bytes(handler, BIG_MP4_BYTES)
+                return
+            range_first, range_last = wanted
+            handler.send_response(206)
+            handler.send_header("Content-Length", str(range_last - range_first + 1))
+            handler.send_header("Content-Range", f"bytes {range_first}-{range_last}/{total}")
+            handler.end_headers()
+            handler.wfile.write(BIG_MP4_BYTES[range_first:range_first + 1000])
+            handler.wfile.flush()
+            release.wait(10)
+
+        MediaHandler.routes["/stalled-big.mp4"] = stalled
+        cancel = threading.Event()
+        threading.Timer(0.6, cancel.set).start()
+        started = time.monotonic()
+        try:
+            with self.assertRaises(base.DownloadCancelledError):
+                http_download.stream_download(
+                    [f"{self.base}/stalled-big.mp4"], self.destination, is_cancelled=cancel.is_set, timeout=30,
+                )
+            self.assertLess(time.monotonic() - started, 3)
+            self.assertEqual(len(self.requested_ranges()), 6)
+        finally:
+            release.set()
+        deadline = time.monotonic() + 5
+        while (range_threads() or list(Path(self.temporary_dir.name).iterdir())) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(range_threads(), [])
+        self.assertEqual(list(Path(self.temporary_dir.name).iterdir()), [])
 
 
 class FakeClock:

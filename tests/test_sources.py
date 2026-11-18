@@ -235,6 +235,49 @@ class AwemeDetailTests(unittest.TestCase):
         self.assertFalse(any("watermark=1" in url for url in video.play_urls))
         self.assertEqual(video.cover_urls[0], "https://p3-sign.douyinpic.com/origin.jpeg")
 
+    def test_a_moderate_bitrate_720p_or_1080p_h264_is_chosen_over_a_very_heavy_one(self):
+        def rendition(gear, bitrate, side, hevc=0):
+            return {"gear_name": gear, "bit_rate": bitrate, "is_h265": hevc, "play_addr": {
+                "url_list": [f"https://v3-web.douyinvod.com/{gear}.mp4"], "width": side, "height": side * 16 // 9}}
+
+        detail = make_api_detail()
+        detail["video"]["bit_rate"] = [
+            rendition("heavy_1080_0", 8_200_000, 1080),
+            rendition("hevc_1080_1", 1_600_000, 1080, hevc=1),
+            rendition("light_720_0", 1_100_000, 720),
+            rendition("lower_540_0", 900_000, 540),
+            rendition("normal_720_0", 1_900_000, 720),
+            rendition("normal_1080_0", 2_600_000, 1080),
+            rendition("high_1080_0", 4_200_000, 1080),
+        ]
+        video = douyin.parse_aweme_detail(detail)
+        names = [url.rsplit("/", 1)[1].removesuffix(".mp4") for url in video.play_urls]
+        self.assertEqual(names, [
+            "normal_1080_0", "normal_720_0",  # 720p-1080p at 1.5-3.5 Mbps, higher resolution first
+            "light_720_0",                    # lighter than 1.5 Mbps
+            "high_1080_0", "heavy_1080_0",    # heavier ones, lightest first
+            "lower_540_0",                    # outside 720p-1080p
+            "hevc_1080_1",                    # H.265 only as a fallback
+            "default",                        # the default play address last
+        ])
+        self.assertEqual(video.play_label, "H.264 1080p, 2.6 Mbps")
+        # About 19.5 MB for a minute of video instead of 61.5 MB at 8.2 Mbps.
+
+    def test_the_gear_name_gives_the_size_when_the_dimensions_are_missing(self):
+        detail = make_api_detail()
+        detail["video"]["bit_rate"] = [
+            {"gear_name": "normal_1080_0", "bit_rate": 9_000_000, "is_h265": 0,
+             "play_addr": {"url_list": ["https://v3-web.douyinvod.com/heavy.mp4"], "width": 1080, "height": 1920}},
+            {"gearName": "normal_720_0", "bitRate": 2_000_000, "isH265": 0,
+             "playAddr": {"url_list": ["https://v3-web.douyinvod.com/moderate.mp4"]}},
+        ]
+        video = douyin.parse_aweme_detail(detail)
+        self.assertEqual(video.play_urls[:2], [
+            "https://v3-web.douyinvod.com/moderate.mp4", "https://v3-web.douyinvod.com/heavy.mp4"])
+        self.assertEqual(video.play_label, "H.264 720p, 2.0 Mbps")
+        self.assertEqual([douyin.rendition_rank(False, side, 2_000_000)[1] for side in (540, 720, 1080, 1440)],
+                         [1, 0, 0, 1])
+
     def test_play_addr_is_the_fallback_when_no_bitrate_list_exists(self):
         detail = make_api_detail()
         detail["video"].pop("bit_rate")

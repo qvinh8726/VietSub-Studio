@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 import urllib.request
@@ -632,6 +633,28 @@ class DownloadProgressTests(unittest.TestCase):
         app.workflow_context.quiet = False
         app.clear_download_progress()
         self.assertFalse(app.progress_snapshot()["download"]["active"])
+
+    def test_download_threads_report_with_the_context_of_the_thread_that_started_them(self):
+        def call_from_another_thread(callback, *args):
+            # stream_download calls the callbacks from its own threads, whose context is empty.
+            thread = threading.Thread(target=callback, args=args)
+            thread.start()
+            thread.join(5)
+
+        app.reset_download_progress("douyin")
+        app.workflow_context.quiet = True
+        prefetch_progress, prefetch_notice = app.bound_download_callbacks()
+        app.workflow_context.quiet = False
+        with patch.object(app, "write_durable_log"):
+            call_from_another_thread(prefetch_progress, 70 * MB, 100 * MB, 2 * MB)
+            call_from_another_thread(prefetch_notice, "tải song song 6 kết nối")
+        snapshot = app.progress_snapshot()
+        self.assertNotEqual(snapshot["download"].get("downloaded"), 70 * MB)
+        self.assertFalse(any("song song" in line for line in snapshot["logs"]))
+
+        job_progress, _job_notice = app.bound_download_callbacks()
+        call_from_another_thread(job_progress, 30 * MB, 100 * MB, 2 * MB)
+        self.assertEqual(app.progress_snapshot()["download"]["downloaded"], 30 * MB)
 
 
 class FakeWebview:

@@ -48,6 +48,11 @@ ROUTER_DATA_PATTERN = re.compile(r"window\._ROUTER_DATA\s*=\s*(\{.*?\})\s*;?\s*<
 RENDER_DATA_PATTERN = re.compile(r'<script[^>]*\bid="RENDER_DATA"[^>]*>(.*?)</script>', re.S)
 # Guests see Douyin's login popup on every page; it only counts when no video data came.
 LOGIN_GRACE_SECONDS = 1.5
+# Rendition choice for OCR: 720p-1080p (smaller side, in pixels) at 1.5-3.5 Mbps first.
+OCR_SHORT_SIDE = (720, 1080)
+MODERATE_BITRATE = (1_500_000, 3_500_000)
+HEAVY_BITRATE = 5_000_000
+GEAR_SIZE_PATTERN = re.compile(r"(?:^|_)(\d{3,4})(?:p)?(?:_|$)")
 
 _AWEME_ID = r"\d{1,25}"
 PATH_ID_PATTERN = re.compile(rf"/(?:share/)?(video|note|slides)/({_AWEME_ID})(?:/|$)")
@@ -91,6 +96,8 @@ class DouyinVideo:
     duration_seconds: float = None
     play_urls: list = field(default_factory=list)
     cover_urls: list = field(default_factory=list)
+    # "H.264 1080p, 2.4 Mbps" when the first play URL comes from Douyin's rendition list.
+    play_label: str = ""
 
 
 def is_douyin_host(host):
@@ -270,16 +277,51 @@ def _dedupe(urls):
     return result
 
 
-def select_play_urls(video):
-    """Order watermark-free MP4 URLs from best to worst.
+def _short_side(width, height, gear_name):
+    """Smaller side in pixels (720 for 720x1280), or the size in the gear name ("normal_1080_0")."""
+    sides = [side for side in (width, height) if side > 0]
+    if sides:
+        return min(sides)
+    match = GEAR_SIZE_PATTERN.search(str(gear_name or ""))
+    return float(match.group(1)) if match else 0.0
 
-    H.264 renditions come first (highest resolution, then bitrate): VideOCR, FFmpeg
-    and the WebView2 preview decode them everywhere. H.265/ByteVC1 renditions and the
-    default play address follow as fallbacks.
+
+def _bitrate_class(bitrate):
+    """0 moderate, 1 light, 2 unknown, 3 heavy, 4 very heavy (lower is tried first)."""
+    if not bitrate:
+        return 2
+    if bitrate < MODERATE_BITRATE[0]:
+        return 1
+    if bitrate <= MODERATE_BITRATE[1]:
+        return 0
+    return 3 if bitrate <= HEAVY_BITRATE else 4
+
+
+def rendition_rank(hevc, short_side, bitrate):
+    """Sort key of one rendition for OCR; smaller keys are tried first.
+
+    H.264 always comes before H.265/ByteVC1, because VideOCR, FFmpeg and the WebView2
+    preview decode it everywhere. Then 720p-1080p before other sizes, and within them a
+    moderate bitrate (1.5-3.5 Mbps) first: burned-in subtitles stay as sharp for OCR as
+    in a 5+ Mbps rendition, while the file is several times smaller. Light renditions
+    follow, then heavy ones (lightest first); a higher resolution wins within a class.
     """
+    in_band = OCR_SHORT_SIDE[0] <= short_side <= OCR_SHORT_SIDE[1]
+    bitrate_class = _bitrate_class(bitrate)
+    return (
+        1 if hevc else 0,
+        0 if in_band else 1,
+        bitrate_class,
+        -short_side,
+        -bitrate if bitrate_class <= 1 else bitrate,
+    )
+
+
+def ranked_renditions(video):
+    """Renditions of the bit_rate list, best first for OCR: [{"urls", "hevc", "short_side", "bitrate"}]."""
     if not isinstance(video, dict):
         return []
-    ranked = []
+    renditions = []
     for entry in video.get("bit_rate") or video.get("bitRateList") or []:
         if not isinstance(entry, dict):
             continue
@@ -293,18 +335,44 @@ def select_play_urls(video):
         address = address if isinstance(address, dict) else {}
         width = _number(address.get("width"), entry.get("width"))
         height = _number(address.get("height"), entry.get("height"))
-        bitrate = _number(entry.get("bit_rate"), entry.get("bitRate"))
-        hevc = any(
-            _flag(entry.get(key)) for key in ("is_h265", "isH265", "is_bytevc1", "isBytevc1")
-        )
-        ranked.append((1 if hevc else 0, -(width * height), -bitrate, urls))
-    ranked.sort(key=lambda item: item[:3])
+        renditions.append({
+            "urls": urls,
+            "hevc": any(
+                _flag(entry.get(key)) for key in ("is_h265", "isH265", "is_bytevc1", "isBytevc1")
+            ),
+            "short_side": _short_side(width, height, entry.get("gear_name") or entry.get("gearName")),
+            "bitrate": _number(entry.get("bit_rate"), entry.get("bitRate")),
+        })
+    # sort() is stable, so equal renditions keep the order Douyin listed them in.
+    renditions.sort(key=lambda item: rendition_rank(item["hevc"], item["short_side"], item["bitrate"]))
+    return renditions
+
+
+def describe_rendition(rendition):
+    """"H.264 1080p, 2.4 Mbps" for logs."""
+    parts = ["H.265" if rendition["hevc"] else "H.264"]
+    if rendition["short_side"]:
+        parts.append(f"{int(rendition['short_side'])}p")
+    text = " ".join(parts)
+    if rendition["bitrate"]:
+        text += f", {rendition['bitrate'] / 1_000_000:.1f} Mbps"
+    return text
+
+
+def select_play_urls(video):
+    """Order watermark-free MP4 URLs from best to worst for OCR (see rendition_rank).
+
+    H.265/ByteVC1 renditions and the default play address follow the H.264 ones as fallbacks.
+    """
+    if not isinstance(video, dict):
+        return []
+    renditions = ranked_renditions(video)
 
     def clean(address):
         return [url for url in (_clean_play_url(item) for item in _url_list(address)) if url]
 
-    h264 = [url for item in ranked if item[0] == 0 for url in item[3]]
-    hevc = [url for item in ranked if item[0] == 1 for url in item[3]]
+    h264 = [url for item in renditions if not item["hevc"] for url in item["urls"]]
+    hevc = [url for item in renditions if item["hevc"] for url in item["urls"]]
     return _dedupe(
         h264
         + clean(video.get("play_addr_h264") or video.get("playAddrH264"))
@@ -323,6 +391,12 @@ def parse_aweme_detail(detail):
     title = " ".join(str(detail.get("desc") or "").split())
     duration_ms = _number(video.get("duration"), detail.get("duration"))
     play_urls = select_play_urls(video)
+    renditions = ranked_renditions(video)
+    play_label = (
+        describe_rendition(renditions[0])
+        if renditions and play_urls and renditions[0]["urls"][0] == play_urls[0]
+        else ""
+    )
     if not play_urls:
         if detail.get("images") or detail.get("image_infos") or detail.get("imageInfos"):
             raise ImagePostError("Bài đăng Douyin này là ảnh (图文), không có video để OCR.")
@@ -337,6 +411,7 @@ def parse_aweme_detail(detail):
         duration_seconds=duration_ms / 1000 if duration_ms else None,
         play_urls=play_urls,
         cover_urls=_dedupe(covers),
+        play_label=play_label,
     )
 
 

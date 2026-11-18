@@ -100,6 +100,8 @@ The project is designed around the parts of long-form subtitle work that become 
 - Stops at once with instructions when Douyin only shows the video to signed-in users (the page leaves the video or shows its login popup), instead of waiting for a timeout.
 - Captures Kuaishou videos the same way from the post page, and downloads Xiaohongshu, Bilibili, TikTok, and YouTube with the bundled yt-dlp (Xiaohongshu falls back to the page in the browser).
 - Brings the browser to the front when Douyin shows a captcha or a Kuaishou/Xiaohongshu page needs a login, shows the request in the app, and waits up to 3 minutes for the user.
+- Downloads a video file larger than 2 MB over 6 parallel connections when the server supports byte ranges (checked with `Range: bytes=0-0`), each writing its own part of the file, and falls back to one connection with resume otherwise. CDNs that cap each connection become several times faster.
+- Picks the Douyin rendition for OCR: H.264 at 720p-1080p with a moderate 1.5-3.5 Mbps first, so a minute of video is about 15-20 MB instead of 40-60 MB while subtitles stay as readable.
 - Shows live download progress (percent, MB, speed) and stops a download within about a second on **Cancel job**.
 - Reuses a finished download and a video still present in an old Douzy library instead of downloading again.
 - Moves the downloaded video, its metadata, and its cover into the completed project folder without leaving a second full-size copy.
@@ -733,6 +735,8 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Dừng ngay và hướng dẫn đăng nhập khi Douyin chỉ cho người đã đăng nhập xem video (trang chuyển khỏi video hoặc hiện bảng đăng nhập), thay vì chờ tới hết thời gian.
 - Bắt video Kuaishou theo cách tương tự từ trang bài đăng; tải Xiaohongshu, Bilibili, TikTok và YouTube bằng yt-dlp đi kèm app (Xiaohongshu dự phòng bằng trang trong trình duyệt).
 - Đưa trình duyệt lên trước khi Douyin hiện captcha hoặc trang Kuaishou/Xiaohongshu cần đăng nhập, báo trên giao diện và chờ người dùng tối đa 3 phút.
+- Tải file video lớn hơn 2 MB bằng 6 kết nối song song khi máy chủ hỗ trợ tải theo đoạn byte (kiểm tra bằng `Range: bytes=0-0`), mỗi kết nối ghi đúng phần của mình vào file; nếu không thì tải bằng 1 kết nối có resume như cũ. CDN giới hạn tốc độ từng kết nối sẽ nhanh hơn vài lần.
+- Chọn bản video Douyin cho OCR: ưu tiên H.264 720p-1080p bitrate vừa phải 1.5-3.5 Mbps, nên mỗi phút video chỉ khoảng 15-20 MB thay vì 40-60 MB mà phụ đề vẫn đọc rõ.
 - Hiện tiến độ tải trực tiếp (phần trăm, MB, tốc độ) và dừng lượt tải trong khoảng một giây khi bấm **Huỷ job**.
 - Dùng lại video đã tải xong và video còn trong thư viện Douzy cũ thay vì tải lại.
 - Chuyển video đã tải cùng metadata và ảnh bìa vào folder project hoàn tất mà không tạo bản sao video dung lượng lớn thứ hai.

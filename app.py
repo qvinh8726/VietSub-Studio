@@ -216,7 +216,7 @@ JS_RUNTIME_CACHE_SECONDS = 10 * 60
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.2"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -577,6 +577,38 @@ def report_download_progress(downloaded, total=None, speed=None):
             f"Tải video: {percent}% ({format_megabytes(downloaded)}/{format_megabytes(total)}{speed_text})",
             durable=False,
         )
+
+
+def bound_download_callbacks():
+    """(on_progress, on_notice) for stream_download, bound to the calling thread's context.
+
+    stream_download calls them from its own download threads, where the thread-local
+    workflow_context is empty; without this the background prefetch would overwrite the
+    progress and console of the visible job.
+    """
+    quiet = download_progress_is_silent()
+
+    def on_progress(downloaded, total=None, speed=None):
+        if not quiet:
+            report_download_progress(downloaded, total, speed)
+
+    def on_notice(message):
+        log_to_app(message, quiet=quiet)
+
+    return on_progress, on_notice
+
+
+def log_download_summary(result, started, label="video"):
+    """One line with the size, time and average speed of a finished stream_download."""
+    if not isinstance(result, dict) or not result.get("bytes"):
+        return
+    elapsed = max(0.001, time.monotonic() - started)
+    connections = int(result.get("connections") or 1)
+    how = f"{connections} kết nối song song" if connections > 1 else "1 kết nối"
+    log_to_app(
+        f"Đã tải {format_megabytes(result['bytes'])} {label} trong {elapsed:,.1f} giây "
+        f"({format_megabytes(result['bytes'] / elapsed)}/s, {how})."
+    )
 
 
 def download_progress_snapshot():
@@ -1627,9 +1659,12 @@ def write_durable_log(message):
         pass
 
 
-def log_to_app(msg, log_type="system", *, durable=True):
-    """Show a line in the app console; durable=False keeps it out of the log file."""
-    quiet = getattr(workflow_context, "quiet", False)
+def log_to_app(msg, log_type="system", *, durable=True, quiet=None):
+    """Show a line in the app console; durable=False keeps it out of the log file.
+
+    quiet=None takes the flag of this thread's workflow context (True for the prefetch).
+    """
+    quiet = getattr(workflow_context, "quiet", False) if quiet is None else bool(quiet)
     prefix = "[PREFETCH] " if quiet else ""
     console_message = f"{prefix}[{log_type.upper()}] {msg}"
     if durable:
@@ -5228,13 +5263,18 @@ def douyin_download_result(aweme_id, path, title):
 
 def stream_douyin_video(video, target_path, headers, cookie_jar):
     set_download_progress(phase="download", notice="")
+    if getattr(video, "play_label", ""):
+        log_to_app(f"Chọn bản {video.play_label} (đủ nét cho OCR, nhẹ hơn bản bitrate cao).")
+    on_progress, on_notice = bound_download_callbacks()
+    started = time.monotonic()
     try:
-        http_download.stream_download(
+        result = http_download.stream_download(
             video.play_urls,
             target_path,
             headers=headers,
             cookie_jar=cookie_jar,
-            on_progress=report_download_progress,
+            on_progress=on_progress,
+            on_notice=on_notice,
             is_cancelled=cancel_requested,
             validate=local_source.require_mp4_header,
         )
@@ -5242,6 +5282,7 @@ def stream_douyin_video(video, target_path, headers, cookie_jar):
         raise_if_download_cancelled(error)
     except SourceError as error:
         raise VideoDownloadError(str(error)) from error
+    log_download_summary(result, started, "video Douyin")
 
 
 def download_douyin_via_share_page(aweme_id, target_path):
@@ -5528,13 +5569,16 @@ def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
     }
     log_to_app(f"Đã tìm thấy file video trên trang {label}. Đang tải...")
     set_download_progress(phase="download", notice="")
+    on_progress, on_notice = bound_download_callbacks()
+    started = time.monotonic()
     try:
-        http_download.stream_download(
+        result = http_download.stream_download(
             capture.media_urls,
             target_path,
             headers=headers,
             cookie_jar=cookie_jar,
-            on_progress=report_download_progress,
+            on_progress=on_progress,
+            on_notice=on_notice,
             is_cancelled=cancel_requested,
             validate=local_source.require_mp4_header,
         )
@@ -5542,6 +5586,7 @@ def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
         raise_if_download_cancelled(error)
     except SourceError as error:
         raise VideoDownloadError(str(error)) from error
+    log_download_summary(result, started, f"video {label}")
     video_id = resolved.video_id or request.video_id
     title = capture.title or f"{label} {video_id}"
     save_source_metadata(target_path, site=request.site, video_id=video_id, title=title, source_url=resolved.url)

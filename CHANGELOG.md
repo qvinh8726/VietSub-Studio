@@ -4,6 +4,18 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-11-18
+
+### Changed
+
+- Video files are now downloaded over 6 parallel connections when the server supports byte ranges, like a download manager. Each URL is first probed with `Range: bytes=0-0`; when the answer is `206` with `Content-Range: bytes 0-0/<size>` and the file is larger than 2 MB, six connections (`ThreadPoolExecutor(max_workers=6)`) each fetch one byte range and write it at its place in a pre-sized `.part` file. The range requests go to the address the probe was redirected to, so all of them read the same copy of the file. Many Chinese CDNs cap the speed of each connection (about 0.4 MB/s was reported), so the connections add up: against a test server capped at 0.4 MB/s per connection, a 6 MB file took 2.6 s instead of 15.4 s.
+- The bytes of all connections are added up for the percent and MB/s shown in the app, and **Cancel job** stops every connection at its next read. A connection that drops resumes its own range from the first missing byte. When the server ignores ranges, answers a range it was not asked for, or a range keeps failing, the file is downloaded again over one connection with resume, as before. The log now ends each download with its size, time, average speed and number of connections.
+- Douyin renditions are chosen for OCR instead of for the highest bitrate. H.264 still comes before H.265/ByteVC1, but among H.264 renditions 720p-1080p at a moderate 1.5-3.5 Mbps come first, then lighter ones, then heavier ones (lightest first), then other sizes. Burned-in subtitles stay as readable for VideOCR while a minute of video is about 15-20 MB instead of 40-60 MB at 5-8 Mbps. The log names the chosen rendition, for example "H.264 1080p, 2.6 Mbps". When width and height are missing, the size is read from the rendition name (`normal_720_0`).
+
+### Fixed
+
+- Download progress and messages from a background prefetch no longer reach the visible job's progress bar and console. The download threads have no workflow context of their own, so the callbacks are now bound to the thread that started the download.
+
 ## [1.6.1] - 2026-11-18
 
 ### Changed

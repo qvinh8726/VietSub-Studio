@@ -31,7 +31,7 @@ function loadApp({ fetch, confirm = () => true, pywebview } = {}) {
     const elements = {};
     const document = {
         getElementById(id) { return (elements[id] ??= makeElement(id)); },
-        querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.6.1' }; },
+        querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.6.2' }; },
         createElement(tag) { return makeElement(tag); },
     };
     const window = { addEventListener() {}, matchMedia: () => ({ matches: true }), confirm, scrollTo() {}, pywebview };
