@@ -1,7 +1,7 @@
 // Content of the VietSub Studio landing page. Numbers come from the v1.6.2 release notes and tests.
 
-export const VERSION = "1.6.2";
-export const RELEASE_URL = "https://github.com/qvinh8726/VietSub-Studio/releases/tag/v1.6.2";
+export const VERSION = "1.7.0";
+export const RELEASE_URL = `https://github.com/qvinh8726/VietSub-Studio/releases/tag/v${VERSION}`;
 export const REPO_URL = "https://github.com/qvinh8726/VietSub-Studio";
 export const CHANGELOG_URL = "https://github.com/qvinh8726/VietSub-Studio/blob/main/CHANGELOG.md";
 

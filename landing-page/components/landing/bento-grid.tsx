@@ -5,6 +5,7 @@ import { motion } from "motion/react";
 import type { Variants } from "motion/react";
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { VERSION } from "./data";
 
 const grid: Variants = { hidden: {}, show: { transition: { staggerChildren: 0.09, delayChildren: 0.05 } } };
 const card: Variants = {
@@ -74,7 +75,7 @@ export function BentoGrid() {
     >
       <Card className="bento-a">
         <span className="bento-kicker">
-          <Zap size={15} aria-hidden="true" /> Mới trong v1.6.2
+          <Zap size={15} aria-hidden="true" /> Bản v{VERSION}
         </span>
         <h3>Dán nguyên đoạn share, nhận video gốc. Tải 6 kết nối song song.</h3>
         <p>

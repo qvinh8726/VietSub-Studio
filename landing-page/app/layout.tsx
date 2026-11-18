@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Be_Vietnam_Pro, JetBrains_Mono, Noto_Sans_SC } from "next/font/google";
+import { VERSION } from "../components/landing/data";
 import "./globals.css";
 
 // Headings and body: designed for Vietnamese diacritics.
@@ -26,9 +27,9 @@ const monoFont = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "VietSub Studio v1.6.2 — OCR và dịch phụ đề video Trung sang tiếng Việt",
+  title: `VietSub Studio v${VERSION} — OCR và dịch phụ đề video Trung sang tiếng Việt`,
   description:
-    "Công cụ Windows mã nguồn mở: dán link share Douyin, Bilibili, Xiaohongshu, Kuaishou, TikTok, YouTube hoặc mở file trên máy, OCR phụ đề cứng bằng VideOCR, dịch sang tiếng Việt và giữ nguyên timestamp SRT. v1.6.2 tải 6 kết nối song song.",
+    `Công cụ Windows mã nguồn mở: dán link share Douyin, Bilibili, Xiaohongshu, Kuaishou, TikTok, YouTube hoặc mở file trên máy, OCR phụ đề cứng bằng VideOCR, dịch sang tiếng Việt và giữ nguyên timestamp SRT. v${VERSION} tải 6 kết nối song song.`,
 };
 
 export const viewport: Viewport = {
