@@ -11,6 +11,8 @@
   "output_dir": "",
   "crop_coords": null,
   "edge_background": true,
+  "sakuga_vfx_enabled": true,
+  "workbench_layout": null,
   "browser_kind": "chrome",
   "browser_path": "",
   "desktop_shortcut_initialized": false

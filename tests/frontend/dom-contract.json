@@ -1,0 +1,620 @@
+{
+  "source_commit": "113bcc03da047ba8e63b61c8a630d9ecaeefe730",
+  "description": "Compatibility baseline captured before the v1.7.0 redesign; values describe the v1.6.2 desktop template, not the new layout.",
+  "ids": {
+    "version-pill": {
+      "tag": "div"
+    },
+    "edge-pill": {
+      "tag": "div"
+    },
+    "edge-pill-text": {
+      "tag": "span"
+    },
+    "update-banner": {
+      "tag": "section"
+    },
+    "update-title": {
+      "tag": "strong"
+    },
+    "update-copy": {
+      "tag": "p"
+    },
+    "update-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "preview-form": {
+      "tag": "form",
+      "attributes": {
+        "novalidate": ""
+      }
+    },
+    "char-count": {
+      "tag": "small"
+    },
+    "url-input": {
+      "tag": "textarea",
+      "attributes": {
+        "maxlength": "2000",
+        "spellcheck": "false"
+      }
+    },
+    "url-error": {
+      "tag": "div"
+    },
+    "url-help": {
+      "tag": "small"
+    },
+    "project-name": {
+      "tag": "input",
+      "attributes": {
+        "maxlength": "100",
+        "autocomplete": "off"
+      }
+    },
+    "preview-video-name": {
+      "tag": "span"
+    },
+    "preview-sub-name": {
+      "tag": "span"
+    },
+    "ocr-lang": {
+      "tag": "select",
+      "attributes": {},
+      "options": [
+        {
+          "value": "ch"
+        },
+        {
+          "value": "en"
+        },
+        {
+          "value": "ja"
+        },
+        {
+          "value": "ko"
+        },
+        {
+          "value": "vi"
+        }
+      ]
+    },
+    "preview-status": {
+      "tag": "input",
+      "attributes": {
+        "readonly": "",
+        "value": "Chưa chuẩn bị"
+      }
+    },
+    "local-video-input": {
+      "tag": "input",
+      "attributes": {
+        "type": "file",
+        "accept": "video/mp4,.mp4"
+      }
+    },
+    "local-video-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "prepare-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "submit"
+      }
+    },
+    "add-queue-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button",
+        "disabled": ""
+      }
+    },
+    "preview-download": {
+      "tag": "div"
+    },
+    "preview-download-label": {
+      "tag": "strong"
+    },
+    "preview-download-stats": {
+      "tag": "span"
+    },
+    "preview-download-bar": {
+      "tag": "div"
+    },
+    "preview-download-fill": {
+      "tag": "i"
+    },
+    "preview-download-notice": {
+      "tag": "div"
+    },
+    "video-stage": {
+      "tag": "div"
+    },
+    "preview-placeholder": {
+      "tag": "div"
+    },
+    "preview-player": {
+      "tag": "video",
+      "attributes": {
+        "controls": "",
+        "preload": "metadata"
+      }
+    },
+    "crop-box": {
+      "tag": "div"
+    },
+    "crop-tools": {
+      "tag": "div"
+    },
+    "crop-x": {
+      "tag": "input",
+      "attributes": {
+        "type": "number",
+        "min": "0",
+        "max": "100",
+        "step": "0.1"
+      }
+    },
+    "crop-y": {
+      "tag": "input",
+      "attributes": {
+        "type": "number",
+        "min": "0",
+        "max": "100",
+        "step": "0.1"
+      }
+    },
+    "crop-width": {
+      "tag": "input",
+      "attributes": {
+        "type": "number",
+        "min": "1",
+        "max": "100",
+        "step": "0.1"
+      }
+    },
+    "crop-height": {
+      "tag": "input",
+      "attributes": {
+        "type": "number",
+        "min": "1",
+        "max": "100",
+        "step": "0.1"
+      }
+    },
+    "full-frame-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "lower-third-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "save-crop-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "preview-title": {
+      "tag": "span"
+    },
+    "crop-summary": {
+      "tag": "span"
+    },
+    "queue-count": {
+      "tag": "span"
+    },
+    "start-queue-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button",
+        "disabled": ""
+      }
+    },
+    "cancel-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "clear-finished-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "queue-list": {
+      "tag": "div"
+    },
+    "process-caption": {
+      "tag": "span"
+    },
+    "workflow-progress": {
+      "tag": "div"
+    },
+    "step-resolve": {
+      "tag": "div"
+    },
+    "step-download": {
+      "tag": "div"
+    },
+    "step-ocr": {
+      "tag": "div"
+    },
+    "step-translate": {
+      "tag": "div"
+    },
+    "step-done": {
+      "tag": "div"
+    },
+    "job-download": {
+      "tag": "div"
+    },
+    "job-download-label": {
+      "tag": "strong"
+    },
+    "job-download-stats": {
+      "tag": "span"
+    },
+    "job-download-bar": {
+      "tag": "div"
+    },
+    "job-download-fill": {
+      "tag": "i"
+    },
+    "job-download-notice": {
+      "tag": "div"
+    },
+    "console-box": {
+      "tag": "div"
+    },
+    "result-box": {
+      "tag": "div"
+    },
+    "result-title": {
+      "tag": "div"
+    },
+    "res-video": {
+      "tag": "span"
+    },
+    "res-thumbnail-row": {
+      "tag": "div"
+    },
+    "res-thumbnail": {
+      "tag": "span"
+    },
+    "res-raw": {
+      "tag": "span"
+    },
+    "res-vi": {
+      "tag": "span"
+    },
+    "open-result-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "settings-panel": {
+      "tag": "div"
+    },
+    "setting-translation-provider": {
+      "tag": "select",
+      "attributes": {},
+      "options": [
+        {
+          "value": "notebook"
+        },
+        {
+          "value": "deepseek"
+        },
+        {
+          "value": "openrouter"
+        },
+        {
+          "value": "custom"
+        }
+      ]
+    },
+    "setting-translation-instructions": {
+      "tag": "textarea",
+      "attributes": {
+        "spellcheck": "false"
+      }
+    },
+    "reset-translation-instructions-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "setting-translation-preset": {
+      "tag": "select",
+      "attributes": {},
+      "options": []
+    },
+    "apply-translation-preset-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "notebook-settings": {
+      "tag": "div"
+    },
+    "setting-notebook": {
+      "tag": "input",
+      "attributes": {
+        "type": "url"
+      }
+    },
+    "show-edge-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "api-translation-settings": {
+      "tag": "div"
+    },
+    "setting-api-base-url": {
+      "tag": "input",
+      "attributes": {
+        "type": "url"
+      }
+    },
+    "setting-api-model": {
+      "tag": "input",
+      "attributes": {}
+    },
+    "setting-api-key": {
+      "tag": "input",
+      "attributes": {
+        "type": "password",
+        "autocomplete": "off"
+      }
+    },
+    "clear-api-key-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "api-key-help": {
+      "tag": "small"
+    },
+    "test-api-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "setting-output": {
+      "tag": "input",
+      "attributes": {}
+    },
+    "choose-output-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "output-help": {
+      "tag": "small"
+    },
+    "browser-settings": {
+      "tag": "div"
+    },
+    "setting-browser-kind": {
+      "tag": "select",
+      "attributes": {},
+      "options": [
+        {
+          "value": "chrome"
+        },
+        {
+          "value": "edge"
+        },
+        {
+          "value": "custom"
+        }
+      ]
+    },
+    "browser-path-field": {
+      "tag": "div"
+    },
+    "setting-browser-path": {
+      "tag": "input",
+      "attributes": {
+        "spellcheck": "false",
+        "autocomplete": "off"
+      }
+    },
+    "choose-browser-path-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "browser-help": {
+      "tag": "small"
+    },
+    "setting-edge-background": {
+      "tag": "input",
+      "attributes": {
+        "type": "checkbox",
+        "checked": ""
+      }
+    },
+    "refresh-sessions-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "source-sessions-intro": {
+      "tag": "small"
+    },
+    "source-sessions": {
+      "tag": "div"
+    },
+    "source-sessions-help": {
+      "tag": "small"
+    },
+    "setting-source-cookie-site": {
+      "tag": "select",
+      "attributes": {},
+      "options": []
+    },
+    "setting-source-cookie": {
+      "tag": "textarea",
+      "attributes": {
+        "spellcheck": "false",
+        "autocomplete": "off"
+      }
+    },
+    "save-source-cookie-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "clear-source-cookie-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button",
+        "disabled": ""
+      }
+    },
+    "setting-cookies-file": {
+      "tag": "input",
+      "attributes": {}
+    },
+    "choose-cookies-file-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "create-shortcut-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "shortcut-help": {
+      "tag": "small"
+    },
+    "setting-ocr-speed": {
+      "tag": "select",
+      "attributes": {},
+      "options": [
+        {
+          "value": "auto"
+        },
+        {
+          "value": "fast"
+        },
+        {
+          "value": "accurate"
+        }
+      ]
+    },
+    "setting-frames-skip": {
+      "tag": "select",
+      "attributes": {},
+      "options": [
+        {
+          "value": ""
+        },
+        {
+          "value": "0"
+        },
+        {
+          "value": "1"
+        },
+        {
+          "value": "2"
+        },
+        {
+          "value": "3"
+        },
+        {
+          "value": "5"
+        }
+      ]
+    },
+    "setting-crop": {
+      "tag": "input",
+      "attributes": {
+        "readonly": ""
+      }
+    },
+    "health-btn": {
+      "tag": "button",
+      "attributes": {
+        "type": "button"
+      }
+    },
+    "diagnostics-list": {
+      "tag": "div"
+    },
+    "history-field": {
+      "tag": "div"
+    },
+    "history-list": {
+      "tag": "div"
+    },
+    "connection-banner": {
+      "tag": "div"
+    },
+    "toast": {
+      "tag": "div"
+    }
+  },
+  "data_attributes": [
+    {
+      "owner": "crop-box",
+      "tag": "i",
+      "attributes": {
+        "data-handle": "nw"
+      }
+    },
+    {
+      "owner": "crop-box",
+      "tag": "i",
+      "attributes": {
+        "data-handle": "ne"
+      }
+    },
+    {
+      "owner": "crop-box",
+      "tag": "i",
+      "attributes": {
+        "data-handle": "sw"
+      }
+    },
+    {
+      "owner": "crop-box",
+      "tag": "i",
+      "attributes": {
+        "data-handle": "se"
+      }
+    }
+  ],
+  "meta": {
+    "api-token": "{{ api_token }}",
+    "app-version": "{{ app_version }}"
+  }
+}

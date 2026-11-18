@@ -4,6 +4,21 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-18
+
+### Changed
+
+- The desktop UI is now a dark Fluent 2 studio workbench: a 44px pipeline header, source tabs and queue sidebar, a dominant video/crop viewport, and a resizable console with logs/results. The document stays within the window; source, queue, settings and logs scroll independently. Existing controls, queue behavior and API routes are retained.
+- Settings open in a keyboard-accessible drawer with focus trapping and Escape dismissal. Sidebar/console sizes and collapsed state survive relaunch through local storage and a versioned preference in the existing settings file. Old configurations need no migration.
+- Be Vietnam Pro, Noto Sans SC and JetBrains Mono are bundled with their OFL licenses and served locally under the existing restrictive CSP. The interface follows the landing palette: forest/charcoal surfaces, yellow actions/OCR, mint success and vermilion errors.
+
+### Added
+
+- A zero-dependency Sakuga canvas adapter supplies short spring, impact, slash and smoke feedback and deduplicated pipeline transitions. Completion celebrates only a job observed running with a Vietnamese result ready. The renderer stops when idle/hidden, caps effects, and respects both the persisted motion setting and the operating system's reduced-motion preference.
+- Video transport with play/pause, seek, timecode and source-FPS frame stepping. Stepping is approximate for VFR sources and disabled when FPS is unknown. Crop remains normalized to the source image across pane resize, aspect ratios and display scaling; unsupported playback codecs still allow OCR when dimensions are known.
+- Optional cached FFprobe metadata and live transfer metrics: actual connection count, speed and preview bitrate. Unknown values stay unknown; fallback from parallel to single download updates the count, and background prefetch cannot overwrite foreground telemetry.
+- Regression coverage for preserved DOM/field contracts, layout persistence, media fitting, VFX lifecycle, settings validation, metadata caching and downloader telemetry. A deterministic Playwright runner checks 1280×720, 1440×900, 1920×1080 and fractional DPI with real Flask assets/settings/media, controlled queue fixtures and saved screenshots; it does not call external OCR/translation services.
+
 ## [1.6.2] - 2026-11-18
 
 ### Changed

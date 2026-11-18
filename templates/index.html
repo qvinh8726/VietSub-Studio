@@ -1,161 +1,239 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="vi" data-motion="off">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#173f35">
+    <meta name="theme-color" content="#07110e">
     <link rel="icon" type="image/jpeg" href="/avatar.jpg">
     <title>VietSub Studio</title>
+    <link rel="stylesheet" href="/static/fonts.css">
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-    <main class="shell">
+<body data-motion="off">
+    <a class="skip-link" href="#preview-viewport">Đến màn hình preview</a>
+    <main id="workbench-shell" class="shell">
         <header class="topbar">
             <div class="brand">
-                <div class="brand-mark"><img src="/avatar.jpg" alt="VietSub Studio"></div>
-                <div><h1>VietSub Studio</h1><p>Preview vùng OCR · hàng đợi video tuần tự · mã nguồn mở</p></div>
+                <div class="brand-mark"><img src="/avatar.jpg" alt="" width="26" height="26"></div>
+                <h1>VietSub Studio</h1>
+                <div id="version-pill" class="status-pill version-pill"><i aria-hidden="true"></i><span>v{{ app_version }}</span></div>
             </div>
-            <div class="status-cluster">
-                <div id="version-pill" class="status-pill"><i></i><span>v{{ app_version }}</span></div>
-                <div id="edge-pill" class="status-pill" title="Trình duyệt tự động hoá của app (profile riêng)"><i></i><span id="edge-pill-text">Đang kiểm tra trình duyệt</span></div>
+            <div id="workflow-progress" class="stepper" role="progressbar" aria-label="Tiến trình job hiện tại" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="step-resolve" class="step">1 · Giải mã</div>
+                <div id="step-download" class="step">2 · Video</div>
+                <div id="step-ocr" class="step">3 · OCR</div>
+                <div id="step-translate" class="step">4 · Dịch</div>
+                <div id="step-done" class="step">5 · Xong</div>
             </div>
+            <button id="settings-open-btn" class="btn-ghost settings-open" type="button" aria-haspopup="dialog" aria-controls="settings-drawer" aria-expanded="false">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9.5 3-.6 2.2-2 .9-2-.6-2.4 4.1 1.6 1.6v2.2l-1.6 1.5 2.4 4.2 2-.6 2 .9.6 2.2h5l.6-2.2 2-.9 2 .6 2.4-4.2-1.6-1.5v-2.2l1.6-1.6-2.4-4.1-2 .6-2-.9L14.5 3z"/><circle cx="12" cy="12" r="3"/></svg>
+                <span>Thiết lập</span>
+            </button>
         </header>
 
         <section id="update-banner" class="update-banner" aria-live="polite" hidden>
             <div class="update-banner-copy">
-                <div class="update-banner-label">Bản cập nhật mới</div>
+                <span class="update-banner-label">Bản cập nhật mới</span>
                 <strong id="update-title">VietSub Studio đã có phiên bản mới</strong>
                 <p id="update-copy">Nên cập nhật để nhận tính năng và bản sửa lỗi mới nhất.</p>
             </div>
             <button id="update-btn" class="update-button" type="button">Cập nhật ngay →</button>
         </section>
 
-        <section class="studio-grid">
-            <div class="panel composer">
-                <div class="composer-head">
-                    <div>
-                        <div class="eyebrow">Chuẩn bị từng video</div>
-                        <h2>Nhìn đúng vùng chữ <span>trước khi OCR.</span></h2>
-                        <p class="composer-intro">Tải preview, kéo khung vàng vào vùng phụ đề rồi thêm video vào hàng đợi. Studio sẽ xử lý lần lượt, không chạy chồng tiến trình.</p>
+        <section id="workbench" class="workbench" aria-label="Không gian làm việc">
+            <aside id="sidebar" class="source-sidebar">
+                <section class="source-card" aria-labelledby="source-title">
+                    <div class="source-heading">
+                        <h2 id="source-title">Nguồn</h2>
+                        <div id="source-pane" class="source-tabs" role="tablist" aria-label="Chọn nguồn video">
+                            <button id="source-link-tab" class="source-tab" type="button" role="tab" data-source-tab="link" aria-selected="true" aria-controls="source-link-panel" tabindex="0">
+                                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m10 13 4-4m-6 6-1 1a4.2 4.2 0 0 1-6-6l4-4a4.2 4.2 0 0 1 6 0m2 2 1-1a4.2 4.2 0 0 1 6 6l-4 4a4.2 4.2 0 0 1-6 0" transform="translate(2 2) scale(.85)"/></svg>
+                                Link Share
+                            </button>
+                            <button id="source-local-tab" class="source-tab" type="button" role="tab" data-source-tab="local" aria-selected="false" aria-controls="source-local-panel" tabindex="-1">
+                                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h6l2 3h8"/></svg>
+                                File nội bộ
+                            </button>
+                        </div>
                     </div>
-                    <div class="step-tag">PREVIEW → QUEUE → RUN</div>
-                </div>
-
-                <div class="compose-body">
                     <form id="preview-form" class="input-column" novalidate>
-                        <div class="field">
-                            <label class="field-label" for="url-input"><span>Link video hoặc đoạn chia sẻ</span><small id="char-count">0 ký tự</small></label>
-                            <textarea id="url-input" maxlength="2000" spellcheck="false" aria-describedby="url-error url-help" aria-invalid="false" placeholder="Dán link Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube hoặc nguyên đoạn chia sẻ từ app điện thoại…"></textarea>
-                            <div id="url-error" class="field-error" role="alert"></div>
-                            <small id="url-help" class="field-help">Douyin và Kuaishou tải qua trình duyệt riêng của app (profile riêng, không đụng trình duyệt bạn đang dùng); Xiaohongshu, Bilibili, TikTok, YouTube tải bằng yt-dlp.</small>
-                        </div>
-                        <div class="field">
-                            <label class="field-label" for="project-name"><span>Tên bộ file</span><small>Để trống = tên video</small></label>
-                            <input id="project-name" class="text-input" maxlength="100" autocomplete="off" placeholder="Ví dụ: Review sản phẩm 21-07">
-                            <div class="file-preview">
-                                <span id="preview-video-name" class="file-chip">Tên video.mp4</span>
-                                <span id="preview-sub-name" class="file-chip">Tên video.raw.srt · Tên video.vi.srt</span>
+                        <div class="source-fields">
+                            <div id="source-link-panel" class="source-panel" role="tabpanel" aria-labelledby="source-link-tab">
+                                <div class="field">
+                                    <label class="field-label" for="url-input"><span>Link video hoặc đoạn chia sẻ</span><small id="char-count">0 ký tự</small></label>
+                                    <textarea id="url-input" maxlength="2000" spellcheck="false" aria-describedby="url-error url-help" aria-invalid="false" placeholder="Dán link Douyin, TikTok, YouTube hoặc đoạn chia sẻ…"></textarea>
+                                    <div id="url-error" class="field-error" role="alert"></div>
+                                </div>
+                                <button id="prepare-btn" class="btn-secondary source-load-btn" type="submit">Tải preview</button>
                             </div>
-                        </div>
-                        <div class="inline-fields">
-                            <div class="field">
-                                <label class="field-label" for="ocr-lang"><span>Ngôn ngữ gốc</span></label>
-                                <select id="ocr-lang" class="select-input">
-                                    <option value="ch">Tiếng Trung</option>
-                                    <option value="en">Tiếng Anh</option>
-                                    <option value="ja">Tiếng Nhật</option>
-                                    <option value="ko">Tiếng Hàn</option>
-                                    <option value="vi">Tiếng Việt</option>
-                                </select>
+                            <div id="source-local-panel" class="source-panel local-source" role="tabpanel" aria-labelledby="source-local-tab" hidden>
+                                <div class="local-source-copy">
+                                    <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5" y="4" width="22" height="24" rx="3"/><path d="M5 10h22M5 22h22M11 4v6m10-6v6M11 22v6m10-6v6"/><path d="m14 13 5 3-5 3z"/></svg>
+                                    <div><strong>Video trên máy</strong><span>MP4 hoặc MKV · Dùng file tại chỗ</span></div>
+                                </div>
+                                <input id="local-video-input" class="local-file-input" type="file" accept="video/mp4,.mp4">
+                                <button id="local-video-btn" class="btn-secondary source-load-btn" type="button" title="Chọn MP4 hoặc MKV trên máy; app dùng file tại chỗ, không sao chép">Chọn video</button>
                             </div>
-                            <div class="field">
-                                <label class="field-label"><span>Trạng thái preview</span></label>
-                                <input id="preview-status" class="text-input readonly" readonly aria-live="polite" value="Chưa chuẩn bị">
+                            <div class="field project-field">
+                                <label class="field-label" for="project-name"><span>Tên bộ file</span><small>Trống = tên video</small></label>
+                                <input id="project-name" class="text-input" maxlength="100" autocomplete="off" placeholder="Ví dụ: Review sản phẩm 21-07">
                             </div>
+                            <div class="inline-fields">
+                                <div class="field">
+                                    <label class="field-label" for="ocr-lang"><span>Ngôn ngữ gốc</span></label>
+                                    <select id="ocr-lang" class="select-input">
+                                        <option value="ch">Tiếng Trung</option>
+                                        <option value="en">Tiếng Anh</option>
+                                        <option value="ja">Tiếng Nhật</option>
+                                        <option value="ko">Tiếng Hàn</option>
+                                        <option value="vi">Tiếng Việt</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label class="field-label" for="preview-status"><span>Preview</span></label>
+                                    <input id="preview-status" class="text-input readonly" readonly aria-live="polite" value="Chưa chuẩn bị">
+                                </div>
+                            </div>
+                            <details class="source-details">
+                                <summary>Thông tin nguồn &amp; bộ file</summary>
+                                <div class="file-preview">
+                                    <span id="preview-video-name" class="file-chip">Tên video.mp4</span>
+                                    <span id="preview-sub-name" class="file-chip">Tên video.raw.srt · Tên video.vi.srt</span>
+                                </div>
+                                <small id="url-help" class="field-help">Douyin và Kuaishou tải qua trình duyệt riêng của app (profile riêng, không đụng trình duyệt bạn đang dùng); Xiaohongshu, Bilibili, TikTok, YouTube tải bằng yt-dlp.</small>
+                                <p class="hint">Tạo preview từ link hoặc chọn video trên máy, chỉnh crop riêng rồi thêm vào hàng đợi. Trong cửa sổ app, video trên máy được dùng ngay tại chỗ, không sao chép. Hàng đợi được giữ lại khi đóng app.</p>
+                            </details>
                         </div>
-                        <div class="button-row">
-                            <input id="local-video-input" class="local-file-input" type="file" accept="video/mp4,.mp4">
-                            <button id="local-video-btn" class="btn-secondary" type="button" title="Chọn MP4 hoặc MKV trên máy; app dùng file tại chỗ, không sao chép">Chọn video</button>
-                            <button id="prepare-btn" class="btn-secondary" type="submit">Tải preview</button>
+                        <div class="composer-actions">
                             <button id="add-queue-btn" class="btn-primary" type="button" disabled>Thêm vào hàng đợi →</button>
                         </div>
-                        <div id="preview-download" class="download-progress" hidden>
-                            <div class="download-progress-head"><strong id="preview-download-label">Đang tải video…</strong><span id="preview-download-stats"></span></div>
-                            <div id="preview-download-bar" class="download-bar" role="progressbar" aria-label="Tiến độ tải video preview" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="preview-download-fill"></i></div>
-                            <div id="preview-download-notice" class="download-notice" role="alert" hidden></div>
-                        </div>
-                        <p class="hint">Tạo preview từ link hoặc chọn video trên máy, chỉnh crop riêng rồi thêm vào hàng đợi. Trong cửa sổ app, video trên máy được dùng ngay tại chỗ, không sao chép. Hàng đợi được giữ lại khi đóng app.</p>
                     </form>
+                </section>
 
-                    <div class="preview-column">
-                        <div class="preview-head"><h3>Khung OCR trực quan</h3><span>Kéo khung · kéo 4 góc để đổi kích thước</span></div>
+                <section class="queue-card" aria-labelledby="queue-title">
+                    <div class="queue-head">
+                        <div class="queue-title"><h2 id="queue-title">Hàng đợi</h2><span id="queue-count" class="queue-count">0</span></div>
+                        <span class="queue-mode" title="Mỗi lần chỉ một video dùng VideOCR và bộ dịch. Video kế tiếp được tải trước trong lúc OCR và tự chạy khi video trước kết thúc."><i aria-hidden="true"></i>Tuần tự</span>
+                        <button id="clear-finished-btn" class="btn-ghost" type="button" title="Xoá các job thành công khỏi lịch sử">Dọn hoàn tất</button>
+                    </div>
+                    <div class="queue-actions">
+                        <button id="start-queue-btn" class="btn-primary" type="button" disabled>Bắt đầu xử lý</button>
+                        <button id="cancel-btn" class="btn-danger" type="button" hidden>Huỷ job</button>
+                    </div>
+                    <div id="queue-list" class="queue-list" role="feed" aria-live="polite" aria-busy="false">
+                        <div class="queue-empty"><span class="queue-empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 9h6m-6 4h6m-6 4h3"/></svg></span><strong>Hàng đợi đang trống</strong><span>Chuẩn bị preview đầu tiên để bắt đầu.</span></div>
+                    </div>
+                </section>
+            </aside>
+
+            <div id="sidebar-resizer" class="resizer sidebar-resizer" role="separator" aria-label="Đổi chiều rộng cột nguồn" aria-orientation="vertical" aria-valuemin="320" aria-valuemax="380" aria-valuenow="350" tabindex="0" title="Kéo để đổi chiều rộng · Nhấp đúp để đặt lại"></div>
+
+            <section class="preview-column" aria-labelledby="preview-heading">
+                <div class="preview-head">
+                    <h2 id="preview-heading"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>Màn hình preview</h2>
+                    <span class="ocr-indicator"><i aria-hidden="true"></i>Vùng nhận diện OCR</span>
+                </div>
+                <div class="preview-surface">
+                    <div id="preview-viewport" class="preview-viewport" tabindex="-1" aria-label="Video preview và vùng chọn OCR">
                         <div id="video-stage" class="video-stage">
-                            <div id="preview-placeholder" class="preview-placeholder"><b>01</b><strong>Chưa có video preview</strong><span>Dán link video hoặc chọn video trên máy để chọn chính xác vùng OCR.</span></div>
+                            <div id="preview-placeholder" class="preview-placeholder">
+                                <div class="preview-placeholder-art" aria-hidden="true"><svg viewBox="0 0 80 64" fill="none"><rect x="12" y="8" width="56" height="40" rx="4" stroke="currentColor" stroke-width="1.4"/><path d="m34 19 15 9-15 9z" fill="currentColor" opacity=".55"/><path d="M6 16V4h14m40 0h14v12M6 42v12h14m40 0h14V42" stroke="var(--sun)" stroke-width="2"/><path d="M25 60h30" stroke="currentColor" stroke-width="1.4"/></svg></div>
+                                <strong>Chưa có video preview</strong>
+                                <span>Dán link chia sẻ hoặc chọn video trên máy.<br>Kéo khung vàng vào vùng phụ đề để bắt đầu.</span>
+                                <small>Preview → Chọn vùng OCR → Thêm vào hàng đợi</small>
+                            </div>
                             <video id="preview-player" controls preload="metadata" hidden></video>
                             <div id="crop-box" class="crop-box" hidden>
                                 <i class="crop-handle nw" data-handle="nw"></i><i class="crop-handle ne" data-handle="ne"></i>
                                 <i class="crop-handle sw" data-handle="sw"></i><i class="crop-handle se" data-handle="se"></i>
                             </div>
                         </div>
-                        <div id="crop-tools" class="crop-tools" hidden>
-                            <div class="crop-values">
-                                <label><span>X (%)</span><input id="crop-x" class="number-input" type="number" min="0" max="100" step="0.1"></label>
-                                <label><span>Y (%)</span><input id="crop-y" class="number-input" type="number" min="0" max="100" step="0.1"></label>
-                                <label><span>Rộng (%)</span><input id="crop-width" class="number-input" type="number" min="1" max="100" step="0.1"></label>
-                                <label><span>Cao (%)</span><input id="crop-height" class="number-input" type="number" min="1" max="100" step="0.1"></label>
-                            </div>
-                            <div class="crop-actions">
-                                <button id="full-frame-btn" class="btn-ghost" type="button">Toàn khung</button>
-                                <button id="lower-third-btn" class="btn-ghost" type="button">1/3 phía dưới</button>
-                                <button id="save-crop-btn" class="btn-ghost" type="button">Lưu làm mặc định</button>
-                            </div>
-                        </div>
-                        <div class="preview-meta"><span id="preview-title">Chưa có video</span><span id="crop-summary">Crop: —</span></div>
                     </div>
                 </div>
-            </div>
-
-            <aside class="panel queue-card">
-                <div class="queue-head">
-                    <div class="queue-kicker">Sequential jobs</div>
-                    <div class="queue-title"><h2>Hàng đợi video</h2><span id="queue-count" class="queue-count">0</span></div>
-                    <p class="queue-copy">Mỗi lần chỉ một video dùng VideOCR và bộ dịch. Video kế tiếp được tải trước trong lúc OCR và tự chạy khi video trước kết thúc.</p>
+                <div id="transport-bar" class="transport-bar" aria-label="Điều khiển video">
+                    <div class="transport-buttons">
+                        <button id="play-pause-btn" class="icon-button play-button" type="button" aria-label="Phát video" title="Phát / tạm dừng" disabled><svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg></button>
+                        <button id="frame-back-btn" class="icon-button" type="button" aria-label="Lùi một frame" title="Lùi một frame" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 5v14m12-14-9 7 9 7z"/></svg></button>
+                        <button id="frame-forward-btn" class="icon-button" type="button" aria-label="Tiến một frame" title="Tiến một frame" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M18 5v14M6 5l9 7-9 7z"/></svg></button>
+                    </div>
+                    <input id="video-seek" class="video-seek" type="range" min="0" max="100" step="0.001" value="0" aria-label="Vị trí phát video" disabled>
+                    <output id="video-timecode" class="video-timecode" aria-label="Thời gian video">00:00:00.000 / 00:00:00.000</output>
+                    <span id="video-metadata" class="video-metadata">Chưa có video</span>
                 </div>
-                <div class="queue-actions">
-                    <button id="start-queue-btn" class="btn-primary" type="button" disabled>Chạy hàng đợi</button>
-                    <button id="cancel-btn" class="btn-danger" type="button" hidden>Huỷ job</button>
-                    <button id="clear-finished-btn" class="btn-ghost" type="button" title="Xoá các job thành công khỏi lịch sử">Dọn hoàn tất</button>
+                <div id="crop-tools" class="crop-tools" hidden>
+                    <div class="crop-tool-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M7 3v14h14M3 7h14v14M7 7l10 10"/></svg><span>Crop OCR</span></div>
+                    <div class="crop-values">
+                        <label><span>X (%)</span><input id="crop-x" class="number-input" type="number" min="0" max="100" step="0.1"></label>
+                        <label><span>Y (%)</span><input id="crop-y" class="number-input" type="number" min="0" max="100" step="0.1"></label>
+                        <label><span>Rộng (%)</span><input id="crop-width" class="number-input" type="number" min="1" max="100" step="0.1"></label>
+                        <label><span>Cao (%)</span><input id="crop-height" class="number-input" type="number" min="1" max="100" step="0.1"></label>
+                    </div>
+                    <div class="crop-actions">
+                        <button id="full-frame-btn" class="btn-ghost" type="button">Toàn khung</button>
+                        <button id="lower-third-btn" class="btn-ghost" type="button">1/3 phía dưới</button>
+                        <button id="save-crop-btn" class="btn-ghost" type="button">Lưu làm mặc định</button>
+                    </div>
                 </div>
-                <div id="queue-list" class="queue-list" role="feed" aria-live="polite" aria-busy="false"><div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div></div>
-            </aside>
+                <div class="preview-meta"><span id="preview-title">Chưa có video</span><span id="crop-summary">Crop: —</span></div>
+            </section>
         </section>
 
-        <section class="lower-grid">
-            <div class="panel progress-card">
-                <div class="section-head"><h3>Tiến trình job hiện tại</h3><span id="process-caption" role="status" aria-live="polite">Sẵn sàng</span></div>
-                <div id="workflow-progress" class="stepper" role="progressbar" aria-label="Tiến trình job hiện tại" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                    <div id="step-resolve" class="step">1 · Giải mã</div><div id="step-download" class="step">2 · Video</div>
-                    <div id="step-ocr" class="step">3 · OCR</div><div id="step-translate" class="step">4 · Dịch</div><div id="step-done" class="step">5 · Xong</div>
+        <div id="console-resizer" class="resizer console-resizer" role="separator" aria-label="Đổi chiều cao bảng nhật ký" aria-orientation="horizontal" aria-valuemin="112" aria-valuemax="400" aria-valuenow="170" tabindex="0" title="Kéo để đổi chiều cao · Nhấp đúp để đặt lại"></div>
+        <section id="console-dock" class="console-dock" aria-label="Nhật ký và thông số xử lý">
+            <header class="console-header">
+                <div class="console-tabs" role="tablist" aria-label="Bảng theo dõi">
+                    <button id="console-log-tab" class="console-tab" type="button" role="tab" data-console-tab="log" aria-selected="true" aria-controls="console-log-panel" tabindex="0"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m5 7 5 5-5 5m8 0h6"/></svg>Nhật ký</button>
+                    <button id="console-result-tab" class="console-tab" type="button" role="tab" data-console-tab="result" aria-selected="false" aria-controls="console-result-panel" tabindex="-1">Kết quả</button>
+                </div>
+                <span id="process-caption" class="process-caption" role="status" aria-live="polite">Sẵn sàng</span>
+                <div class="transfer-metrics" aria-label="Thông số tải">
+                    <span class="metric"><span class="metric-label">Kết nối</span><strong id="metric-connections">—</strong></span>
+                    <span class="metric"><span class="metric-label">Tốc độ</span><strong id="metric-speed">—</strong><span class="metric-label">MB/s</span></span>
+                    <span class="metric"><span class="metric-label">Bitrate</span><strong id="metric-bitrate">—</strong></span>
+                </div>
+                <div id="edge-pill" class="status-pill" title="Trình duyệt tự động hoá của app (profile riêng)"><i aria-hidden="true"></i><span id="edge-pill-text">Đang kiểm tra trình duyệt</span></div>
+                <button id="console-toggle-btn" class="icon-button console-toggle" type="button" aria-label="Thu gọn bảng nhật ký" aria-controls="console-body" aria-expanded="true" title="Thu gọn / mở rộng nhật ký"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button>
+            </header>
+            <div id="console-body" class="console-body">
+                <div id="preview-download" class="download-progress" hidden>
+                    <div class="download-progress-head"><strong id="preview-download-label">Đang tải video…</strong><span id="preview-download-stats"></span></div>
+                    <div id="preview-download-bar" class="download-bar" role="progressbar" aria-label="Tiến độ tải video preview" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="preview-download-fill"></i></div>
+                    <div id="preview-download-notice" class="download-notice" role="alert" hidden></div>
                 </div>
                 <div id="job-download" class="download-progress" hidden>
                     <div class="download-progress-head"><strong id="job-download-label">Đang tải video…</strong><span id="job-download-stats"></span></div>
                     <div id="job-download-bar" class="download-bar" role="progressbar" aria-label="Tiến độ tải video của job" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="job-download-fill"></i></div>
                     <div id="job-download-notice" class="download-notice" role="alert" hidden></div>
                 </div>
-                <div id="console-box" class="console" role="log" aria-live="polite" aria-relevant="additions"><div class="log-line">[*] Chưa có job đang chạy.</div></div>
-                <div id="result-box" class="result-box" hidden>
-                    <div id="result-title" class="result-title">Bộ file đã sẵn sàng</div>
-                    <div class="result-path"><b>Video</b><span id="res-video"></span></div>
-                    <div id="res-thumbnail-row" class="result-path" hidden><b>Thumbnail</b><span id="res-thumbnail"></span></div>
-                    <div class="result-path"><b>Sub OCR</b><span id="res-raw"></span></div>
-                    <div class="result-path"><b>Sub Việt</b><span id="res-vi"></span></div>
-                    <button id="open-result-btn" class="btn-secondary" type="button">Mở thư mục</button>
+                <div id="console-log-panel" class="console-log-panel" role="tabpanel" aria-labelledby="console-log-tab">
+                    <div id="console-box" class="console" role="log" aria-live="polite" aria-relevant="additions"><div class="log-line">[*] Chưa có job đang chạy.</div></div>
+                </div>
+                <div id="console-result-panel" class="console-result-panel" role="tabpanel" aria-labelledby="console-result-tab" hidden>
+                    <div id="result-box" class="result-box" hidden>
+                        <div id="result-title" class="result-title">Bộ file đã sẵn sàng</div>
+                        <div class="result-path"><b>Video</b><span id="res-video"></span></div>
+                        <div id="res-thumbnail-row" class="result-path" hidden><b>Thumbnail</b><span id="res-thumbnail"></span></div>
+                        <div class="result-path"><b>Sub OCR</b><span id="res-raw"></span></div>
+                        <div class="result-path"><b>Sub Việt</b><span id="res-vi"></span></div>
+                        <button id="open-result-btn" class="btn-secondary" type="button">Mở thư mục</button>
+                    </div>
+                    <p class="result-empty">Bộ file video và phụ đề sẽ xuất hiện ở đây khi job hoàn tất.</p>
                 </div>
             </div>
+        </section>
+    </main>
 
-            <div class="panel control-card">
-                <div class="section-head"><h3>Thiết lập & chẩn đoán</h3><span>Tự lưu thay đổi</span></div>
-                <div id="settings-panel" class="settings-grid">
+    <button id="settings-backdrop" class="settings-backdrop" type="button" aria-label="Đóng thiết lập" tabindex="-1" hidden></button>
+    <section id="settings-drawer" class="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+        <header class="settings-header"><div><h2 id="settings-title">Thiết lập</h2><span>Tự lưu thay đổi</span></div><button id="settings-close-btn" class="icon-button" type="button" aria-label="Đóng thiết lập" title="Đóng (Esc)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+        <div class="control-card">
+            <div id="settings-panel" class="settings-grid">
+                <div class="setting-field motion-setting">
+                    <label class="toggle-setting" for="setting-sakuga-vfx">
+                        <input id="setting-sakuga-vfx" type="checkbox" aria-describedby="motion-help" checked>
+                        <span><strong>Hiệu ứng chuyển động (Sakuga VFX)</strong><small id="motion-help">Phản hồi nhẹ khi thao tác. Tự giảm hiệu ứng theo thiết lập chuyển động của hệ điều hành.</small></span>
+                    </label>
+                </div>
                     <div class="setting-field">
                         <label for="setting-translation-provider">Cách dịch phụ đề</label>
                         <select id="setting-translation-provider" class="select-input">
@@ -272,16 +350,17 @@
                         <div id="diagnostics-list" class="diagnostics-list"></div>
                     </div>
                     <div id="history-field" class="setting-field" hidden><label>Video cũ trong thư viện Douzy</label><small>Nạp lại video đã tải bằng Douzy trước đây; app dùng file có sẵn, không tải lại.</small><div id="history-list" class="history-mini"></div></div>
-                </div>
             </div>
-        </section>
-    </main>
+        </div>
+    </section>
 
     <div id="connection-banner" class="connection-banner" role="alert" hidden>Mất kết nối tới máy chủ cục bộ của VietSub Studio. App đang tự thử kết nối lại…</div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <meta name="api-token" content="{{ api_token }}">
     <meta name="app-version" content="{{ app_version }}">
+    <script src="/static/sakuga-vfx.js" defer></script>
+    <script src="/static/workbench.js" defer></script>
     <script src="/static/app.js" defer></script>
 </body>
 </html>

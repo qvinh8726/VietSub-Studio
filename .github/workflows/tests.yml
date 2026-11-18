@@ -18,6 +18,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -29,21 +32,55 @@ jobs:
         run: python -m pip check
       - name: Compile
         run: |
-          python -m py_compile app.py automate.py tools/make_release.py
+          python -m py_compile app.py automate.py tools/make_release.py tools/workbench_qa.py
           python -m compileall -q vietsub
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Check frontend syntax
-        run: node --check static/app.js
+        run: |
+          node --check static/app.js
+          node --check static/workbench.js
+          node --check static/sakuga-vfx.js
       - name: Run frontend tests
-        run: node --test tests/frontend/app.test.mjs
+        run: node --test tests/frontend/*.test.mjs
+
+  desktop-ui:
+    needs: unit-tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+      - name: Install UI test dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m playwright install chromium
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg --yes --no-progress }
+      - name: Exercise desktop layouts, crop and keyboard interaction
+        run: python tools/workbench_qa.py --output workbench-qa
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: VietSub-Studio-workbench-qa-${{ github.sha }}
+          path: workbench-qa/*
+          if-no-files-found: warn
 
   package-smoke:
-    needs: unit-tests
+    needs: [unit-tests, desktop-ui]
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -87,7 +124,7 @@ jobs:
             if (-not $ready) {
               throw "Packaged app did not become ready within 60 seconds."
             }
-            foreach ($asset in @("avatar.jpg", "static/app.js", "static/style.css")) {
+            foreach ($asset in @("avatar.jpg", "static/app.js", "static/style.css", "static/workbench.js", "static/sakuga-vfx.js", "static/fonts.css", "static/sakuga-LICENSE.txt", "static/fonts/be-vietnam-pro-regular.ttf", "static/fonts/be-vietnam-pro-medium.ttf", "static/fonts/be-vietnam-pro-semibold.ttf", "static/fonts/be-vietnam-pro-bold.ttf", "static/fonts/noto-sans-sc.ttf", "static/fonts/jetbrains-mono.ttf", "static/fonts/be-vietnam-pro-OFL.txt", "static/fonts/noto-sans-sc-OFL.txt", "static/fonts/jetbrains-mono-OFL.txt")) {
               $assetResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:5000/$asset" -TimeoutSec 5
               if ($assetResponse.StatusCode -ne 200) {
                 throw "Packaged asset $asset was not served correctly."

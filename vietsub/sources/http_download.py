@@ -178,6 +178,7 @@ def stream_download(
     cookie_jar=None,
     on_progress=None,
     on_notice=None,
+    on_connections=None,
     is_cancelled=None,
     timeout=DEFAULT_TIMEOUT_SECONDS,
     chunk_size=DEFAULT_CHUNK_SIZE,
@@ -193,6 +194,7 @@ def stream_download(
     on_progress(downloaded_bytes, total_bytes_or_None, bytes_per_second_or_None) is
     called from the download threads with the bytes of every connection added up.
     on_notice(message) says how the file is fetched (in parallel or over one connection).
+    on_connections(count) reports the selected connection count, including fallback to one.
     validate(path) may raise ValueError to reject a finished file (for example an HTML
     error page) and try the next URL.
     """
@@ -224,6 +226,13 @@ def stream_download(
         if on_notice:
             try:
                 on_notice(message)
+            except Exception:
+                pass
+
+    def report_connections(count):
+        if on_connections and not cancelled():
+            try:
+                on_connections(count)
             except Exception:
                 pass
 
@@ -457,6 +466,7 @@ def stream_download(
         if ranged is not None and ranged[1] > parallel_min_bytes:
             source, total = ranged
             count = len(split_ranges(total, connections))
+            report_connections(count)
             notice(f"Máy chủ hỗ trợ tải theo đoạn: tải song song {count} kết nối "
                    f"({total / (1024 * 1024):,.1f} MB).")
             try:
@@ -464,6 +474,7 @@ def stream_download(
             except _RangeUnavailable as error:
                 notice(f"Tải song song không ổn định ({error}); tải lại bằng 1 kết nối.")
                 _remove_quietly(part_path)
+        report_connections(1)
         with open(part_path, "wb") as handle:
             return download_one(url, handle), 1
 

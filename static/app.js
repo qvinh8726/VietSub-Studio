@@ -187,6 +187,7 @@
             byId('preview-placeholder').hidden = false; byId('crop-box').hidden = true; byId('crop-tools').hidden = true;
             byId('preview-title').textContent = 'Chưa có video'; byId('crop-summary').textContent = 'Crop: —';
             byId('preview-status').value = status; byId('add-queue-btn').disabled = true;
+            window.VietSubWorkbench?.previewChanged(null);
         }
 
         function formatMegabytes(bytes) {
@@ -195,6 +196,7 @@
 
         // prefix 'preview' is the panel under the composer, 'job' the one in the job progress card.
         function renderDownloadProgress(download, prefix = 'job') {
+            window.VietSubWorkbench?.downloadChanged(download, prefix);
             const box = byId(`${prefix}-download`);
             if (!download || !download.active) { box.hidden = true; return; }
             box.hidden = false;
@@ -310,6 +312,7 @@
             byId('preview-title').textContent = `${sourceLabel}${data.video_title || data.video_id}`;
             byId('preview-status').value = 'Đang đọc độ phân giải video…';
             byId('add-queue-btn').disabled = true;
+            window.VietSubWorkbench?.previewChanged(data);
         }
 
         async function prepareLocalPreview() {
@@ -369,6 +372,7 @@
         function startCropDrag(event) {
             if (!currentPreview || event.button !== 0) return;
             const stage = byId('video-stage').getBoundingClientRect();
+            if (!stage.width || !stage.height) return;
             dragState = { startX: event.clientX, startY: event.clientY, crop: {...crop}, handle: event.target.dataset.handle || 'move', stage };
             event.preventDefault();
             event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -463,13 +467,13 @@
             if (!queueJobs.length) { list.innerHTML = '<div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div>'; return; }
             list.replaceChildren();
             queueJobs.forEach((job, index) => {
-                const row = document.createElement('article'); row.className = `queue-item ${job.status}`;
+                const row = document.createElement('article'); row.className = `queue-item ${job.status}`; row.dataset.jobId = job.id;
                 const top = document.createElement('div'); top.className = 'queue-item-top';
                 const info = document.createElement('div'); info.style.minWidth = '0';
                 const sourceLabel = sourceLabels[job.source_type] || 'Douyin';
                 const sourceMeta = job.source_type === 'local' ? 'VIDEO TRÊN MÁY' : `${sourceLabel.toUpperCase()} · ID ${job.video_id || 'đang chờ giải mã'}`;
                 const queueIndex = document.createElement('div'); queueIndex.className = 'queue-index'; queueIndex.textContent = `JOB ${String(index + 1).padStart(2,'0')}`;
-                const queueName = document.createElement('div'); queueName.className = 'queue-name'; queueName.textContent = job.project_name || job.video_title || (job.source_type === 'local' ? 'Video trên máy' : `Tên tự động từ ${sourceLabel}`);
+                const queueName = document.createElement('div'); queueName.className = 'queue-name'; queueName.textContent = job.project_name || job.video_title || (job.source_type === 'local' ? 'Video trên máy' : `Tên tự động từ ${sourceLabel}`); queueName.title = queueName.textContent;
                 const queueId = document.createElement('div'); queueId.className = 'queue-id'; queueId.textContent = `${sourceMeta} · ${String(job.ocr_lang || '').toUpperCase()}`;
                 info.append(queueIndex, queueName, queueId);
                 const badge = document.createElement('span'); badge.className = `badge ${job.status}`; badge.textContent = statusLabels[job.status] || job.status;
@@ -528,8 +532,9 @@
 
         async function removeQueueJob(id, status = 'queued') {
             if (status !== 'queued' && !window.confirm('Xoá job này khỏi lịch sử? File project đã tạo sẽ không bị xoá.')) return;
+            const effectPoint = window.VietSubVFX?.point([...byId('queue-list').children].find(row => row.dataset.jobId === id));
             await runOnce(`remove-${id}`, async () => {
-                try { await fetchJson(`/api/queue/${id}`, {method: 'DELETE'}); queueRevision = -1; await loadQueue(); }
+                try { await fetchJson(`/api/queue/${id}`, {method: 'DELETE'}); window.VietSubVFX?.smoke(effectPoint); queueRevision = -1; await loadQueue(); }
                 catch (error) { showToast(error.message, 'error'); }
             });
         }
@@ -596,6 +601,7 @@
                 if (data.status !== 'idle') updateSteps(data.step, data.status);
                 if (data.status === 'success' && data.result_ready) showResult(data.result, false);
                 else if (['running', 'error', 'cancelled'].includes(data.status)) hideResult();
+                window.VietSubWorkbench?.progressChanged(data);
                 pollFailureCount = 0;
             } catch (error) {
                 pollFailureCount += 1;
@@ -608,6 +614,7 @@
             resultOpenPath = '';
             byId('res-video').textContent = ''; byId('res-thumbnail').textContent = ''; byId('res-thumbnail-row').hidden = true; byId('res-raw').textContent = ''; byId('res-vi').textContent = '';
             byId('result-box').hidden = true;
+            window.VietSubWorkbench?.resultHidden();
         }
 
         function showResult(result, scroll = false) {
@@ -615,7 +622,8 @@
             byId('result-title').textContent = `${result.project_name || 'Bộ file'} đã sẵn sàng`;
             byId('res-video').textContent = result.video || ''; byId('res-thumbnail').textContent = result.thumbnail || ''; byId('res-thumbnail-row').hidden = !result.thumbnail; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
             byId('result-box').hidden = false;
-            if (scroll) byId('result-box').scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block:'center'});
+            if (window.VietSubWorkbench) window.VietSubWorkbench.resultShown(result, scroll);
+            else if (scroll) byId('result-box').scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block:'center'});
         }
 
         async function openResult() {
@@ -742,6 +750,7 @@
                 byId('setting-ocr-speed').value = data.ocr_model_mode || 'auto';
                 byId('setting-frames-skip').value = data.ocr_frames_to_skip == null ? '' : String(data.ocr_frames_to_skip);
                 byId('setting-edge-background').checked = data.edge_background !== false;
+                window.VietSubWorkbench?.applySettings(data);
                 applyBrowserSettings(data);
                 const shortcutButton = byId('create-shortcut-btn');
                 shortcutButton.disabled = !data.desktop_shortcut_supported;
@@ -1002,7 +1011,7 @@
                 // Only shown to people who used Douzy before v1.6.0.
                 field.hidden = !data.length;
                 if (!data.length) return;
-                data.slice(0,8).forEach(item => { const row=document.createElement('div'); row.className='history-row'; const info=document.createElement('div'); const title=document.createElement('strong'); title.textContent=item.title||`Douyin ${item.aweme_id}`; const meta=document.createElement('small'); meta.textContent=`ID ${item.aweme_id}`; info.append(title,meta); const button=document.createElement('button'); button.className='btn-ghost'; button.textContent='Nạp'; button.onclick=()=>{invalidatePreview(); byId('url-input').value=`https://www.douyin.com/video/${item.aweme_id}`; byId('project-name').value=item.title||''; autoProjectName=item.title||''; byId('char-count').textContent=`${byId('url-input').value.length} ký tự`; updateNamePreview(); window.scrollTo({top:0,behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}; row.append(info,button); list.appendChild(row); });
+                data.slice(0,8).forEach(item => { const row=document.createElement('div'); row.className='history-row'; const info=document.createElement('div'); const title=document.createElement('strong'); title.textContent=item.title||`Douyin ${item.aweme_id}`; const meta=document.createElement('small'); meta.textContent=`ID ${item.aweme_id}`; info.append(title,meta); const button=document.createElement('button'); button.className='btn-ghost'; button.textContent='Nạp'; button.onclick=()=>{invalidatePreview(); byId('url-input').value=`https://www.douyin.com/video/${item.aweme_id}`; byId('project-name').value=item.title||''; autoProjectName=item.title||''; byId('char-count').textContent=`${byId('url-input').value.length} ký tự`; updateNamePreview(); if (window.VietSubWorkbench) window.VietSubWorkbench.focusSource(); else window.scrollTo({top:0,behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}; row.append(info,button); list.appendChild(row); });
             } catch (_) { field.hidden = true; }
         }
 
@@ -1012,6 +1021,7 @@
         }
 
         window.addEventListener('load', () => {
+            window.VietSubWorkbench?.init({request: fetchJson, notify: showToast, endCropDrag, updateSteps});
             byId('preview-form').addEventListener('submit', preparePreview);
             byId('local-video-btn').onclick=chooseLocalVideo; byId('local-video-input').addEventListener('change', prepareLocalPreview);
             byId('url-input').addEventListener('input', () => {
@@ -1043,6 +1053,7 @@
             });
             byId('crop-box').addEventListener('pointerdown', startCropDrag);
             window.addEventListener('pointermove', moveCrop); window.addEventListener('pointerup', endCropDrag);
+            window.addEventListener('pointercancel', endCropDrag); byId('crop-box').addEventListener('lostpointercapture', endCropDrag);
             ['crop-x','crop-y','crop-width','crop-height'].forEach(id => byId(id).addEventListener('change', cropFromInputs));
             byId('full-frame-btn').onclick=()=>setCrop({crop_x:0,crop_y:0,crop_width:1,crop_height:1});
             byId('lower-third-btn').onclick=()=>setCrop({crop_x:.04,crop_y:.64,crop_width:.92,crop_height:.30});

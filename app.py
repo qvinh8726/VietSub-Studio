@@ -216,7 +216,7 @@ JS_RUNTIME_CACHE_SECONDS = 10 * 60
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.7.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -513,6 +513,7 @@ def idle_download_progress():
         "total": None,
         "percent": None,
         "speed": None,
+        "connections": None,
         "notice": "",
         "logged_bucket": -1,
     }
@@ -596,6 +597,18 @@ def bound_download_callbacks():
         log_to_app(message, quiet=quiet)
 
     return on_progress, on_notice
+
+
+def bound_download_connections_callback():
+    """Keep worker-thread connection reports tied to the originating foreground job."""
+    quiet = download_progress_is_silent()
+
+    def on_connections(count):
+        if not quiet:
+            with download_progress_lock:
+                download_progress["connections"] = count if type(count) is int and count > 0 else None
+
+    return on_connections
 
 
 def log_download_summary(result, started, label="video"):
@@ -1198,6 +1211,37 @@ def read_text_file_with_retry(path, attempts=3, delay_seconds=0.25):
     raise OSError(f"Không đọc được file: {path}")
 
 
+def validate_workbench_layout(value):
+    """Validate the versioned UI layout; null clears the saved layout preference."""
+    if value is None:
+        return None
+    fields = {"version", "sidebar_ratio", "console_ratio", "console_collapsed"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError("Bố cục workbench không hợp lệ.")
+    if type(value["version"]) is not int or value["version"] != 1:
+        raise ValueError("Phiên bản bố cục workbench không được hỗ trợ.")
+    for field in ("sidebar_ratio", "console_ratio"):
+        ratio = value[field]
+        if type(ratio) not in (int, float) or not 0 < ratio < 1 or not math.isfinite(ratio):
+            raise ValueError("Tỷ lệ khung workbench phải là số hữu hạn lớn hơn 0 và nhỏ hơn 1.")
+    if type(value["console_collapsed"]) is not bool:
+        raise ValueError("Trạng thái thu gọn console không hợp lệ.")
+    return dict(value)
+
+
+def workbench_settings_fields(config):
+    """Expose safe preferences without rewriting malformed or older saved settings."""
+    enabled = config.get("sakuga_vfx_enabled", True)
+    try:
+        layout = validate_workbench_layout(config.get("workbench_layout"))
+    except ValueError:
+        layout = None
+    return {
+        "sakuga_vfx_enabled": enabled if type(enabled) is bool else True,
+        "workbench_layout": layout,
+    }
+
+
 def load_app_config(strict=False):
     """Return the saved settings merged over defaults.
 
@@ -1218,6 +1262,8 @@ def load_app_config(strict=False):
         "output_dir": "",
         "crop_coords": None,
         "edge_background": True,
+        "sakuga_vfx_enabled": True,
+        "workbench_layout": None,
         "browser_kind": browser_source.DEFAULT_KIND,
         "browser_path": "",
         "desktop_shortcut_initialized": False,
@@ -3189,6 +3235,55 @@ def get_video_resolution(video_path):
     except Exception:
         pass
     return None
+
+
+def positive_media_number(value):
+    """Parse optional FFprobe scalars without accepting booleans, NaN or infinity."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def parse_video_frame_rate(value):
+    if isinstance(value, str) and "/" in value:
+        numerator, _, denominator = value.partition("/")
+        numerator = positive_media_number(numerator)
+        denominator = positive_media_number(denominator)
+        return positive_media_number(numerator / denominator) if numerator and denominator else None
+    return positive_media_number(value)
+
+
+def get_video_metadata(video_path):
+    """Optional preview telemetry; failure must never prevent preparing or OCRing a video."""
+    ffprobe_path = resolve_ffprobe_executable()
+    if not ffprobe_path:
+        return None
+    try:
+        data = json.loads(subprocess.check_output(
+            [ffprobe_path, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=duration,avg_frame_rate,r_frame_rate,bit_rate:format=duration,bit_rate",
+             "-of", "json", video_path],
+            text=True, encoding="utf-8", timeout=15,
+            stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW_FLAGS,
+        ))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    streams = data.get("streams")
+    stream = streams[0] if isinstance(streams, list) and streams and isinstance(streams[0], dict) else {}
+    container = data.get("format") if isinstance(data.get("format"), dict) else {}
+    bit_rate = positive_media_number(stream.get("bit_rate")) or positive_media_number(container.get("bit_rate"))
+    metadata = {
+        "duration": positive_media_number(stream.get("duration")) or positive_media_number(container.get("duration")),
+        "frame_rate": parse_video_frame_rate(stream.get("avg_frame_rate")) or parse_video_frame_rate(stream.get("r_frame_rate")),
+        "bit_rate": (int(bit_rate) or None) if bit_rate is not None else None,
+    }
+    return metadata if any(value is not None for value in metadata.values()) else None
 
 
 def get_video_duration_seconds(video_path):
@@ -5262,7 +5357,7 @@ def douyin_download_result(aweme_id, path, title):
 
 
 def stream_douyin_video(video, target_path, headers, cookie_jar):
-    set_download_progress(phase="download", notice="")
+    set_download_progress(phase="download", notice="", connections=None)
     if getattr(video, "play_label", ""):
         log_to_app(f"Chọn bản {video.play_label} (đủ nét cho OCR, nhẹ hơn bản bitrate cao).")
     on_progress, on_notice = bound_download_callbacks()
@@ -5275,6 +5370,7 @@ def stream_douyin_video(video, target_path, headers, cookie_jar):
             cookie_jar=cookie_jar,
             on_progress=on_progress,
             on_notice=on_notice,
+            on_connections=bound_download_connections_callback(),
             is_cancelled=cancel_requested,
             validate=local_source.require_mp4_header,
         )
@@ -5391,6 +5487,7 @@ def download_douyin_via_browser(aweme_id, target_path, notebook_url="", *, quiet
 
 
 def run_ytdlp_download(url, site, cache_dir, *, manual_cookie=""):
+    set_download_progress(connections=None)
     cookie_file, cleanup = prepare_ytdlp_cookie_file(site, manual_cookie=manual_cookie)
     try:
         return ytdlp_source.download_with_ytdlp(
@@ -5568,7 +5665,7 @@ def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
         "Accept": "*/*",
     }
     log_to_app(f"Đã tìm thấy file video trên trang {label}. Đang tải...")
-    set_download_progress(phase="download", notice="")
+    set_download_progress(phase="download", notice="", connections=None)
     on_progress, on_notice = bound_download_callbacks()
     started = time.monotonic()
     try:
@@ -5579,6 +5676,7 @@ def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
             cookie_jar=cookie_jar,
             on_progress=on_progress,
             on_notice=on_notice,
+            on_connections=bound_download_connections_callback(),
             is_cancelled=cancel_requested,
             validate=local_source.require_mp4_header,
         )
@@ -5773,6 +5871,7 @@ def preview_payload(preview, resolution=None):
         "crop_coords": preview["crop_coords"],
         "source_type": preview["source_type"],
         "video_url": f"/api/previews/{preview['id']}/video",
+        "video_metadata": preview.get("video_metadata"),
     }
     if preview.get("original_name"):
         payload["original_name"] = preview["original_name"]
@@ -5802,6 +5901,7 @@ def create_video_preview(video_url):
             "source_type": preview.get("source_type", "douyin"),
             "managed_source": False,
         })
+        preview["video_metadata"] = get_video_metadata(preview["source_video"])
         with preview_registry_lock:
             preview_registry[preview_id] = preview
         return preview_payload(preview, get_video_resolution(preview["source_video"]))
@@ -5830,6 +5930,7 @@ def create_local_path_preview(path):
             "source_type": "local",
             "managed_source": False,
         }
+        preview["video_metadata"] = get_video_metadata(preview["source_video"])
         with preview_registry_lock:
             preview_registry[preview_id] = preview
         return preview_payload(preview, get_video_resolution(info["path"]))
@@ -5885,18 +5986,10 @@ def create_local_video_preview(upload):
             "source_type": "local",
             "managed_source": True,
         }
+        preview["video_metadata"] = get_video_metadata(preview["source_video"])
         with preview_registry_lock:
             preview_registry[preview_id] = preview
-        return {
-            "id": preview_id,
-            "source_url": preview["source_url"],
-            "video_id": preview["video_id"],
-            "video_title": preview["video_title"],
-            "original_name": preview["original_name"],
-            "crop_coords": preview["crop_coords"],
-            "source_type": preview["source_type"],
-            "video_url": f"/api/previews/{preview_id}/video",
-        }
+        return preview_payload(preview)
     finally:
         preview_lock.release()
 
@@ -6906,7 +6999,13 @@ def index():
 
 @app.route('/static/<path:filename>')
 def static_asset(filename):
-    if filename not in {"app.js", "style.css"}:
+    if filename not in {
+        "app.js", "style.css", "sakuga-vfx.js", "workbench.js", "fonts.css", "sakuga-LICENSE.txt",
+        "fonts/be-vietnam-pro-regular.ttf", "fonts/be-vietnam-pro-medium.ttf",
+        "fonts/be-vietnam-pro-semibold.ttf", "fonts/be-vietnam-pro-bold.ttf",
+        "fonts/noto-sans-sc.ttf", "fonts/jetbrains-mono.ttf",
+        "fonts/be-vietnam-pro-OFL.txt", "fonts/noto-sans-sc-OFL.txt", "fonts/jetbrains-mono-OFL.txt",
+    }:
         return jsonify({"error": "Static asset không tồn tại."}), 404
     return send_from_directory(os.path.join(RESOURCE_DIR, "static"), filename)
 
@@ -7353,6 +7452,12 @@ def apply_settings_update(data):
             if not isinstance(data["edge_background"], bool):
                 raise ValueError("Tuỳ chọn chạy trình duyệt ẩn không hợp lệ.")
             config["edge_background"] = data["edge_background"]
+        if "sakuga_vfx_enabled" in data:
+            if type(data["sakuga_vfx_enabled"]) is not bool:
+                raise ValueError("Tuỳ chọn hiệu ứng chuyển động phải là true hoặc false.")
+            config["sakuga_vfx_enabled"] = data["sakuga_vfx_enabled"]
+        if "workbench_layout" in data:
+            config["workbench_layout"] = validate_workbench_layout(data["workbench_layout"])
         apply_browser_settings(config, data)
         if "source_cookies" in data:
             apply_source_cookie_updates(config, data["source_cookies"])
@@ -7372,6 +7477,7 @@ def apply_settings_update(data):
         "translation_api_key_set": api_key_set,
         "source_cookies_set": source_cookies_set(config),
         "cookies_file": config.get("cookies_file") or "",
+        **workbench_settings_fields(config),
         **browser_settings_fields(config),
     })
 
@@ -7475,6 +7581,7 @@ def handle_settings():
             "default_output_dir": get_default_output_directory(),
             "output_dir_synced": is_cloud_synced_path(effective_output_dir),
             "edge_background": bool(config.get("edge_background", True)),
+            **workbench_settings_fields(config),
             **browser_settings_fields(config),
             "desktop_shortcut_supported": shortcut_supported,
             "desktop_shortcut_exists": shortcut_exists,

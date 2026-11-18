@@ -1,0 +1,33 @@
+/* Vendored from https://github.com/google/fonts (SIL OFL 1.1).
+   Each family has its license beside the font. No runtime CDN dependency. */
+@font-face {
+    font-family: "Be Vietnam Pro";
+    src: url("/static/fonts/be-vietnam-pro-regular.ttf") format("truetype");
+    font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+    font-family: "Be Vietnam Pro";
+    src: url("/static/fonts/be-vietnam-pro-medium.ttf") format("truetype");
+    font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+    font-family: "Be Vietnam Pro";
+    src: url("/static/fonts/be-vietnam-pro-semibold.ttf") format("truetype");
+    font-weight: 600; font-style: normal; font-display: swap;
+}
+@font-face {
+    font-family: "Be Vietnam Pro";
+    src: url("/static/fonts/be-vietnam-pro-bold.ttf") format("truetype");
+    font-weight: 700 900; font-style: normal; font-display: swap;
+}
+@font-face {
+    font-family: "Noto Sans SC";
+    src: url("/static/fonts/noto-sans-sc.ttf") format("truetype");
+    font-weight: 100 900; font-style: normal; font-display: swap;
+    unicode-range: U+2E80-2FFF, U+3000-303F, U+31C0-31EF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    src: url("/static/fonts/jetbrains-mono.ttf") format("truetype");
+    font-weight: 100 800; font-style: normal; font-display: swap;
+}

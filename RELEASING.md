@@ -16,8 +16,13 @@ Các bước dưới đây phát hành một bản mà mọi bản portable từ
    python -m py_compile app.py automate.py tools/make_release.py
    python -m unittest discover -s tests -v
    node --check static/app.js
-   node --test tests/frontend/app.test.mjs
+   node --check static/workbench.js
+   node --check static/sakuga-vfx.js
+   node --test tests/frontend/*.test.mjs
+   python tools/workbench_qa.py --output "$env:TEMP\vietsub-workbench-qa"
    ```
+
+   The UI check needs Playwright Chromium (`python -m playwright install chromium`) and FFmpeg/FFprobe in `PATH`. It uses temporary configuration/media and controlled queue fixtures. Open the 1280×720 and 1920×1080 screenshots before committing; confirm controls are not obscured and text stays within its pane. CI uploads the report and screenshots.
 
 4. Commit and push to `main`, then wait for the **Tests and package smoke** workflow to pass.
 
@@ -80,8 +85,13 @@ Releases are not code-signed yet. Anyone who can publish a release on this repos
    python -m py_compile app.py automate.py tools/make_release.py
    python -m unittest discover -s tests -v
    node --check static/app.js
-   node --test tests/frontend/app.test.mjs
+   node --check static/workbench.js
+   node --check static/sakuga-vfx.js
+   node --test tests/frontend/*.test.mjs
+   python tools/workbench_qa.py --output "$env:TEMP\vietsub-workbench-qa"
    ```
+
+   Kiểm thử UI cần Chromium của Playwright (`python -m playwright install chromium`) và FFmpeg/FFprobe trong `PATH`. Cấu hình/media dùng thư mục tạm; hàng đợi dùng fixture. Mở ảnh 1280×720 và 1920×1080 trước commit để kiểm tra nút bị che và chữ tràn pane. CI lưu report cùng ảnh dưới dạng artifact.
 
 4. Commit, push lên `main` rồi chờ workflow **Tests and package smoke** chạy xanh.
 
