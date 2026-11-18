@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored, unmodified third-party script (see public/sakuga-vfx/README.md).
+    "public/sakuga-vfx/**",
   ]),
 ]);
 
