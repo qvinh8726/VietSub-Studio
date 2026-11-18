@@ -28,6 +28,7 @@ from flask import Flask, render_template, request, jsonify, send_file, send_from
 from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
+from vietsub import storage, publish
 from vietsub.sources import browser as browser_source
 from vietsub.sources import browser_capture
 from vietsub.sources import cookies as cookie_utils
@@ -216,7 +217,7 @@ JS_RUNTIME_CACHE_SECONDS = 10 * 60
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -1740,6 +1741,56 @@ def log_to_app(msg, log_type="system", *, durable=True, quiet=None):
             del progress_status["logs"][:overflow]
             progress_status["log_base_index"] += overflow
 
+from vietsub.sources.browser_lifecycle import BrowserLifecycle, HeadedBrowserRequired
+
+# Browser work is serialized, including manual verification. The timer cannot
+# close or restart a browser while a page, cookie export or translation owns it.
+browser_lifecycle = BrowserLifecycle(lambda instance: close_owned_browser(instance))
+browser_session_cookies = {}
+browser_operation_state = local()
+
+
+def browser_automation(function):
+    """Retry a challenge once visibly; the following operation starts headless again."""
+    from functools import wraps
+
+    @wraps(function)
+    def run(*args, **kwargs):
+        with browser_lifecycle.lease():
+            previous = getattr(browser_operation_state, "headless", None)
+            try:
+                try:
+                    return function(*args, **kwargs)
+                except HeadedBrowserRequired as challenge:
+                    check_cancel_requested()
+                    log_to_app("Trang yêu cầu xác minh; mở lại cùng profile để bạn thao tác trong trình duyệt.")
+                    browser_operation_state.headless = False
+                    ensure_browser_running(background=False, headless=False, start_url=challenge.url)
+                    return function(*args, **kwargs)
+            finally:
+                browser_operation_state.headless = previous
+    return run
+
+
+def require_visible_browser(context, page):
+    """Unwind headless page work before a same-profile restart for manual input."""
+    if (browser_lifecycle.instance or {}).get("headless"):
+        raise HeadedBrowserRequired(page.url)
+    if not set_browser_window_visibility(context, page, True):
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+
+
+def shutdown_automation_browser():
+    """CLI/shutdown cleanup of the verified automation browser only."""
+    try:
+        return browser_lifecycle.shutdown()
+    except Exception:
+        return False
+
+
 def get_browser_debug_port():
     return BROWSER_DEBUG_PORT
 
@@ -2092,14 +2143,93 @@ def is_app_browser_profile(profile):
     return any(same_path(profile, item) for item in managed + [USER_DATA_DIR_DEBUG])
 
 
+def owned_browser_instance(config=None):
+    """Capture both process and CDP identity; a profile path alone grants no ownership."""
+    config = load_app_config() if config is None else config
+    kind = get_browser_kind(config)
+    executable = resolve_browser_executable(config)
+    profile = browser_profile_dir(kind)
+    owner = get_debug_port_owner()
+    payload = read_debug_payload()
+    if not browser_owner_matches(owner, executable, profile) or not is_valid_browser_debug_payload(payload, kind):
+        return None
+    arguments = split_windows_command_line(owner.get("command_line"))
+    return {
+        "pid": owner["pid"], "executable": executable, "profile": profile,
+        "session": payload["webSocketDebuggerUrl"],
+        "headless": any(arg == "--headless" or arg.startswith("--headless=") for arg in arguments),
+    }
+
+
+def close_owned_browser(instance):
+    """Gracefully close an identity-checked app browser, retaining session cookies.
+
+    A changed PID, profile, executable or CDP session means the browser has gone
+    away. Never terminate a process by name, or send Browser.close to its successor.
+    """
+    owner = get_debug_port_owner()
+    payload = read_debug_payload()
+    if (
+        not owner or owner.get("pid") != instance.get("pid")
+        or not browser_owner_matches(owner, instance["executable"], instance["profile"])
+        or not is_app_browser_profile(instance["profile"])
+        or not payload or payload.get("webSocketDebuggerUrl") != instance.get("session")
+    ):
+        return True
+    with get_sync_playwright()() as playwright:
+        browser = playwright.chromium.connect_over_cdp(instance["session"])
+        # Session cookies may otherwise be discarded on a clean Chrome exit.
+        # Keep them only in memory; the persistent profile stores the rest.
+        if browser.contexts:
+            pending = browser_session_cookies.get(instance["profile"])
+            if pending:
+                browser.contexts[0].add_cookies(pending)
+            browser_session_cookies[instance["profile"]] = browser.contexts[0].cookies()
+        session = browser.new_browser_cdp_session()
+        try:
+            session.send("Browser.close")
+        except Exception:
+            # Chrome can close the transport before replying to Browser.close.
+            pass
+    deadline = time.monotonic() + browser_source.COLD_START_SECONDS
+    for _ in range(BROWSER_COLD_START_POLLS):
+        current = read_debug_payload()
+        if (not current or current.get("webSocketDebuggerUrl") != instance["session"]) and not browser_profile_in_use(instance["profile"]):
+            process = instance.get("process")
+            if process is not None:
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    return False
+            reset_browser_status_cache()
+            return True
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(browser_source.POLL_SECONDS)
+    return False
+
+
 def close_debug_browser(owner):
-    """Close an earlier automation browser of this app that still holds the debug port."""
-    pid = int(owner.get("pid") or 0)
-    if pid > 0:
-        subprocess.run(
-            [TASKKILL_EXE, "/PID", str(pid), "/T", "/F"],
-            capture_output=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+    """Close a verified older app browser gracefully; never kill a personal browser."""
+    profile = command_line_profile(owner.get("command_line"))
+    executable = str(owner.get("path") or "")
+    current = get_debug_port_owner()
+    payload = read_debug_payload()
+    known_executable = (
+        os.path.basename(executable).lower() in ("chrome.exe", "msedge.exe", "chromium.exe")
+        or same_path(executable, resolve_browser_executable())
+    )
+    if (
+        not known_executable or not is_app_browser_profile(profile)
+        or not browser_owner_matches(current, executable, profile)
+        or current.get("pid") != owner.get("pid")
+        or not is_valid_browser_debug_payload(payload)
+    ):
+        raise BrowserStartError("Không thể xác minh trình duyệt cũ thuộc app; giữ nguyên tiến trình đó.")
+    instance = {"pid": current["pid"], "executable": executable, "profile": profile,
+                "session": payload["webSocketDebuggerUrl"]}
+    if not close_owned_browser(instance):
+        raise BrowserStartError("Trình duyệt của app chưa đóng xong; hãy thử lại.")
 
 
 def wait_for_debug_port(accept, polls):
@@ -2148,22 +2278,40 @@ def make_room_on_debug_port(label, port):
     )
 
 
-def ensure_browser_running(background=None, config=None):
-    """Start the automation browser when needed; True once the app's own browser owns the port.
+@browser_lifecycle.leased()
+def ensure_browser_running(background=None, config=None, *, headless=None, start_url="about:blank"):
+    """Lazily start or switch the dedicated browser; automation defaults to headless.
 
-    Only Gemini Notebook, a download that needs a page, or a login button call this, so
-    opening the app never starts a browser. The lock serializes launches: two requests at
-    once start one browser and never open an extra tab. Raises BrowserStartError with
-    the reason when the browser cannot be used.
+    Explicit background=False retains the login-button API for a visible window.
+    Mode changes run under the operation lease and reuse the same profile.
     """
     check_cancel_requested()
     config = load_app_config() if config is None else config
     kind = get_browser_kind(config)
     label = browser_label(kind)
     port = get_browser_debug_port()
+    if headless is None:
+        override = getattr(browser_operation_state, "headless", None)
+        headless = override if override is not None else (
+            bool(config.get("edge_background", True)) if background is None else bool(background)
+        )
     with browser_launch_lock:
         if check_browser_status(fresh=True):
-            return True
+            instance = owned_browser_instance(config)
+            if instance is None:
+                # Do not adopt or close a process if its identity cannot be read.
+                browser_lifecycle.forget()
+                return True
+            previous_instance = browser_lifecycle.instance or {}
+            if previous_instance.get("session") == instance["session"]:
+                instance["initial_page_pending"] = previous_instance.get("initial_page_pending", False)
+                instance["process"] = previous_instance.get("process")
+            browser_lifecycle.remember(instance)
+            if instance["headless"] == headless:
+                return True
+            if not close_owned_browser(instance):
+                raise BrowserStartError(f"Chưa đóng được {label} để đổi chế độ; hãy thử lại.")
+            browser_lifecycle.forget()
         if read_debug_payload() is not None:
             make_room_on_debug_port(label, port)
         executable = resolve_browser_executable(config)
@@ -2178,9 +2326,10 @@ def ensure_browser_running(background=None, config=None):
         if background is None:
             background = bool(config.get("edge_background", True))
         os.makedirs(profile, exist_ok=True)
-        log_to_app(f"Đang mở {label} với profile riêng của app: {profile}")
-        subprocess.Popen(
-            browser_source.launch_command(executable, profile, port=port, background=background),
+        log_to_app(f"Đang mở {label} {'headless' if headless else 'hiển thị'} với profile riêng của app: {profile}")
+        process = subprocess.Popen(
+            browser_source.launch_command(executable, profile, port=port, background=background,
+                                          headless=headless, start_url=start_url),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             close_fds=True,
         )
@@ -2192,7 +2341,12 @@ def ensure_browser_running(background=None, config=None):
             )
         if not check_browser_status(fresh=True):
             raise BrowserStartError(f"Cổng {port} đã phản hồi nhưng không thuộc {label} của VietSub Studio.")
-        if background:
+        instance = owned_browser_instance(config)
+        if instance:
+            instance["initial_page_pending"] = True
+            instance["process"] = process
+            browser_lifecycle.remember(instance)
+        if background and not headless:
             minimize_browser_window()
         log_to_app(f"Đã mở {label} và kết nối cổng điều khiển {port}.")
         return True
@@ -2226,18 +2380,12 @@ def set_browser_window_visibility(context, page, visible):
         return False
 
 
-BLANK_PAGE_URLS = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/", "edge://newtab/")
+BLANK_PAGE_URLS = browser_source.BLANK_PAGE_URLS
 
 
 def reuse_blank_page(context):
-    """The browser's empty start tab when there is one, else a new tab (so no stray blank tabs)."""
-    for page in context.pages:
-        try:
-            if (page.url or "") in BLANK_PAGE_URLS:
-                return page
-        except Exception:
-            continue
-    return context.new_page()
+    """The browser's empty start tab when there is one, else a new tab."""
+    return browser_source.reuse_page(context)
 
 
 GEMINI_INPUT_SELECTORS = (
@@ -2300,16 +2448,32 @@ def get_sync_playwright():
 
 def browser_context(playwright):
     """The persistent context of the automation browser (its own profile)."""
-    browser = playwright.chromium.connect_over_cdp(browser_debug_url())
+    endpoint = (browser_lifecycle.instance or {}).get("session") or browser_debug_url()
+    browser = playwright.chromium.connect_over_cdp(endpoint)
     if not browser.contexts:
         raise BrowserStartError(f"Không tìm thấy profile {browser_label()} của app đang hoạt động.")
-    return browser.contexts[0]
+    context = browser.contexts[0]
+    instance = browser_lifecycle.instance
+    if instance and instance["profile"] in browser_session_cookies:
+        cookies = browser_session_cookies[instance["profile"]]
+        context.add_cookies(cookies)
+        browser_session_cookies.pop(instance["profile"], None)
+        for page in context.pages:
+            if page.url not in BLANK_PAGE_URLS:
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+    if instance and instance.pop("initial_page_pending", False) and context.pages:
+        context._vietsub_initial_page = context.pages[0]
+    return context
 
 
+@browser_lifecycle.leased()
 def show_edge_for_login(notebook_url):
     """Show Gemini Notebook in the automation browser so the user can sign in to Google."""
     notebook_url = validate_notebook_url(notebook_url)
-    ensure_browser_running(background=False)
+    ensure_browser_running(background=False, start_url=notebook_url)
     with get_sync_playwright()() as playwright:
         context = browser_context(playwright)
         notebook_id = urlparse(notebook_url).path.rstrip("/").rsplit("/", 1)[-1]
@@ -3104,6 +3268,10 @@ def write_project_manifest(project, *, video_id, source_url, status, error=""):
         "thumbnail": project.get("thumbnail", ""),
         "raw_srt": project["raw_srt"],
         "translated_srt": project["translated_srt"],
+        "publish_metadata": project.get("publish_metadata", ""),
+        "source_video_deleted": project.get("source_video_deleted", False),
+        "source_cleanup_bytes": project.get("source_cleanup_bytes", 0),
+        "source_cleanup_errors": project.get("source_cleanup_errors", []),
         "updated_at": int(time.time()),
     }
     temporary_path = f"{manifest_path}.{uuid.uuid4().hex}.tmp"
@@ -3803,6 +3971,7 @@ def run_videocr(
     log_to_app(f"Quét phụ đề thành công: {output_srt}")
     return output_srt
 
+@browser_automation
 def resolve_url_via_browser(short_url, notebook_url=""):
     """Follow a share link in the automation browser when the HTTP resolution failed."""
     check_cancel_requested()
@@ -3817,22 +3986,28 @@ def resolve_url_via_browser(short_url, notebook_url=""):
     try:
         with get_sync_playwright()() as p:
             context = browser_context(p)
-            page = context.new_page()
+            page = browser_source.reuse_page(context, short_url)
             try:
-                page.goto(short_url, wait_until="commit", timeout=15000)
-                # Poll for the redirect instead of a fixed wait; give slow chains up to 5s.
+                page.goto(short_url, wait_until="domcontentloaded", timeout=15000)
+                # Poll for the redirect; extend only an actual manual challenge.
                 deadline = time.monotonic() + 5
+                attention = False
                 while time.monotonic() < deadline:
                     check_cancel_requested()
-                    if re.search(r"/(?:video|note)/\d+", urlparse(page.url).path):
+                    if browser_capture.page_needs_attention(page):
+                        require_visible_browser(context, page)
+                        if not attention:
+                            attention = True
+                            deadline = time.monotonic() + 180
+                    elif re.search(r"/(?:video|note)/\d+", urlparse(page.url).path):
                         break
                     page.wait_for_timeout(250)
                 resolved_url = page.url
                 log_to_app(f"Trình duyệt giải mã thành: {resolved_url}")
                 return resolved_url
             finally:
-                page.close()
-    except WorkflowCancelled:
+                browser_source.release_page(context, page)
+    except (WorkflowCancelled, HeadedBrowserRequired):
         raise
     except Exception as e:
         log_to_app(f"Lỗi giải mã link share qua {label}: {e}", "error")
@@ -4539,6 +4714,8 @@ def validate_project_result(result):
         "raw_srt": "file sub OCR",
         "translated_srt": "file sub Việt",
     }
+    if result.get("source_video_deleted") is True:
+        required_files.pop("video")
     for key, label in required_files.items():
         path = str(result.get(key) or "")
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
@@ -4572,7 +4749,8 @@ def project_files_present(result):
         return False
     return all(
         os.path.isfile(str(result.get(key) or ""))
-        for key in ("video", "raw_srt", "translated_srt")
+        for key in (("raw_srt", "translated_srt") if result.get("source_video_deleted") is True
+                    else ("video", "raw_srt", "translated_srt"))
     )
 
 
@@ -4979,6 +5157,7 @@ def translate_srt_via_api(srt_path, runtime_config, output_srt=None, source_lang
     return output_translated_srt
 
 
+@browser_automation
 def translate_srt_via_gemini_edge(
     srt_path,
     notebook_url,
@@ -5030,14 +5209,18 @@ def translate_srt_via_gemini_edge(
         log_to_app(f"Đã liên kết thành công với tab Notebook: '{gemini_page.title()}'")
         log_to_app("Đang chờ giao diện Notebook sẵn sàng...")
         prompt_input = wait_for_gemini_prompt(gemini_page)
+        if prompt_input is None and browser_capture.page_needs_attention(gemini_page):
+            require_visible_browser(context, gemini_page)
+            log_to_app("Vui lòng hoàn tất xác minh trong trình duyệt; app chờ tối đa 3 phút.")
+            prompt_input = wait_for_gemini_prompt(gemini_page, timeout_seconds=180)
         if prompt_input is None and edge_page_needs_login(gemini_page):
-            set_browser_window_visibility(context, gemini_page, True)
+            require_visible_browser(context, gemini_page)
             raise EdgeLoginRequired(
                 f"Phiên Google đã hết hạn. {label} đã được mở để đăng nhập; đăng nhập xong hãy bấm Chạy lại."
             )
         if prompt_input is None:
             if edge_background:
-                set_browser_window_visibility(context, gemini_page, True)
+                require_visible_browser(context, gemini_page)
                 raise EdgeLoginRequired(
                     f"App chưa tìm thấy khung chat của Notebook khi {label} chạy ẩn. "
                     f"{label} đã được mở để kiểm tra; khi khung chat hiện ra hãy bấm Chạy lại."
@@ -5204,6 +5387,7 @@ def get_cookies_file(config=None):
         return ""
 
 
+@browser_lifecycle.leased(activity=False)
 def read_browser_cookies(urls):
     """Cookies of the automation browser's profile for these URLs (context.cookies() over CDP).
 
@@ -5245,6 +5429,12 @@ def prepare_ytdlp_cookie_file(site, *, manual_cookie=""):
         except Exception as error:
             log_to_app(
                 f"Không đọc được cookie từ {browser_label(short=True)}, tải không kèm cookie: {error}", "error"
+            )
+    if not browser_cookies and site in SOURCE_COOKIE_URLS:
+        # Idle shutdown must not turn the next yt-dlp download into a guest request.
+        with browser_lifecycle.lease(activity=False):
+            browser_cookies = session_sites.cookies_for_urls(
+                browser_session_cookies.get(browser_profile_dir(), []), SOURCE_COOKIE_URLS[site]
             )
     if manual_cookie and site in SESSION_SITES:
         overrides = cookie_utils.browser_cookies_from_header(manual_cookie, SESSION_SITES[site].cookie_domain)
@@ -5404,6 +5594,7 @@ def download_douyin_via_share_page(aweme_id, target_path):
     return douyin_download_result(aweme_id, target_path, video.title)
 
 
+@browser_automation
 def download_douyin_via_browser(aweme_id, target_path, notebook_url="", *, quiet):
     """Tier 2: Douyin's own page signs its API calls in the automation browser; the app
     reads the video data that page receives and streams the clean MP4.
@@ -5431,11 +5622,7 @@ def download_douyin_via_browser(aweme_id, target_path, notebook_url="", *, quiet
 
         def on_captcha(active, page):
             if active:
-                if not set_browser_window_visibility(context, page, True):
-                    try:
-                        page.bring_to_front()
-                    except Exception:
-                        pass
+                require_visible_browser(context, page)
                 set_download_progress(phase="captcha", notice=notice)
                 log_to_app(f"{notice} (app chờ tối đa 3 phút).", "error")
             else:
@@ -5602,6 +5789,7 @@ def save_source_metadata(video_path, *, site, video_id, title, source_url, durat
         log_to_app(f"Chưa lưu được metadata video: {error}", "error")
 
 
+@browser_automation
 def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
     """Open the post in the automation browser's profile and stream the video file the page plays."""
     site = SESSION_SITES.get(request.site)
@@ -5625,11 +5813,7 @@ def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
 
         def on_attention(active, page):
             if active:
-                if not set_browser_window_visibility(context, page, True):
-                    try:
-                        page.bring_to_front()
-                    except Exception:
-                        pass
+                require_visible_browser(context, page)
                 set_download_progress(phase="captcha", notice=notice)
                 log_to_app(f"{notice} (app chờ tối đa 3 phút).", "error")
             else:
@@ -5644,6 +5828,7 @@ def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
                 is_cancelled=cancel_requested,
                 on_attention=on_attention,
                 allow_attention_wait=not quiet,
+                require_attention_signal=True,
             )
         except DownloadCancelledError as error:
             raise_if_download_cancelled(error)
@@ -5812,7 +5997,7 @@ def prune_download_cache(referenced_paths=None, cache_dir=None):
             continue
         try:
             files = [os.path.join(folder, item) for item in os.listdir(folder)]
-            if any(os.path.normcase(os.path.abspath(path)) in referenced for path in files):
+            if any(path.endswith(".vietsub-keep") or os.path.normcase(os.path.abspath(path)) in referenced for path in files):
                 continue
             newest = max((os.path.getmtime(path) for path in files), default=os.path.getmtime(folder))
         except OSError:
@@ -5957,18 +6142,23 @@ def create_local_video_preview(upload):
     try:
         original_name = os.path.basename((upload.filename or "").replace("\\", "/"))
         extension = os.path.splitext(original_name)[1].lower()
-        if extension not in ALLOWED_LOCAL_VIDEO_EXTENSIONS:
-            raise ValueError("Hiện tại video trên máy phải là file MP4.")
+        if extension not in local_source.LOCAL_VIDEO_EXTENSIONS:
+            raise ValueError("Hiện tại video trên máy phải là file MP4 hoặc MKV.")
 
         preview_id = uuid.uuid4().hex
         os.makedirs(LOCAL_VIDEO_DIR, exist_ok=True)
-        destination = os.path.join(LOCAL_VIDEO_DIR, f"{preview_id}.mp4")
+        destination = os.path.join(LOCAL_VIDEO_DIR, f"{preview_id}{extension}")
         temporary_path = f"{destination}.{uuid.uuid4().hex}.part"
         try:
             upload.save(temporary_path)
             if not os.path.isfile(temporary_path):
                 raise ValueError("File video đang trống hoặc không đọc được.")
-            validate_local_mp4_file(temporary_path)
+            if extension == ".mp4":
+                validate_local_mp4_file(temporary_path)
+            elif local_source.sniff_container(temporary_path) != "mkv":
+                raise ValueError("File đã chọn không có cấu trúc MKV hợp lệ.")
+            elif os.path.getsize(temporary_path) > MAX_LOCAL_VIDEO_BYTES:
+                raise ValueError("Video vượt quá giới hạn 8 GiB.")
             os.replace(temporary_path, destination)
         finally:
             if os.path.exists(temporary_path):
@@ -6007,6 +6197,103 @@ def get_job_retry_step(job):
     return "download"
 
 
+def job_disk_bytes(job, keep_srt=True):
+    try:
+        return storage.reclaimable_bytes(storage.inventory(storage.candidates(job, keep_srt)))
+    except OSError:
+        return 0
+
+
+def bulk_delete_jobs(ids, *, delete_files=False, keep_srt=True, dry_run=False):
+    if not isinstance(ids, list) or not ids or len(ids) > MAX_IN_MEMORY_JOBS:
+        raise ValueError("ids phải là danh sách ID không rỗng trong giới hạn hàng đợi.")
+    if any(not isinstance(value, str) or not value.strip() for value in ids):
+        raise ValueError("ID job không hợp lệ.")
+    if any(type(value) is not bool for value in (delete_files, keep_srt, dry_run)):
+        raise ValueError("delete_files, keep_srt và dry_run phải là boolean.")
+    ids = list(dict.fromkeys(ids))
+    failures, deleted_ids, freed_bytes = [], [], 0
+    with operation_admission_lock, queue_state_lock:
+        jobs_by_id = {job["id"]: job for job in workflow_jobs}
+        selected = []
+        for job_id in ids:
+            job = jobs_by_id.get(job_id)
+            if not job:
+                failures.append({"id": job_id, "error": "Không tìm thấy job."})
+            elif job.get("status") == "running" or job_id in {current_job_id, prefetch_job_id}:
+                failures.append({"id": job_id, "error": "Job đang được xử lý; chưa thể xoá."})
+            else:
+                selected.append(job)
+        selected_ids = {job["id"] for job in selected}
+        plans = {}
+        protected = set()
+        if delete_files:
+            if preview_lock.locked():
+                raise RuntimeError("Hãy chờ chuẩn bị preview xong trước khi xoá file.")
+            for job in workflow_jobs:
+                if job["id"] not in selected_ids:
+                    protected.update(storage.candidates(job, keep_srt=False))
+            for job in selected:
+                try:
+                    plans[job["id"]] = storage.candidates(job, keep_srt) - protected
+                except OSError as error:
+                    failures.append({"id": job["id"], "error": str(error)})
+            # A failed inventory must protect its files from a different selected job.
+            for job in selected:
+                if job["id"] not in plans:
+                    protected.update(storage.video_paths(job))
+            plans = {key: paths - protected for key, paths in plans.items()}
+        all_paths = set().union(*plans.values()) if plans else set()
+        items = storage.inventory(all_paths)
+        estimate = storage.reclaimable_bytes(items)
+        if dry_run:
+            return {"selected_count": len(ids), "reclaimable_bytes": estimate,
+                    "failures": failures, "deleted_ids": [], "freed_bytes": 0}
+        # Fail before any unlink if durable queue state is unavailable. Records
+        # with unlink failures remain retryable; missing files are idempotent.
+        if items:
+            try:
+                persist_queue_state_locked()
+            except (OSError, UnicodeError) as error:
+                raise QueuePersistenceError(str(error)) from error
+        file_errors = []
+        if items:
+            freed_bytes, file_errors = storage.delete_inventory(items)
+        failed_paths = {entry["path"] for entry in file_errors}
+        for job in selected:
+            job_id = job["id"]
+            if delete_files and job_id not in plans:
+                continue
+            errors = [entry["error"] for entry in file_errors if entry["path"] in plans.get(job_id, ())]
+            if errors:
+                failures.append({"id": job_id, "error": "; ".join(errors)})
+            else:
+                deleted_ids.append(job_id)
+        if deleted_ids and not delete_files:
+            # A record-only choice also survives the next startup cache prune.
+            # Pin only app-managed inputs, never write beside external local files.
+            for job in selected:
+                if job["id"] not in deleted_ids:
+                    continue
+                for path in storage.video_paths(job):
+                    if (is_managed_local_video(path) or path_is_within(path, get_download_cache_dir())) and storage.safe_regular(path):
+                        with open(path + ".vietsub-keep", "a", encoding="utf-8"):
+                            pass
+        if deleted_ids:
+            candidate_jobs = [job for job in workflow_jobs if job["id"] not in deleted_ids]
+            commit_queue_jobs_locked(candidate_jobs)
+    # Expire previews only for paths actually removed. Record-only deletion
+    # deliberately leaves managed uploads and all other files untouched.
+    if delete_files:
+        with preview_registry_lock:
+            for preview_id, preview in list(preview_registry.items()):
+                path = preview.get("source_video")
+                if path and storage.canonical(path) in items and storage.canonical(path) not in failed_paths:
+                    preview_registry.pop(preview_id, None)
+    return {"deleted_ids": deleted_ids, "freed_bytes": freed_bytes,
+            "reclaimable_bytes": estimate, "failures": failures, "jobs": queue_snapshot()}
+
+
 def serialize_job(job):
     serialized = {
         key: job.get(key)
@@ -6026,6 +6313,8 @@ def serialize_job(job):
         and bool(job.get("result_ready"))
         and project_files_present(serialized.get("result"))
     )
+    serialized["disk_bytes"] = job_disk_bytes(job)
+    serialized["disk_bytes_with_srt"] = job_disk_bytes(job, keep_srt=False)
     return serialized
 
 
@@ -6102,7 +6391,8 @@ def normalize_persisted_job(value):
     source_type = value.get("source_type") if value.get("source_type") in {"douyin", "local"} else "douyin"
     result = value.get("result") if isinstance(value.get("result"), dict) else {}
     source_video = str(value.get("source_video") or "")
-    if source_type == "local" and not os.path.isfile(source_video) and not os.path.isfile(str(result.get("video") or "")):
+    if (source_type == "local" and not result.get("source_video_deleted")
+            and not os.path.isfile(source_video) and not os.path.isfile(str(result.get("video") or ""))):
         status = "error"
         error = "Video local không còn tồn tại. Hãy chọn lại file MP4."
 
@@ -6220,7 +6510,7 @@ def is_managed_local_video(path):
 
 
 def remove_managed_source_if_unused(path):
-    if not is_managed_local_video(path):
+    if not is_managed_local_video(path) or os.path.exists(path + ".vietsub-keep"):
         return
     with queue_state_lock:
         in_use = any(job.get("source_video") == path for job in workflow_jobs)
@@ -6246,7 +6536,8 @@ def prune_orphaned_local_videos(referenced_paths=None):
         try:
             if (
                 os.path.isfile(path)
-                and name.lower().endswith(".mp4")
+                and os.path.splitext(name)[1].lower() in local_source.LOCAL_VIDEO_EXTENSIONS
+                and not os.path.exists(path + ".vietsub-keep")
                 and os.path.normcase(os.path.abspath(path)) not in referenced
                 and os.path.getmtime(path) < cutoff
             ):
@@ -6716,6 +7007,50 @@ def update_current_job_metadata(**values):
                 break
 
 
+@browser_automation
+def generate_publish_pack(project, translation_config):
+    prompt = publish.build_prompt(read_text_file(project["translated_srt"]), project["project_name"])
+    check_cancel_requested()
+    if translation_config["provider"] == "notebook":
+        response = publish.request_notebook(sys.modules[__name__], translation_config, prompt)
+    else:
+        response = request_translation_completion(translation_config, [
+            {"role": "system", "content": "Bạn là biên tập viên video tiếng Việt. Chỉ trả về JSON hợp lệ."},
+            {"role": "user", "content": prompt},
+        ], stream=False)
+    metadata = publish.parse_response(response)
+    check_cancel_requested()
+    destination = os.path.join(project["project_dir"], project["project_name"] + ".publish.json")
+    write_text_atomic(destination, json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+    project["publish_metadata"] = destination
+    log_to_app(f"Đã tạo gói dữ liệu xuất bản: {destination}")
+    return destination
+
+
+def auto_cleanup_source_video(project, config):
+    if config.get("auto_delete_source_video") is not True:
+        return 0
+    # Revalidate subtitles before any destructive operation, even when called
+    # independently. A cleaned result keeps subtitle readiness across restarts.
+    validate_project_result(project)
+    with queue_state_lock:
+        protected = set()
+        for job in workflow_jobs:
+            if job["id"] != current_job_id:
+                protected.update(storage.video_paths(job))
+        paths = storage.video_paths({"result": project}) - protected
+        items = storage.inventory(paths)
+        freed, errors = storage.delete_inventory(items)
+        project["source_video_deleted"] = not os.path.isfile(project["video"])
+        project["source_cleanup_bytes"] = freed
+        project["source_cleanup_errors"] = errors
+    for error in errors:
+        log_to_app(f"Chưa dọn được video nguồn: {error['error']}", "error")
+    if freed:
+        log_to_app(f"Đã dọn video nguồn, giải phóng {format_megabytes(freed)}; giữ phụ đề.")
+    return freed
+
+
 def run_workflow_thread(
     video_url,
     ocr_lang,
@@ -6844,12 +7179,29 @@ def run_workflow_thread(
         project = finalize_project_assets(project, video_id)
         update_progress(result=project)
         validate_project_result(project)
+        if config.get("generate_publish_metadata") is True:
+            generate_publish_pack(project, translation_config)
         write_project_manifest(
             project,
             video_id=video_id,
             source_url=source_url,
             status="success",
         )
+        if config.get("auto_delete_source_video") is True:
+            # Persist the completed subtitle export before unlinking media. A crash
+            # during cleanup must not turn valid subtitles into a missing-video job.
+            project["source_video_deleted"] = True
+            update_progress(status="success", step="done", result=project, result_ready=True)
+            write_project_manifest(project, video_id=video_id, source_url=source_url, status="success")
+            try:
+                auto_cleanup_source_video(project, config)
+            except OSError as cleanup_error:
+                project["source_video_deleted"] = not os.path.isfile(project["video"])
+                project["source_cleanup_errors"] = [{"error": str(cleanup_error)}]
+                log_to_app(f"Phụ đề đã xuất; chưa dọn được video nguồn: {cleanup_error}", "error")
+            update_progress(result=project)
+            write_project_manifest(project, video_id=video_id, source_url=source_url, status="success")
+        update_progress(result=project)
 
         update_progress(status="success", step="done", result_ready=True)
         log_to_app("Success! Hoàn thành toàn bộ quy trình.")
@@ -7317,6 +7669,24 @@ def handle_queue():
         return jsonify({"error": str(error)}), 409
 
 
+@app.route('/api/queue/bulk-delete', methods=['POST'])
+def bulk_delete_queue():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON body is required"}), 400
+    try:
+        return jsonify(bulk_delete_jobs(
+            data.get("ids"), delete_files=data.get("delete_files", False),
+            keep_srt=data.get("keep_srt", True), dry_run=data.get("dry_run", False),
+        ))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except QueuePersistenceError:
+        raise
+    except (RuntimeError, OSError) as error:
+        return jsonify({"error": str(error)}), 409
+
+
 @app.route('/api/queue/start', methods=['POST'])
 def start_queue():
     try:
@@ -7382,6 +7752,12 @@ def browser_settings_fields(config):
         "browser_profile_dir": browser_profile_dir(kind),
         "browser_executable": resolve_browser_executable(config),
     }
+
+
+def storage_settings_fields(config):
+    return {key: config.get(key) is True for key in (
+        "auto_delete_source_video", "generate_publish_metadata",
+    )}
 
 
 def apply_settings_update(data):
@@ -7458,6 +7834,11 @@ def apply_settings_update(data):
             config["sakuga_vfx_enabled"] = data["sakuga_vfx_enabled"]
         if "workbench_layout" in data:
             config["workbench_layout"] = validate_workbench_layout(data["workbench_layout"])
+        for key in storage_settings_fields(config):
+            if key in data:
+                if type(data[key]) is not bool:
+                    raise ValueError(f"{key} phải là true hoặc false.")
+                config[key] = data[key]
         apply_browser_settings(config, data)
         if "source_cookies" in data:
             apply_source_cookie_updates(config, data["source_cookies"])
@@ -7478,6 +7859,7 @@ def apply_settings_update(data):
         "source_cookies_set": source_cookies_set(config),
         "cookies_file": config.get("cookies_file") or "",
         **workbench_settings_fields(config),
+        **storage_settings_fields(config),
         **browser_settings_fields(config),
     })
 
@@ -7582,6 +7964,7 @@ def handle_settings():
             "output_dir_synced": is_cloud_synced_path(effective_output_dir),
             "edge_background": bool(config.get("edge_background", True)),
             **workbench_settings_fields(config),
+            **storage_settings_fields(config),
             **browser_settings_fields(config),
             "desktop_shortcut_supported": shortcut_supported,
             "desktop_shortcut_exists": shortcut_exists,
@@ -7627,10 +8010,11 @@ def get_source_session_status():
     return status
 
 
+@browser_lifecycle.leased()
 def open_source_in_browser(site_key):
     """Show the platform in the automation browser's own profile so the user can sign in once."""
     site = SESSION_SITES[site_key]
-    ensure_browser_running(background=False)
+    ensure_browser_running(background=False, start_url=site.home_url)
     domain = site.cookie_domain.lstrip(".")
     with get_sync_playwright()() as playwright:
         context = browser_context(playwright)

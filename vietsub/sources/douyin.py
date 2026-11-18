@@ -26,6 +26,7 @@ from .base import (
     url_host,
 )
 from .browser_capture import MUTE_MEDIA_SCRIPT
+from .browser import release_page, reuse_page
 
 DOUYIN_DOMAINS = ("douyin.com", "iesdouyin.com")
 SHORT_LINK_HOSTS = {"v.douyin.com"}
@@ -586,7 +587,7 @@ def capture_video_from_page(
     poll_interval_ms=500,
     clock=time.monotonic,
 ):
-    """Open the video in a new tab of an existing browser context and capture its data.
+    """Reuse the initial/target tab of an existing context and capture the video's data.
 
     The default page is the feed with the video in a modal (jingxuan?modal_id=<id>).
     Returns a CaptureResult with the aweme_detail JSON of this video (API response or
@@ -598,7 +599,7 @@ def capture_video_from_page(
     captcha stops the capture at once.
     """
     target_url = url or jingxuan_url(aweme_id)
-    page = context.new_page()
+    page = reuse_page(context, target_url)
     detail_responses = []
 
     def on_response(response):
@@ -725,9 +726,10 @@ def capture_video_from_page(
             except Exception:
                 pass
         try:
-            page.close()
+            page.remove_listener("response", on_response)
         except Exception:
             pass
+        release_page(context, page)
 
 
 def title_from_page(page_title, aweme_id):

@@ -6,6 +6,30 @@ can replace the matching cookies for one platform.
 """
 
 from dataclasses import dataclass
+import time
+from urllib.parse import urlparse
+
+
+def cookies_for_urls(browser_cookies, urls, *, now=None):
+    """Filter an in-memory idle snapshot like context.cookies(urls), without starting Chrome."""
+    now = time.time() if now is None else now
+    targets = [urlparse(url) for url in urls]
+    result = []
+    for cookie in browser_cookies or []:
+        domain = str(cookie.get("domain") or "").lower()
+        cookie_path = str(cookie.get("path") or "/")
+        expires = cookie.get("expires", -1)
+        if not domain or (isinstance(expires, (int, float)) and expires > 0 and expires <= now):
+            continue
+        for target in targets:
+            host = (target.hostname or "").lower()
+            path = target.path or "/"
+            domain_matches = host == domain.lstrip(".") or (domain.startswith(".") and host.endswith(domain))
+            path_matches = path == cookie_path or path.startswith(cookie_path.rstrip("/") + "/")
+            if domain_matches and path_matches and (not cookie.get("secure") or target.scheme == "https"):
+                result.append(dict(cookie))
+                break
+    return result
 
 
 @dataclass(frozen=True)

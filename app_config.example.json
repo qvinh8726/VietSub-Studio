@@ -10,6 +10,8 @@
   "ocr_frames_to_skip": null,
   "output_dir": "",
   "crop_coords": null,
+  "auto_delete_source_video": false,
+  "generate_publish_metadata": false,
   "edge_background": true,
   "sakuga_vfx_enabled": true,
   "workbench_layout": null,

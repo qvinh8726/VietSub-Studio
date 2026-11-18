@@ -6,10 +6,51 @@ the media responses the page receives. When nothing shows up in time the user is
 asked to sign in or solve a captcha in that browser.
 """
 
+import re
 import time
 from dataclasses import dataclass, field
 
 from .base import DownloadCancelledError, SourceError, normalize_media_url
+from .browser import release_page, reuse_page
+
+# Check visible challenge UI, not arbitrary body text or hidden captcha scripts.
+ATTENTION_PROBE_SCRIPT = """() => {
+    const visible = element => {
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return box.width > 0 && box.height > 0 && style.display !== 'none' &&
+            style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const shown = selectors => selectors.some(selector =>
+        Array.from(document.querySelectorAll(selector)).some(visible));
+    return {
+        title: document.title || '',
+        captcha: shown(['#captcha_container', '#captcha-verify-image', '[id^="captcha"]',
+            '[class*="captcha_verify"]', '[class*="secsdk-captcha"]', '.geetest_panel',
+            '.geetest_holder', '.yidun_panel', '#challenge-running', '#challenge-stage',
+            'iframe[src*="captcha"]', 'iframe[src*="verifycenter"]',
+            'iframe[src*="verify.snssdk"]', 'iframe[src*="challenges.cloudflare.com"]']),
+        login: shown(['#douyin-login-new-id', '[data-e2e="login-panel"]',
+            '.login-container', '.login-modal', '[role="dialog"] input[type="password"]'])
+    };
+}"""
+CHALLENGE_TITLE = re.compile(
+    r"验证码|安全验证|人机验证|captcha|security verification|verify (?:you are|you're) human|just a moment", re.I
+)
+
+
+def is_attention_probe(probe):
+    if not isinstance(probe, dict):
+        return False
+    return bool(probe.get("captcha") or probe.get("login") or
+                CHALLENGE_TITLE.search(str(probe.get("title") or "")))
+
+
+def page_needs_attention(page):
+    try:
+        return is_attention_probe(page.evaluate(ATTENTION_PROBE_SCRIPT))
+    except Exception:
+        return False
 
 # {browser} is the short name of the automation browser ("Chrome", "Edge"...).
 ATTENTION_NOTICE = "Vui lòng đăng nhập hoặc kéo captcha trên trình duyệt {browser} để tiếp tục tải"
@@ -75,18 +116,20 @@ def capture_media_from_page(
     is_cancelled=lambda: False,
     on_attention=None,
     allow_attention_wait=True,
+    require_attention_signal=False,
     load_timeout=30,
     attention_timeout=180,
     poll_interval_ms=500,
     clock=time.monotonic,
 ):
-    """Open url in a new tab and return the video URLs the page uses.
+    """Reuse the initial/target tab and return the video URLs the page uses.
 
     on_attention(active, page) is called when the user is asked to act in the browser
     (sign in or captcha) and again when that is over. With allow_attention_wait=False
-    (background prefetch) the capture gives up after load_timeout instead.
+    (background prefetch) a detected challenge stops immediately. The app passes
+    require_attention_signal=True so missing media alone never opens a visible window.
     """
-    page = context.new_page()
+    page = reuse_page(context, url)
     network_urls = []
 
     def on_response(response):
@@ -119,8 +162,11 @@ def capture_media_from_page(
             candidates = _dedupe(_page_media_urls(page) + network_urls)
             if candidates:
                 break
-            if clock() >= deadline:
-                if attention or not allow_attention_wait:
+            challenge = page_needs_attention(page)
+            if challenge and not allow_attention_wait:
+                raise SourceError("Trang yêu cầu đăng nhập/xác minh; bỏ qua lượt tải chạy ngầm.")
+            if (challenge and not attention) or clock() >= deadline:
+                if attention or not allow_attention_wait or (require_attention_signal and not challenge):
                     break
                 attention = True
                 deadline = clock() + attention_timeout
@@ -153,9 +199,10 @@ def capture_media_from_page(
             except Exception:
                 pass
         try:
-            page.close()
+            page.remove_listener("response", on_response)
         except Exception:
             pass
+        release_page(context, page)
 
 
 def clean_page_title(title):

@@ -103,12 +103,13 @@ def profile_dir(config_dir, kind):
     return os.path.join(config_dir, PROFILE_DIRNAMES[validate_kind(kind)])
 
 
-def launch_command(executable, profile, *, port=DEBUG_PORT, background=False, start_url="about:blank"):
+def launch_command(executable, profile, *, port=DEBUG_PORT, background=False, start_url="about:blank", headless=True):
     """Command line of the automation browser.
 
     --user-data-dir is always set: Chrome refuses remote debugging on its default
-    profile, and a separate profile keeps the user's own browser untouched. The single
-    about:blank tab means a launch never opens a second page; callers open their own.
+    profile, and a separate profile keeps the user's own browser untouched. New
+    headless mode is the default. Callers reuse its initial tab; visible login
+    launches pass the destination as start_url so no blank window is displayed.
     """
     command = [
         executable,
@@ -120,6 +121,8 @@ def launch_command(executable, profile, *, port=DEBUG_PORT, background=False, st
         "--no-default-browser-check",
         "--disable-blink-features=AutomationControlled",
     ]
+    if headless:
+        command.append("--headless=new")
     if background:
         command += [
             "--start-minimized",
@@ -131,11 +134,44 @@ def launch_command(executable, profile, *, port=DEBUG_PORT, background=False, st
     return command
 
 
+BLANK_PAGE_URLS = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/", "edge://newtab/")
+
+
+def reuse_page(context, url=None):
+    """Reuse the initial tab (or the requested page), without touching other tabs."""
+    pages = getattr(context, "pages", ())
+    if not isinstance(pages, (list, tuple)):
+        pages = ()
+    initial = getattr(context, "_vietsub_initial_page", None)
+    if initial is not None and initial in pages:
+        context._vietsub_initial_page = None
+        return initial
+    for page in pages:
+        try:
+            if page.url in BLANK_PAGE_URLS or (url and page.url == url):
+                return page
+        except Exception:
+            continue
+    return context.new_page()
+
+
+def release_page(context, page):
+    """Keep the last tab alive so closing a capture cannot discard session cookies."""
+    pages = getattr(context, "pages", ())
+    if isinstance(pages, (list, tuple)) and len(pages) == 1 and pages[0] is page:
+        return
+    try:
+        page.close()
+    except Exception:
+        pass
+
+
 def is_valid_debug_payload(payload, kind=None, port=DEBUG_PORT):
     """True for a /json/version answer of a local browser on this port (of this kind, if given)."""
     if not isinstance(payload, dict):
         return False
-    product = str(payload.get("Browser") or "").lower()
+    # New headless Chromium normally reports Chrome/, older builds use HeadlessChrome/.
+    product = str(payload.get("Browser") or "").lower().replace("headlesschrome/", "chrome/", 1)
     allowed = PRODUCTS[kind] if kind in PRODUCTS else tuple({p for values in PRODUCTS.values() for p in values})
     try:
         websocket = urlparse(str(payload.get("webSocketDebuggerUrl") or ""))

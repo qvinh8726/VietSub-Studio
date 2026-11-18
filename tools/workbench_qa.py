@@ -158,10 +158,22 @@ def run(output: Path, quick: bool):
                             if route.request.method == "POST":
                                 body = route.request.post_data_json
                                 state["queued_payload"] = body
-                                state["jobs"].append({"id": f"qa-{len(state['jobs'])}", "status": "queued", "step": "resolve", "source_type": "local", "project_name": body["name"] or "Video kiểm thử", "ocr_lang": body["lang"]})
+                                state["jobs"].append({"id": f"qa-{len(state['jobs'])}", "status": "queued", "step": "resolve", "source_type": "local", "project_name": body.get("name") or "Video kiểm thử", "ocr_lang": body["lang"]})
                                 state["revision"] += 1
                                 data = {"ok": True}
                             else: data = {"jobs": state["jobs"], "revision": state["revision"]}
+                        elif path == "/api/queue/bulk-delete":
+                            body = route.request.post_data_json
+                            selected = [job for job in state["jobs"] if job["id"] in body["ids"] and job["status"] != "running"]
+                            byte_count = sum(job.get("disk_bytes", 0) for job in selected) if body.get("delete_files") else 0
+                            if body.get("dry_run"):
+                                data = {"selected_count": len(selected), "reclaimable_bytes": byte_count, "failures": []}
+                            else:
+                                state["bulk_payload"] = body
+                                deleted = [job["id"] for job in selected]
+                                state["jobs"] = [job for job in state["jobs"] if job["id"] not in deleted]
+                                state["revision"] += 1
+                                data = {"deleted_ids": deleted, "freed_bytes": byte_count, "failures": [], "jobs": state["jobs"]}
                         elif path == "/api/queue/start": data = {"ok": True}
                         elif path == "/api/cancel": data = {"ok": True}
                         elif path.startswith("/api/queue/") and route.request.method == "DELETE":
@@ -282,7 +294,8 @@ def run(output: Path, quick: bool):
                             if payload:
                                 page.evaluate("data => { window.pywebview = {api:{choose_local_video:async()=>data}}; }", payload)
                                 page.locator('#local-video-btn').click()
-                                page.wait_for_function("() => currentPreview && !document.querySelector('#add-queue-btn').disabled")
+                                page.wait_for_function("() => !localPreviewBusy && currentPreview && !document.querySelector('#add-queue-btn').disabled")
+                                page.wait_for_function("() => document.querySelector('#preview-player').readyState >= 1")
                                 page.evaluate("delete window.pywebview")
                                 # Metadata is optional: FPS controls disable without blocking crop/queue.
                                 page.evaluate("currentPreview.video_metadata = null; VietSubWorkbench.previewChanged(currentPreview)")
@@ -300,6 +313,48 @@ def run(output: Path, quick: bool):
                                 assert 'error' in page.locator('#step-ocr').get_attribute('class')
                                 assert not page.locator('#result-box').is_visible()
                                 check_layout(page, name+' '+status, records)
+                        # v1.8: actual multiline controls, selection, authoritative
+                        # byte preview and dialog keyboard behavior at every viewport.
+                        state['progress'] = {'status':'idle','step':'resolve','job_id':'','logs':[],
+                                             'next_log_index':0,'download':{'active':False}}
+                        page.locator('#source-link-tab').click()
+                        page.locator('#url-input').fill('Chia sẻ https://v.douyin.com/FirstQA/\nhttps://youtu.be/SecondQA')
+                        page.locator('#batch-queue-btn').click()
+                        page.wait_for_function("() => !batchImportBusy && document.querySelector('#batch-import-status').textContent.includes('2')")
+                        assert state['queued_payload']['url'] == 'https://youtu.be/SecondQA'
+                        state['jobs'] = [
+                            {'id':'keep-running','status':'running','step':'ocr','project_name':'Đang xử lý','source_type':'local'},
+                            {'id':'old-done','status':'success','step':'done','project_name':'Video đã xong','source_type':'local','finished_at':1,'disk_bytes':2*1048576},
+                            {'id':'old-error','status':'error','step':'translate','project_name':'Video cần dọn','source_type':'local','finished_at':1,'disk_bytes':3*1048576},
+                        ]
+                        state['revision'] += 1
+                        page.evaluate('loadQueue()')
+                        page.wait_for_function("() => queueJobs.some(job => job.id === 'old-done')")
+                        page.locator('#queue-select-finished').click()
+                        assert page.locator('[data-select-job="keep-running"]').is_disabled()
+                        page.locator('#bulk-delete-btn').click()
+                        page.wait_for_function("() => !document.querySelector('#bulk-delete-confirm').disabled")
+                        page.locator('#bulk-delete-files').check()
+                        page.wait_for_function("() => !document.querySelector('#bulk-delete-confirm').disabled && document.querySelector('#bulk-delete-estimate').textContent.includes('5')")
+                        assert page.locator('#bulk-keep-srt').is_checked()
+                        for selector in ['#bulk-delete-dialog', '#bulk-delete-confirm', '#bulk-delete-cancel']:
+                            rectangle = page.locator(selector).bounding_box()
+                            assert rectangle and rectangle['y'] >= 0 and rectangle['y']+rectangle['height'] <= height+1
+                        if dpr == 1:
+                            image = output / f'{name}-bulk-delete.png'
+                            page.screenshot(path=str(image)); screenshots.append(str(image))
+                        page.keyboard.press('Escape')
+                        assert not page.locator('#bulk-delete-dialog').is_visible()
+                        assert page.locator('#bulk-delete-btn').evaluate('el => el === document.activeElement')
+                        page.locator('#bulk-delete-btn').click()
+                        assert page.locator('#bulk-delete-records').is_checked()
+                        page.locator('#bulk-delete-files').check()
+                        page.wait_for_function("() => !document.querySelector('#bulk-delete-confirm').disabled")
+                        page.locator('#bulk-delete-confirm').click()
+                        page.wait_for_function("() => !bulkDeleteBusy && queueJobs.length === 1")
+                        assert state['bulk_payload']['keep_srt'] is True
+                        assert state['bulk_payload']['delete_files'] is True
+                        records.append({'check':name+' batch import / bulk delete / focus return', 'passed':True})
                         # Saved layout and preference survive a page reload.
                         page.locator("#sidebar-resizer").focus(); page.keyboard.press("End")
                         saved = page.evaluate("JSON.parse(localStorage.getItem('vietsub.studio.workbench.v1'))")

@@ -18,6 +18,17 @@
         let queueRevision = -1;
         let queueLoadInFlight = false;
         let lastQueueSignature = '';
+        const selectedQueueIds = new Set();
+        const finishedStatuses = new Set(['success', 'error', 'cancelled']);
+        let queueEpoch = 0;
+        let bulkEstimateSequence = 0;
+        let bulkEstimate = null;
+        let bulkDeleteBusy = false;
+        let bulkDialogOpen = false;
+        let bulkRestoreFocus = null;
+        let batchImportBusy = false;
+        let localPreviewBusy = false;
+        let linkPreviewBusy = false;
         let displayedLogCount = 0;
         let progressJobId = '';
         let resultOpenPath = '';
@@ -236,10 +247,119 @@
             renderDownloadProgress(null, 'preview');
         }
 
+        // Match the backend's share-text extraction; validate whole host boundaries and
+        // keep query tokens (notably Xiaohongshu xsec_token) intact.
+        function parseShareLinks(text) {
+            const domains = ['douyin.com', 'iesdouyin.com', 'kuaishou.com', 'chenzhongtech.com', 'gifshow.com',
+                'xiaohongshu.com', 'bilibili.com', 'tiktok.com', 'youtube.com', 'youtube-nocookie.com'];
+            const shortHosts = ['youtu.be', 'www.youtu.be', 'b23.tv', 'www.b23.tv', 'xhslink.com', 'www.xhslink.com'];
+            const urls = [], unsupported = [], seen = new Set();
+            let duplicates = 0;
+            for (const match of String(text || '').matchAll(/https?:\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&()*+,;=%]+/gi)) {
+                const candidate = match[0].replace(/[.,;:!?)\]}'"]+$/g, '');
+                try {
+                    const url = new URL(candidate), host = url.hostname.toLowerCase().replace(/\.$/, '');
+                    if (url.username || url.password || (!shortHosts.includes(host) && !domains.some(domain => host === domain || host.endsWith(`.${domain}`)))) {
+                        unsupported.push(candidate); continue;
+                    }
+                    const value = url.href;
+                    if (seen.has(value)) { duplicates += 1; continue; }
+                    seen.add(value); urls.push(value);
+                } catch (_) { unsupported.push(candidate); }
+            }
+            return {urls, unsupported, duplicates};
+        }
+
+        function refreshComposerControls() {
+            const busy = batchImportBusy || localPreviewBusy || linkPreviewBusy;
+            const parsed = parseShareLinks(byId('url-input').value);
+            byId('char-count').textContent = parsed.urls.length ? `${parsed.urls.length} link` : `${byId('url-input').value.length} ký tự`;
+            byId('prepare-btn').disabled = busy || parsed.urls.length > 1;
+            byId('prepare-btn').title = parsed.urls.length > 1 ? 'Dùng Thêm nhiều link; preview chỉ dành cho một video.' : 'Tạo preview để chỉnh crop một video';
+            byId('batch-queue-btn').disabled = busy || !parsed.urls.length;
+            byId('batch-queue-btn').textContent = `Thêm ${parsed.urls.length || ''} link vào hàng đợi`.replace('  ', ' ');
+            for (const id of ['local-video-btn', 'local-batch-btn', 'local-video-input', 'url-input']) byId(id).disabled = busy;
+            byId('add-queue-btn').disabled = busy || !currentPreview?.video_resolution;
+            byId('local-drop-zone').setAttribute('aria-disabled', String(busy));
+        }
+
+        async function enqueueSequentially(items, enqueue, progress = () => {}) {
+            const failures = [];
+            let added = 0;
+            for (let index = 0; index < items.length; index += 1) {
+                progress(index + 1, items.length);
+                try { await enqueue(items[index], index); added += 1; }
+                catch (error) { failures.push({item: items[index], error: error.message || String(error)}); }
+            }
+            return {added, failures};
+        }
+
+        function showBatchResult(result, label, note = '') {
+            byId('batch-import-status').textContent = `Đã thêm ${result.added} video${result.failures.length ? ` · ${result.failures.length} lỗi` : ''}.${note ? ` ${note}` : ''}`;
+            const list = byId('batch-import-errors'); list.replaceChildren();
+            for (const failure of result.failures) {
+                const item = document.createElement('li'); item.textContent = `${label(failure.item)}: ${failure.error}`; list.appendChild(item);
+            }
+            list.hidden = !result.failures.length;
+        }
+
+        async function importShareLinks() {
+            if (batchImportBusy || localPreviewBusy || linkPreviewBusy) return;
+            const parsed = parseShareLinks(byId('url-input').value);
+            if (!parsed.urls.length) { setUrlError('Chưa tìm thấy link từ nền tảng được hỗ trợ.'); return; }
+            const lang = byId('ocr-lang').value;
+            batchImportBusy = true; refreshComposerControls(); renderQueue(); setUrlError();
+            byId('batch-import-errors').replaceChildren();
+            try {
+                const result = await enqueueSequentially(parsed.urls, url => fetchJson('/api/queue', {
+                    method: 'POST', body: JSON.stringify({url, lang}),
+                }), (index, total) => { byId('batch-import-status').textContent = `Đang thêm link ${index}/${total}…`; });
+                // Keep failed inputs for review; successful inputs cannot be re-added by accident.
+                byId('url-input').value = result.failures.map(failure => failure.item).join('\n');
+                const notes = [];
+                if (parsed.duplicates) notes.push(`Bỏ ${parsed.duplicates} link trùng.`);
+                if (parsed.unsupported.length) notes.push(`Bỏ ${parsed.unsupported.length} link ngoài nền tảng hỗ trợ.`);
+                showBatchResult(result, value => value, notes.join(' '));
+                queueRevision = -1; await loadQueue();
+            } finally { batchImportBusy = false; refreshComposerControls(); renderQueue(); }
+        }
+
+        async function importLocalFiles(files) {
+            if (batchImportBusy || localPreviewBusy || linkPreviewBusy || !files.length) return;
+            const lang = byId('ocr-lang').value;
+            batchImportBusy = true; refreshComposerControls(); renderQueue();
+            byId('batch-import-errors').replaceChildren();
+            try {
+                const result = await enqueueSequentially(files, async file => {
+                    if (!/\.(mp4|mkv)$/i.test(file.name)) throw new Error('Nhập nhiều file hỗ trợ MP4 hoặc MKV.');
+                    const form = new FormData(); form.append('video', file);
+                    const preview = await fetchJson('/api/previews/local', {method: 'POST', body: form, timeoutMs: 0});
+                    await fetchJson('/api/queue', {method: 'POST', body: JSON.stringify({
+                        url: preview.source_url, preview_id: preview.id, lang,
+                        crop_coords: preview.crop_coords, video_resolution: preview.video_resolution || null,
+                    })});
+                }, (index, total) => { byId('batch-import-status').textContent = `Đang nạp file ${index}/${total}…`; });
+                showBatchResult(result, file => file.name);
+                byId('local-video-input').value = '';
+                queueRevision = -1; await loadQueue();
+            } finally { batchImportBusy = false; refreshComposerControls(); renderQueue(); }
+        }
+
+        function dropLocalFiles(event) {
+            event.preventDefault(); byId('local-drop-zone').classList.remove('is-dragover');
+            if (batchImportBusy || localPreviewBusy || linkPreviewBusy) return;
+            const files = Array.from(event.dataTransfer?.files || []);
+            if (files.length > 1) return importLocalFiles(files);
+            if (files.length === 1) return prepareLocalPreview(files[0]);
+        }
+
         async function preparePreview(event) {
             event.preventDefault();
+            if (batchImportBusy || localPreviewBusy || linkPreviewBusy) return;
             const url = byId('url-input').value.trim();
             if (!url) { setUrlError('Hãy dán link video hoặc đoạn chia sẻ.'); return; }
+            if (parseShareLinks(url).urls.length > 1) { setUrlError('Dùng Thêm nhiều link để đưa từng video vào hàng đợi.'); return; }
+            linkPreviewBusy = true; refreshComposerControls();
             setUrlError();
             invalidatePreview('Đang chuẩn bị…');
             const requestId = previewRequestId;
@@ -258,16 +378,19 @@
                 showToast(error.message, 'error');
             } finally {
                 stopDownloadWatch();
-                button.disabled = false;
+                linkPreviewBusy = false;
                 button.textContent = 'Tải preview';
+                refreshComposerControls();
             }
         }
 
         // In the desktop window the native dialog gives the real path: the video is used in
         // place (no upload, no %TEMP% copy). The browser fallback still uploads the MP4.
         async function chooseLocalVideo() {
+            if (batchImportBusy || localPreviewBusy || linkPreviewBusy) return;
             const api = window.pywebview && window.pywebview.api;
             if (!api || typeof api.choose_local_video !== 'function') { byId('local-video-input').click(); return; }
+            localPreviewBusy = true; refreshComposerControls();
             invalidatePreview('Đang mở hộp thoại chọn video…');
             const requestId = previewRequestId;
             const button = byId('local-video-btn');
@@ -284,7 +407,7 @@
                 byId('preview-status').value = 'Không nạp được video';
                 showToast(error.message || String(error), 'error');
             } finally {
-                button.disabled = false;
+                localPreviewBusy = false; refreshComposerControls();
             }
         }
 
@@ -315,29 +438,35 @@
             window.VietSubWorkbench?.previewChanged(data);
         }
 
-        async function prepareLocalPreview() {
+        async function prepareLocalPreview(fileOrEvent) {
+            if (batchImportBusy || localPreviewBusy || linkPreviewBusy) return;
             const input = byId('local-video-input');
-            const file = input.files?.[0];
+            const files = fileOrEvent?.name ? [fileOrEvent] : Array.from(input.files || []);
+            if (files.length > 1) return importLocalFiles(files);
+            const file = files[0];
             if (!file) return;
-            invalidatePreview('Đang tải MP4 lên app…');
+            localPreviewBusy = true; refreshComposerControls();
+            invalidatePreview('Đang tải video lên app…');
             const requestId = previewRequestId;
             const button = byId('local-video-btn');
             button.disabled = true;
-            button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang nạp MP4</span>';
-            byId('preview-status').value = 'Đang tải MP4 lên app…';
+            button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang nạp video</span>';
+            byId('preview-status').value = 'Đang tải video lên app…';
             const form = new FormData(); form.append('video', file);
             try {
                 const data = await fetchJson('/api/previews/local', {method:'POST', body:form, timeoutMs: 0});
                 if (requestId !== previewRequestId) return;
                 applyPreview(data);
-                showToast('MP4 local đã sẵn sàng để chỉnh vùng OCR.');
+                showToast('Video local đã sẵn sàng để chỉnh vùng OCR.');
             } catch (error) {
                 if (requestId !== previewRequestId) return;
-                byId('preview-status').value = 'Không nạp được MP4';
+                byId('preview-status').value = 'Không nạp được video';
                 showToast(error.message, 'error');
             } finally {
-                button.disabled = false;
+                localPreviewBusy = false;
+                input.value = '';
                 button.textContent = 'Chọn video';
+                refreshComposerControls();
             }
         }
 
@@ -409,7 +538,7 @@
         }
 
         async function addToQueue() {
-            if (!currentPreview) return;
+            if (batchImportBusy || localPreviewBusy || linkPreviewBusy || !currentPreview) return;
             if (!currentPreview.video_resolution) {
                 showToast('Đang đọc độ phân giải video; hãy chờ preview sẵn sàng.', 'error');
                 return;
@@ -432,7 +561,7 @@
             autoProjectName = '';
             byId('url-input').value = ''; byId('project-name').value = '';
             byId('local-video-input').value = '';
-            byId('char-count').textContent = '0 ký tự'; updateNamePreview();
+            byId('char-count').textContent = '0 ký tự'; updateNamePreview(); refreshComposerControls();
         }
 
         function sourceReady(source) {
@@ -446,14 +575,168 @@
             return [8, 28, 52, 78, 100][stepIndex[step] ?? 0];
         }
 
+        function formatDiskBytes(value) {
+            const bytes = Math.max(0, Number(value) || 0);
+            if (bytes < 1024) return `${Math.round(bytes)} B`;
+            const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+            const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length);
+            return `${(bytes / 1024 ** power).toLocaleString('vi-VN', {maximumFractionDigits: 1})} ${units[power - 1]}`;
+        }
+
+        function isOlderFinished(job, now = Date.now()) {
+            if (!finishedStatuses.has(job.status)) return false;
+            // Queue timestamps are Unix seconds. Prefer completion time over creation.
+            const value = job.finished_at || job.created_at;
+            const timestamp = typeof value === 'number' ? value * 1000 : Date.parse(value);
+            return Number.isFinite(timestamp) && timestamp > 0 && timestamp < now - 3 * 86400000;
+        }
+
+        function selectedQueueJobs() {
+            return queueJobs.filter(job => job.status !== 'running' && selectedQueueIds.has(job.id));
+        }
+
+        function bulkPayload() {
+            return {ids: selectedQueueJobs().map(job => job.id),
+                delete_files: bulkDialogOpen ? byId('bulk-delete-files').checked : true,
+                keep_srt: bulkDialogOpen ? byId('bulk-keep-srt').checked : true};
+        }
+
+        function bulkEstimateKey() {
+            return JSON.stringify([bulkPayload(), queueJobs.map(job => [job.id, job.status]), selectedQueueJobs().map(job =>
+                [job.id, job.status, job.disk_bytes, job.disk_bytes_with_srt, job.finished_at])]);
+        }
+
+        function updateBulkControls() {
+            const selectable = queueJobs.filter(job => job.status !== 'running');
+            const count = selectedQueueJobs().length, all = byId('queue-select-all');
+            all.checked = Boolean(selectable.length) && count === selectable.length;
+            all.indeterminate = count > 0 && count < selectable.length;
+            all.disabled = bulkDeleteBusy || !selectable.length;
+            byId('queue-selection-count').textContent = `${count} đã chọn`;
+            byId('bulk-delete-btn').disabled = bulkDeleteBusy || !count;
+            byId('queue-clear-selection').disabled = bulkDeleteBusy || !count;
+            byId('queue-select-finished').disabled = bulkDeleteBusy || !queueJobs.some(job => finishedStatuses.has(job.status));
+            byId('queue-select-old').disabled = bulkDeleteBusy || !queueJobs.some(job => isOlderFinished(job));
+            byId('clear-finished-btn').disabled = byId('queue-select-finished').disabled;
+            const estimate = bulkEstimate?.key === bulkEstimateKey() ? bulkEstimate : null;
+            const badge = byId('queue-disk-badge');
+            badge.textContent = !count ? '0 B có thể dọn' : estimate?.data ? `${formatDiskBytes(estimate.data.reclaimable_bytes)} có thể dọn` : estimate?.error ? 'Chưa đo được' : 'Đang tính…';
+            badge.setAttribute('aria-busy', String(count > 0 && !estimate?.data && !estimate?.error));
+            if (!bulkDialogOpen) return;
+            byId('bulk-delete-count').textContent = `${count} job đã chọn`;
+            byId('bulk-keep-srt').disabled = bulkDeleteBusy || !byId('bulk-delete-files').checked;
+            for (const id of ['bulk-delete-records', 'bulk-delete-files', 'bulk-delete-cancel']) byId(id).disabled = bulkDeleteBusy;
+            const failures = estimate?.data?.failures || estimate?.failures || [];
+            byId('bulk-estimate-retry').hidden = !estimate?.error && !failures.length;
+            byId('bulk-estimate-retry').disabled = bulkDeleteBusy;
+            const eligible = selectedQueueJobs().filter(job => !failures.some(failure => failure.id === job.id)).length;
+            byId('bulk-delete-confirm').disabled = bulkDeleteBusy || !eligible || !estimate?.data || estimate.data.selected_count === 0;
+            byId('bulk-delete-confirm').textContent = bulkDeleteBusy ? 'Đang xoá…' : byId('bulk-delete-files').checked ? 'Xoá video / file tạm' : 'Xoá bản ghi';
+            byId('bulk-delete-estimate').textContent = estimate?.error ? `Không đo được dung lượng: ${estimate.error}` : estimate?.data ?
+                `Có thể giải phóng ${formatDiskBytes(estimate.data.reclaimable_bytes)}.${byId('bulk-delete-files').checked ? ' Dung lượng thực tế được báo sau khi xoá.' : ' Toàn bộ file được giữ nguyên.'}` : 'Đang kiểm tra dung lượng và các file được phép xoá…';
+            renderBulkFailures(failures);
+        }
+
+        function renderBulkFailures(failures) {
+            const list = byId('bulk-delete-failures'); list.replaceChildren(); list.hidden = !failures.length;
+            for (const failure of failures) {
+                const item = document.createElement('li');
+                const job = queueJobs.find(job => job.id === failure.id);
+                item.textContent = `${job?.project_name || job?.video_title || failure.id}: ${failure.error}`;
+                list.appendChild(item);
+            }
+        }
+
+        async function refreshBulkEstimate(force = false) {
+            const key = bulkEstimateKey();
+            if (bulkDeleteBusy || (!force && bulkEstimate?.key === key)) { updateBulkControls(); return; }
+            const sequence = ++bulkEstimateSequence;
+            bulkEstimate = {key}; updateBulkControls();
+            const payload = bulkPayload();
+            if (!payload.ids.length) return;
+            try {
+                const data = await fetchJson('/api/queue/bulk-delete', {method: 'POST', body: JSON.stringify({...payload, dry_run: true})});
+                if (sequence !== bulkEstimateSequence || key !== bulkEstimateKey()) return;
+                if (!Number.isFinite(data.reclaimable_bytes) || !Number.isInteger(data.selected_count) || !Array.isArray(data.failures)) throw new Error('Máy chủ chưa trả về ước lượng hợp lệ.');
+                bulkEstimate = {key, data};
+            } catch (error) {
+                if (sequence !== bulkEstimateSequence || key !== bulkEstimateKey()) return;
+                bulkEstimate = {key, error: error.message};
+            }
+            updateBulkControls();
+        }
+
+        function setQueueSelection(mode) {
+            if (bulkDeleteBusy) return;
+            selectedQueueIds.clear();
+            for (const job of queueJobs) {
+                if (job.status === 'running') continue;
+                if (mode === 'all' || (mode === 'finished' && finishedStatuses.has(job.status)) || (mode === 'old' && isOlderFinished(job))) selectedQueueIds.add(job.id);
+            }
+            renderQueue();
+        }
+
+        function openBulkDelete() {
+            if (bulkDeleteBusy || !selectedQueueJobs().length) return;
+            bulkRestoreFocus = document.activeElement;
+            bulkDialogOpen = true;
+            byId('bulk-delete-records').checked = true; byId('bulk-delete-files').checked = false; byId('bulk-keep-srt').checked = true;
+            byId('bulk-delete-dialog').showModal();
+            byId('bulk-delete-cancel').focus();
+            refreshBulkEstimate();
+        }
+
+        function closeBulkDelete() {
+            if (bulkDeleteBusy) return;
+            bulkDialogOpen = false; byId('bulk-delete-dialog').close();
+            (bulkRestoreFocus?.isConnected && !bulkRestoreFocus.disabled ? bulkRestoreFocus : byId('queue-title')).focus();
+            refreshBulkEstimate();
+        }
+
+        async function deleteSelectedQueueJobs() {
+            if (bulkDeleteBusy || !bulkDialogOpen || !bulkEstimate?.data || bulkEstimate.key !== bulkEstimateKey() || byId('bulk-delete-confirm').disabled) return;
+            const payload = bulkPayload();
+            bulkDeleteBusy = true; ++bulkEstimateSequence; ++queueEpoch;
+            updateBulkControls(); renderQueue();
+            try {
+                const data = await fetchJson('/api/queue/bulk-delete', {method: 'POST', body: JSON.stringify({...payload, dry_run: false})});
+                ++queueEpoch; queueRevision = -1;
+                const deleted = new Set(data.deleted_ids || []);
+                for (const id of deleted) selectedQueueIds.delete(id);
+                queueJobs = Array.isArray(data.jobs) ? data.jobs : queueJobs.filter(job => !deleted.has(job.id));
+                lastQueueSignature = JSON.stringify(queueJobs);
+                if (deleted.size) hideResult();
+                const failures = data.failures || [];
+                byId('queue-bulk-status').textContent = `Đã xoá ${deleted.size} bản ghi · giải phóng ${formatDiskBytes(data.freed_bytes)}${failures.length ? ` · ${failures.length} lỗi` : ''}.`;
+                bulkDeleteBusy = false; bulkEstimate = null;
+                if (failures.length) {
+                    // Leave failed jobs selected and report the server's per-job result.
+                    bulkEstimate = {key: bulkEstimateKey(), failures, error: 'Một số job chưa xoá được. Kiểm tra lại trước khi thử lại.'};
+                    renderQueue(); renderBulkFailures(failures);
+                } else { closeBulkDelete(); renderQueue(); }
+                window.VietSubVFX?.smoke(byId('queue-bulk-status'));
+            } catch (error) {
+                bulkDeleteBusy = false;
+                bulkEstimate = {key: bulkEstimateKey(), error: error.message};
+                renderQueue();
+            } finally {
+                bulkDeleteBusy = false; queueRevision = -1;
+                await loadQueue();
+            }
+        }
+
         function renderQueue() {
             const list = byId('queue-list');
+            for (const id of selectedQueueIds) {
+                if (!queueJobs.some(job => job.id === id && job.status !== 'running')) selectedQueueIds.delete(id);
+            }
+            refreshBulkEstimate();
             byId('queue-count').textContent = queueJobs.length;
             const queuedCount = queueJobs.filter(job => job.status === 'queued').length;
             const running = queueJobs.some(job => job.status === 'running');
             const queuedSources = new Set(queueJobs.filter(job => job.status === 'queued').map(job => job.source_type || 'douyin'));
             const queueReady = [...queuedSources].every(sourceReady);
-            byId('start-queue-btn').disabled = !queuedCount || running || !queueReady;
+            byId('start-queue-btn').disabled = !queuedCount || running || !queueReady || batchImportBusy || bulkDeleteBusy;
             byId('start-queue-btn').textContent = running ? 'Đang chạy tuần tự…' : !queueReady ? 'Thiếu thành phần bắt buộc' : `Chạy hàng đợi${queuedCount ? ` (${queuedCount})` : ''}`;
             const cancelButton = byId('cancel-btn');
             const runningJob = queueJobs.find(job => job.status === 'running');
@@ -465,10 +748,24 @@
                 cancelButton.textContent = 'Huỷ job';
             }
             if (!queueJobs.length) { list.innerHTML = '<div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div>'; return; }
+            const focusJobId = document.activeElement?.dataset.selectJob;
+            let focusCheckbox = null;
             list.replaceChildren();
             queueJobs.forEach((job, index) => {
-                const row = document.createElement('article'); row.className = `queue-item ${job.status}`; row.dataset.jobId = job.id;
+                const row = document.createElement('article'); row.className = `queue-item ${job.status}${selectedQueueIds.has(job.id) ? ' is-selected' : ''}`; row.dataset.jobId = job.id;
                 const top = document.createElement('div'); top.className = 'queue-item-top';
+                const selectLabel = document.createElement('label'); selectLabel.className = 'queue-select';
+                const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = selectedQueueIds.has(job.id);
+                checkbox.disabled = bulkDeleteBusy || job.status === 'running'; checkbox.dataset.selectJob = job.id;
+                if (focusJobId === job.id && !checkbox.disabled) focusCheckbox = checkbox;
+                checkbox.setAttribute('aria-label', `Chọn ${job.project_name || job.video_title || `job ${index + 1}`}`);
+                selectLabel.title = job.status === 'running' ? 'Không thể xoá job đang chạy' : 'Chọn để dọn hàng loạt';
+                checkbox.addEventListener('change', () => {
+                    if (bulkDeleteBusy || job.status === 'running') return;
+                    if (checkbox.checked) selectedQueueIds.add(job.id); else selectedQueueIds.delete(job.id);
+                    row.classList.toggle('is-selected', checkbox.checked); refreshBulkEstimate();
+                });
+                selectLabel.appendChild(checkbox); top.appendChild(selectLabel);
                 const info = document.createElement('div'); info.style.minWidth = '0';
                 const sourceLabel = sourceLabels[job.source_type] || 'Douyin';
                 const sourceMeta = job.source_type === 'local' ? 'VIDEO TRÊN MÁY' : `${sourceLabel.toUpperCase()} · ID ${job.video_id || 'đang chờ giải mã'}`;
@@ -482,19 +779,21 @@
                 const progressValue = progressWidth(job.step, job.status); progress.setAttribute('aria-valuenow', String(progressValue)); const bar = document.createElement('i'); bar.style.width = `${progressValue}%`; progress.appendChild(bar); row.appendChild(progress);
                 if (job.error) { const error = document.createElement('div'); error.className = 'queue-error'; error.textContent = job.error; row.appendChild(error); }
                 const actions = document.createElement('div'); actions.className = 'queue-item-actions';
-                if (job.status !== 'running') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = job.status === 'queued' ? 'Xoá khỏi hàng đợi' : 'Xoá job'; remove.onclick = () => removeQueueJob(job.id, job.status); actions.appendChild(remove); }
-                if (job.status === 'error' || job.status === 'cancelled') { const retry = document.createElement('button'); retry.className = 'btn-secondary'; retry.textContent = job.retry_step === 'translate' ? 'Chạy lại bước dịch' : job.retry_step === 'ocr' ? 'Chạy lại từ OCR' : 'Chạy lại từ video'; retry.onclick = () => retryQueueJob(job.id); actions.appendChild(retry); }
+                if (job.status !== 'running') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = 'Xoá bản ghi'; remove.title = 'Chỉ xoá bản ghi; giữ nguyên tất cả file'; remove.disabled = bulkDeleteBusy; remove.onclick = () => removeQueueJob(job.id, job.status); actions.appendChild(remove); }
+                if (job.status === 'error' || job.status === 'cancelled') { const retry = document.createElement('button'); retry.className = 'btn-secondary'; retry.disabled = bulkDeleteBusy; retry.textContent = job.retry_step === 'translate' ? 'Chạy lại bước dịch' : job.retry_step === 'ocr' ? 'Chạy lại từ OCR' : 'Chạy lại từ video'; retry.onclick = () => retryQueueJob(job.id); actions.appendChild(retry); }
                 if (job.needs_edge_login) { const login = document.createElement('button'); login.className = 'btn-ghost'; login.textContent = `Mở ${browserName} đăng nhập`; login.onclick = showEdgeLogin; actions.appendChild(login); }
                 if (job.status === 'success' && job.result_ready) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true); actions.appendChild(open); }
                 else if ((job.status === 'error' || job.status === 'cancelled') && job.result?.project_dir) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở thư mục làm dở'; open.onclick = () => openResultPath(job.result.project_dir); actions.appendChild(open); }
                 if (actions.children.length) row.appendChild(actions);
                 list.appendChild(row);
             });
+            focusCheckbox?.focus({preventScroll: true});
         }
 
         async function loadQueue() {
             if (queueLoadInFlight) return;
             queueLoadInFlight = true;
+            const epoch = queueEpoch;
             byId('queue-list').setAttribute('aria-busy', 'true');
             try {
                 // Handle each response on its own, so a failed progress poll never drops a good queue update.
@@ -503,6 +802,7 @@
                     pollProgress(),
                 ]);
                 if (queueResult.status === 'fulfilled') {
+                    if (epoch !== queueEpoch) return;
                     const data = queueResult.value;
                     queueRevision = Number.isInteger(data.revision) ? data.revision : queueRevision;
                     if (Array.isArray(data.jobs)) {
@@ -556,12 +856,9 @@
             catch (error) { showToast(error.message, 'error'); }
         }
 
-        async function clearFinished() {
-            if (!window.confirm('Xoá toàn bộ job đã hoàn tất khỏi lịch sử? File project sẽ được giữ nguyên.')) return;
-            await runOnce('clear-finished', async () => {
-                try { await fetchJson('/api/queue/finished', {method: 'DELETE'}); hideResult(); queueRevision = -1; await loadQueue(); }
-                catch (error) { showToast(error.message, 'error'); }
-            });
+        function clearFinished() {
+            setQueueSelection('finished');
+            openBulkDelete();
         }
 
         async function cancelJob() {
@@ -592,8 +889,10 @@
         }
 
         async function pollProgress() {
+            const epoch = queueEpoch;
             try {
                 const data = await fetchJson(`/api/progress?after=${displayedLogCount}`);
+                if (epoch !== queueEpoch) return;
                 if (data.job_id && data.job_id !== progressJobId) { hideResult(); progressJobId = data.job_id; displayedLogCount = 0; byId('console-box').replaceChildren(); return pollProgress(); }
                 (data.logs || []).forEach(addLog); displayedLogCount = data.next_log_index ?? displayedLogCount;
                 // A preview download has its own panel; otherwise the live download belongs to the job.
@@ -620,7 +919,9 @@
         function showResult(result, scroll = false) {
             resultOpenPath = result.project_dir || result.translated_srt || '';
             byId('result-title').textContent = `${result.project_name || 'Bộ file'} đã sẵn sàng`;
-            byId('res-video').textContent = result.video || ''; byId('res-thumbnail').textContent = result.thumbnail || ''; byId('res-thumbnail-row').hidden = !result.thumbnail; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
+            byId('res-video').textContent = result.source_video_deleted === true ? 'Đã dọn video nguồn · phụ đề được giữ lại' : result.video || ''; byId('res-thumbnail').textContent = result.thumbnail || ''; byId('res-thumbnail-row').hidden = !result.thumbnail; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
+            byId('res-publish').textContent = result.publish_metadata || '';
+            byId('res-publish-row').hidden = !result.publish_metadata;
             byId('result-box').hidden = false;
             if (window.VietSubWorkbench) window.VietSubWorkbench.resultShown(result, scroll);
             else if (scroll) byId('result-box').scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block:'center'});
@@ -750,6 +1051,8 @@
                 byId('setting-ocr-speed').value = data.ocr_model_mode || 'auto';
                 byId('setting-frames-skip').value = data.ocr_frames_to_skip == null ? '' : String(data.ocr_frames_to_skip);
                 byId('setting-edge-background').checked = data.edge_background !== false;
+                byId('setting-auto-delete-source-video').checked = data.auto_delete_source_video === true;
+                byId('setting-generate-publish-metadata').checked = data.generate_publish_metadata === true;
                 window.VietSubWorkbench?.applySettings(data);
                 applyBrowserSettings(data);
                 const shortcutButton = byId('create-shortcut-btn');
@@ -774,6 +1077,8 @@
             try {
                 const provider = byId('setting-translation-provider').value;
                 const payload = {translation_provider:provider, translation_instructions:byId('setting-translation-instructions').value.trim(), notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, ocr_model_mode:byId('setting-ocr-speed').value, ocr_frames_to_skip:byId('setting-frames-skip').value === '' ? null : Number(byId('setting-frames-skip').value), edge_background:byId('setting-edge-background').checked};
+                payload.auto_delete_source_video = byId('setting-auto-delete-source-video').checked === true;
+                payload.generate_publish_metadata = byId('setting-generate-publish-metadata').checked === true;
                 if (provider !== 'notebook') {
                     payload.translation_api_base_url = byId('setting-api-base-url').value.trim();
                     payload.translation_api_model = byId('setting-api-model').value.trim();
@@ -1024,11 +1329,33 @@
             window.VietSubWorkbench?.init({request: fetchJson, notify: showToast, endCropDrag, updateSteps});
             byId('preview-form').addEventListener('submit', preparePreview);
             byId('local-video-btn').onclick=chooseLocalVideo; byId('local-video-input').addEventListener('change', prepareLocalPreview);
+            byId('batch-queue-btn').onclick = importShareLinks;
+            byId('local-batch-btn').onclick = () => byId('local-batch-input').click();
+            byId('local-batch-input').addEventListener('change', async () => {
+                const input = byId('local-batch-input');
+                try { await importLocalFiles(Array.from(input.files || [])); }
+                finally { input.value = ''; }
+            });
+            const dropZone = byId('local-drop-zone');
+            dropZone.addEventListener('dragover', event => { event.preventDefault(); if (!batchImportBusy && !localPreviewBusy && !linkPreviewBusy) dropZone.classList.add('is-dragover'); });
+            dropZone.addEventListener('dragleave', event => { if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove('is-dragover'); });
+            dropZone.addEventListener('drop', dropLocalFiles);
             byId('url-input').addEventListener('input', () => {
-                byId('char-count').textContent=`${byId('url-input').value.length} ký tự`;
                 setUrlError();
                 invalidatePreview();
+                refreshComposerControls();
             });
+            byId('queue-select-all').addEventListener('change', event => setQueueSelection(event.target.checked ? 'all' : 'none'));
+            byId('queue-select-finished').onclick = () => setQueueSelection('finished');
+            byId('queue-select-old').onclick = () => setQueueSelection('old');
+            byId('queue-clear-selection').onclick = () => setQueueSelection('none');
+            byId('bulk-delete-btn').onclick = openBulkDelete;
+            byId('bulk-delete-cancel').onclick = closeBulkDelete;
+            byId('bulk-delete-confirm').onclick = deleteSelectedQueueJobs;
+            for (const id of ['bulk-delete-records', 'bulk-delete-files', 'bulk-keep-srt']) byId(id).addEventListener('change', () => refreshBulkEstimate());
+            byId('bulk-estimate-retry').onclick = () => refreshBulkEstimate(true);
+            byId('bulk-delete-dialog').addEventListener('cancel', event => { event.preventDefault(); closeBulkDelete(); });
+            for (const id of ['setting-auto-delete-source-video', 'setting-generate-publish-metadata']) byId(id).addEventListener('change', saveSettings);
             byId('project-name').addEventListener('input', () => { autoProjectName = ''; updateNamePreview(); });
             byId('add-queue-btn').addEventListener('click', addToQueue);
             byId('preview-player').addEventListener('loadedmetadata', () => {
@@ -1036,8 +1363,8 @@
                 if (!currentPreview || player.dataset.previewId !== currentPreview.id || !player.videoWidth || !player.videoHeight) return;
                 currentPreview.video_resolution = {width: player.videoWidth, height: player.videoHeight};
                 const stage = byId('video-stage'); stage.style.aspectRatio = `${player.videoWidth} / ${player.videoHeight}`; stage.style.minHeight = '0';
-                byId('preview-status').value = currentPreview.source_type === 'local' ? 'MP4 local sẵn sàng' : 'Sẵn sàng chỉnh crop';
-                byId('add-queue-btn').disabled = false;
+                byId('preview-status').value = currentPreview.source_type === 'local' ? 'Video local sẵn sàng' : 'Sẵn sàng chỉnh crop';
+                refreshComposerControls();
             });
             byId('preview-player').addEventListener('error', () => {
                 const player = byId('preview-player');
@@ -1045,7 +1372,7 @@
                 if (currentPreview.video_resolution) {
                     // H.265 or some MKV files do not play in WebView2, but FFprobe already read the size.
                     byId('preview-status').value = 'Không phát được trong app; vẫn chỉnh crop và thêm vào hàng đợi được';
-                    byId('add-queue-btn').disabled = false;
+                    refreshComposerControls();
                     return;
                 }
                 byId('preview-status').value = 'Không đọc được metadata video';

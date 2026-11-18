@@ -4,6 +4,25 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-19
+
+### Added
+
+- Queue/history multi-selection with per-item checkboxes, finished/older-than-three-days shortcuts and a tabular MB/GB reclaim badge. `POST /api/queue/bulk-delete` supports `ids`, `delete_files` (default false), `keep_srt` (default true) and non-mutating `dry_run`. It inventories tracked video and temporary files, deduplicates shared paths/hard links, protects running/prefetch jobs and files referenced by other jobs, and retains failed deletions for retry. Record-only deletion leaves media untouched; published metadata and unrelated project files are preserved.
+- Opt-in `auto_delete_source_video` in settings (default false): removes source/project video only after successful subtitle validation, preserves SRTs, records cleanup results and keeps cleaned projects readable as successful history after restart.
+- Batch source import accepts multiple share URLs across lines or multiple local files dropped/selected together. Imports are queued sequentially through the existing APIs, retain per-item failure feedback, and preserve the single-video preview/crop flow.
+- Opt-in `generate_publish_metadata` (default false) uses the configured AI provider or Notebook session to create `<video-name>.publish.json` next to the subtitles. The versioned UTF-8 pack contains `title`, `description`, Vietnamese `hashtags`, `language` and `schema_version`; malformed responses are rejected before atomic writes. This prepares metadata for a future publishing module; it does not post videos.
+
+### Changed
+
+- Automation defaults to Chromium `--headless=new` with `--disable-blink-features=AutomationControlled`, reuses the initial tab, and closes the app-owned browser after 60 idle seconds. Active browser work holds a lease so downloads/translations are not interrupted. CLI and desktop use the same lifecycle.
+- A captcha detected while hidden restarts the same automation profile visibly for manual verification. Session cookies survive the transition and the next automated operation returns to headless mode. Normal automation never opens a visible blank tab.
+- The Windows 11 Studio Workbench remains `100vh`, with the existing palette, Sakuga VFX and DOM/API contracts intact. New storage/publication settings are additive and old settings files need no migration.
+
+### Tests
+
+- Added Python regression tests for deletion previews, file retention/removal, shared files and hard links, persistence/unlink errors, auto-cleanup/reload, publish pack validation, browser tab reuse, idle shutdown and captcha fallback. Frontend tests cover batch parsing/import, multi-selection and asynchronous deletion previews alongside the existing contract, Workbench and VFX tests.
+
 ## [1.7.0] - 2026-11-18
 
 ### Changed

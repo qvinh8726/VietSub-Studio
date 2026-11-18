@@ -61,19 +61,30 @@
                             <div id="source-link-panel" class="source-panel" role="tabpanel" aria-labelledby="source-link-tab">
                                 <div class="field">
                                     <label class="field-label" for="url-input"><span>Link video hoặc đoạn chia sẻ</span><small id="char-count">0 ký tự</small></label>
-                                    <textarea id="url-input" maxlength="2000" spellcheck="false" aria-describedby="url-error url-help" aria-invalid="false" placeholder="Dán link Douyin, TikTok, YouTube hoặc đoạn chia sẻ…"></textarea>
+                                    <textarea id="url-input" maxlength="2000" spellcheck="false" aria-describedby="url-error url-help batch-link-help" aria-invalid="false" placeholder="Dán nhiều link hoặc đoạn chia sẻ, mỗi video một dòng…"></textarea>
                                     <div id="url-error" class="field-error" role="alert"></div>
                                 </div>
-                                <button id="prepare-btn" class="btn-secondary source-load-btn" type="submit">Tải preview</button>
+                                <div class="source-import-actions">
+                                    <button id="prepare-btn" class="btn-secondary source-load-btn" type="submit">Tải preview</button>
+                                    <button id="batch-queue-btn" class="btn-secondary" type="button" disabled>Thêm nhiều link</button>
+                                </div>
+                                <small id="batch-link-help" class="field-help">Một link: chỉnh crop qua preview. Nhiều link: thêm tuần tự, dùng crop mặc định và tên từng video.</small>
                             </div>
                             <div id="source-local-panel" class="source-panel local-source" role="tabpanel" aria-labelledby="source-local-tab" hidden>
-                                <div class="local-source-copy">
+                                <div id="local-drop-zone" class="local-source-copy" aria-label="Thả video MP4 hoặc MKV tại đây" aria-describedby="local-batch-help">
                                     <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5" y="4" width="22" height="24" rx="3"/><path d="M5 10h22M5 22h22M11 4v6m10-6v6M11 22v6m10-6v6"/><path d="m14 13 5 3-5 3z"/></svg>
-                                    <div><strong>Video trên máy</strong><span>MP4 hoặc MKV · Dùng file tại chỗ</span></div>
+                                    <div><strong>Thả video tại đây</strong><span>Một file: preview · Nhiều file: vào hàng đợi</span></div>
                                 </div>
-                                <input id="local-video-input" class="local-file-input" type="file" accept="video/mp4,.mp4">
-                                <button id="local-video-btn" class="btn-secondary source-load-btn" type="button" title="Chọn MP4 hoặc MKV trên máy; app dùng file tại chỗ, không sao chép">Chọn video</button>
+                                <input id="local-video-input" class="local-file-input" type="file" accept="video/mp4,.mp4" multiple>
+                                <input id="local-batch-input" class="local-file-input" type="file" accept="video/mp4,video/x-matroska,.mp4,.mkv" multiple>
+                                <div class="source-import-actions">
+                                    <button id="local-video-btn" class="btn-secondary source-load-btn" type="button" title="Chọn MP4 hoặc MKV trên máy; app dùng file tại chỗ, không sao chép">Chọn video</button>
+                                    <button id="local-batch-btn" class="btn-secondary" type="button">Chọn nhiều file</button>
+                                </div>
+                                <small id="local-batch-help" class="field-help">Chọn nhiều hoặc kéo thả để tải MP4/MKV lên app lần lượt, dùng crop mặc định. Chọn một video trong cửa sổ app để dùng file tại chỗ.</small>
                             </div>
+                            <div id="batch-import-status" class="batch-import-status" role="status" aria-live="polite"></div>
+                            <ul id="batch-import-errors" class="import-errors" aria-label="Video chưa thêm được" hidden></ul>
                             <div class="field project-field">
                                 <label class="field-label" for="project-name"><span>Tên bộ file</span><small>Trống = tên video</small></label>
                                 <input id="project-name" class="text-input" maxlength="100" autocomplete="off" placeholder="Ví dụ: Review sản phẩm 21-07">
@@ -112,13 +123,27 @@
 
                 <section class="queue-card" aria-labelledby="queue-title">
                     <div class="queue-head">
-                        <div class="queue-title"><h2 id="queue-title">Hàng đợi</h2><span id="queue-count" class="queue-count">0</span></div>
+                        <div class="queue-title"><h2 id="queue-title" tabindex="-1">Hàng đợi</h2><span id="queue-count" class="queue-count">0</span></div>
                         <span class="queue-mode" title="Mỗi lần chỉ một video dùng VideOCR và bộ dịch. Video kế tiếp được tải trước trong lúc OCR và tự chạy khi video trước kết thúc."><i aria-hidden="true"></i>Tuần tự</span>
-                        <button id="clear-finished-btn" class="btn-ghost" type="button" title="Xoá các job thành công khỏi lịch sử">Dọn hoàn tất</button>
+                        <button id="clear-finished-btn" class="btn-ghost" type="button" title="Cho phép chọn cách xoá các job đã kết thúc">Dọn lịch sử</button>
                     </div>
                     <div class="queue-actions">
                         <button id="start-queue-btn" class="btn-primary" type="button" disabled>Bắt đầu xử lý</button>
                         <button id="cancel-btn" class="btn-danger" type="button" hidden>Huỷ job</button>
+                    </div>
+                    <div class="queue-bulk-tools" aria-label="Chọn và dọn hàng đợi, lịch sử">
+                        <div class="queue-selection-shortcuts">
+                            <label class="queue-select-all"><input id="queue-select-all" type="checkbox">Tất cả</label>
+                            <button id="queue-select-finished" class="btn-ghost" type="button" title="Chọn job thành công, lỗi và đã huỷ">Đã kết thúc</button>
+                            <button id="queue-select-old" class="btn-ghost" type="button" title="Chọn job đã kết thúc hơn 3 ngày trước">&gt; 3 ngày</button>
+                        </div>
+                        <div class="queue-selection-summary">
+                            <span id="queue-selection-count">0 đã chọn</span>
+                            <span id="queue-disk-badge" class="disk-badge" role="status" aria-live="polite" title="Ước lượng từ máy chủ, loại trùng file dùng chung; mặc định giữ SRT">0 B có thể dọn</span>
+                            <button id="queue-clear-selection" class="btn-ghost" type="button" disabled>Bỏ chọn</button>
+                            <button id="bulk-delete-btn" class="btn-danger" type="button" aria-haspopup="dialog" aria-controls="bulk-delete-dialog" disabled>Xoá…</button>
+                        </div>
+                        <div id="queue-bulk-status" class="batch-import-status" role="status" aria-live="polite"></div>
                     </div>
                     <div id="queue-list" class="queue-list" role="feed" aria-live="polite" aria-busy="false">
                         <div class="queue-empty"><span class="queue-empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 9h6m-6 4h6m-6 4h3"/></svg></span><strong>Hàng đợi đang trống</strong><span>Chuẩn bị preview đầu tiên để bắt đầu.</span></div>
@@ -215,6 +240,7 @@
                         <div id="res-thumbnail-row" class="result-path" hidden><b>Thumbnail</b><span id="res-thumbnail"></span></div>
                         <div class="result-path"><b>Sub OCR</b><span id="res-raw"></span></div>
                         <div class="result-path"><b>Sub Việt</b><span id="res-vi"></span></div>
+                        <div id="res-publish-row" class="result-path" hidden><b>Publish pack</b><span id="res-publish"></span></div>
                         <button id="open-result-btn" class="btn-secondary" type="button">Mở thư mục</button>
                     </div>
                     <p class="result-empty">Bộ file video và phụ đề sẽ xuất hiện ở đây khi job hoàn tất.</p>
@@ -286,6 +312,18 @@
                         <div class="path-picker"><input id="setting-output" class="text-input" placeholder="Để trống = Documents\VietSub Studio"><button id="choose-output-btn" class="btn-secondary" type="button">Chọn thư mục…</button></div>
                         <small id="output-help">Mỗi tên project sẽ có một folder riêng chứa video, sub gốc, sub Việt, thumbnail và metadata.</small>
                     </div>
+                    <div class="setting-field">
+                        <label class="toggle-setting" for="setting-auto-delete-source-video">
+                            <input id="setting-auto-delete-source-video" type="checkbox" aria-describedby="auto-delete-source-help">
+                            <span><strong>Tự dọn video nguồn sau khi dịch thành công</strong><small id="auto-delete-source-help">Mặc định tắt. Sau khi dịch thành công, xoá video nguồn và các bản video của job, kể cả file gốc chọn trên máy. Giữ phụ đề SRT; việc xoá video không thể hoàn tác.</small></span>
+                        </label>
+                    </div>
+                    <div class="setting-field">
+                        <label class="toggle-setting" for="setting-generate-publish-metadata">
+                            <input id="setting-generate-publish-metadata" type="checkbox" aria-describedby="publish-metadata-help">
+                            <span><strong>Tạo metadata đăng video</strong><small id="publish-metadata-help">Mặc định tắt. Tạo thêm nội dung đăng video sau khi dịch thành công; có thể mất thêm thời gian dịch.</small></span>
+                        </label>
+                    </div>
                     <div id="browser-settings" class="setting-field">
                         <label for="setting-browser-kind">Trình duyệt tự động hoá</label>
                         <select id="setting-browser-kind" class="select-input">
@@ -353,6 +391,25 @@
             </div>
         </div>
     </section>
+
+    <dialog id="bulk-delete-dialog" class="cleanup-dialog" aria-labelledby="bulk-delete-title" aria-describedby="bulk-delete-description">
+        <h2 id="bulk-delete-title">Dọn hàng đợi &amp; lịch sử</h2>
+        <p id="bulk-delete-count">0 job đã chọn</p>
+        <p id="bulk-delete-description">Chọn phạm vi xoá. Job đang chạy không thể chọn. Xoá file không thể hoàn tác.</p>
+        <fieldset class="cleanup-options">
+            <legend>Phạm vi xoá</legend>
+            <label class="toggle-setting"><input id="bulk-delete-records" type="radio" name="bulk-delete-mode" value="records" checked><span><strong>Chỉ xoá bản ghi</strong><small>Gỡ khỏi hàng đợi / lịch sử. Giữ nguyên video, file tạm và phụ đề.</small></span></label>
+            <label class="toggle-setting"><input id="bulk-delete-files" type="radio" name="bulk-delete-mode" value="files"><span><strong>Xoá bản ghi và video / file tạm</strong><small>Xoá video nguồn, video project và file tạm của job, kể cả file gốc chọn trên máy. File còn được job khác dùng sẽ được giữ.</small></span></label>
+            <label class="toggle-setting"><input id="bulk-keep-srt" type="checkbox" checked><span><strong>Giữ phụ đề SRT</strong><small>Giữ cả sub gốc và sub Việt. Bỏ chọn để xoá cả phụ đề.</small></span></label>
+        </fieldset>
+        <p id="bulk-delete-estimate" class="cleanup-estimate" role="status" aria-live="polite">Đang tính…</p>
+        <ul id="bulk-delete-failures" class="import-errors" aria-label="Job chưa thể xoá" hidden></ul>
+        <button id="bulk-estimate-retry" class="btn-secondary" type="button" hidden>Kiểm tra lại</button>
+        <div class="cleanup-actions">
+            <button id="bulk-delete-cancel" class="btn-secondary" type="button" autofocus>Giữ lại</button>
+            <button id="bulk-delete-confirm" class="btn-danger" type="button" disabled>Xoá bản ghi</button>
+        </div>
+    </dialog>
 
     <div id="connection-banner" class="connection-banner" role="alert" hidden>Mất kết nối tới máy chủ cục bộ của VietSub Studio. App đang tự thử kết nối lại…</div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
