@@ -5,6 +5,9 @@ node_modules/
 .next/
 out/
 
+# TypeScript incremental build state (npm run typecheck)
+*.tsbuildinfo
+
 # Local environment files
 .env*
 !.env.example

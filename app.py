@@ -23,11 +23,12 @@ import zipfile
 from collections import deque
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread, current_thread, local
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
+from vietsub.sources import browser as browser_source
 from vietsub.sources import browser_capture
 from vietsub.sources import cookies as cookie_utils
 from vietsub.sources import douyin as douyin_source
@@ -89,9 +90,11 @@ DOUZY_DB = os.path.join(APPDATA, "douyin-downloader-desktop", "dy_downloader.db"
 VIDEOCR_CLI = r"C:\Program Files\VideOCR\videocr-cli.exe"
 VIDEOCR_CONFIG = os.path.join(APPDATA, "VideOCR", "videocr_gui_config.ini")
 
+# Profile of the v1.6.0 Edge automation browser; only used to recognize (and close) it.
 USER_DATA_DIR_DEBUG = os.path.join(LOCALAPPDATA, "Microsoft", "Edge", "User Data Debug")
-EDGE_DEBUG_PORT = 9222
-EDGE_OWNER_CACHE_SECONDS = 10 * 60
+BROWSER_DEBUG_PORT = browser_source.DEBUG_PORT
+BROWSER_OWNER_CACHE_SECONDS = 10 * 60
+BROWSER_COLD_START_POLLS = round(browser_source.COLD_START_SECONDS / browser_source.POLL_SECONDS)
 # VIETSUB_STUDIO_CONFIG_DIR lets tests and portable setups keep settings, queue,
 # managed videos, logs and the instance lock in an explicit directory.
 CONFIG_DIR_OVERRIDE = os.environ.get("VIETSUB_STUDIO_CONFIG_DIR", "").strip()
@@ -178,15 +181,14 @@ ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
 # Files picked in the native dialog are used in place, so MKV works there too.
 LOCAL_VIDEO_FILE_TYPES = ("Video (*.mp4;*.mkv)", "Tất cả file (*.*)")
 COOKIE_FILE_TYPES = ("Cookies (*.txt)", "Tất cả file (*.*)")
+BROWSER_FILE_TYPES = ("Trình duyệt (*.exe)",)
 DOWNLOAD_SOURCE_TYPES = source_registry.DOWNLOADABLE_SOURCE_TYPES
 WEB_SOURCE_TYPES = frozenset(web_source.WEB_SITES)
 SOURCE_LABELS = source_registry.SITE_LABELS
 DOUYIN_HOME_URL = "https://www.douyin.com/"
-DOUYIN_CAPTCHA_NOTICE = douyin_source.CAPTCHA_NOTICE
-BROWSER_ATTENTION_NOTICE = browser_capture.ATTENTION_NOTICE
-# Platforms whose login session lives in the dedicated Edge profile (Settings shows them).
+# Platforms whose login session lives in the automation browser's profile (Settings shows them).
 SESSION_SITES = session_sites.SESSION_SITES
-# Edge cookies are handed to yt-dlp for these sites only. YouTube is left out on
+# The browser's cookies are handed to yt-dlp for these sites only. YouTube is left out on
 # purpose: yt-dlp warns that using account cookies can get a Google account flagged,
 # and the debug profile is usually signed in to the user's Gemini account.
 SOURCE_COOKIE_URLS = {
@@ -201,7 +203,8 @@ WEB_DOWNLOAD_STRATEGY = {
     "xiaohongshu": ("ytdlp", "browser"),
     "kuaishou": ("browser",),  # yt-dlp has no Kuaishou extractor
 }
-EDGE_SOURCE_TYPES = frozenset({"douyin", "kuaishou"})
+# Sources whose main download method opens a page in the automation browser.
+BROWSER_SOURCE_TYPES = frozenset({"douyin", "kuaishou"})
 YTDLP_SOURCE_TYPES = frozenset(
     site for site, tiers in WEB_DOWNLOAD_STRATEGY.items() if tiers[0] == "ytdlp"
 )
@@ -213,7 +216,7 @@ JS_RUNTIME_CACHE_SECONDS = 10 * 60
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -271,8 +274,10 @@ update_install_lock = Lock()
 operation_admission_lock = Lock()
 shutdown_event = Event()
 update_cache = {"checked_at": 0.0, "status": None}
-edge_status_lock = Lock()
-edge_status_cache = {}
+browser_status_lock = Lock()
+browser_status_cache = {}
+# One automation browser launch at a time, so two requests never open two windows or tabs.
+browser_launch_lock = Lock()
 config_write_lock = Lock()
 log_file_lock = Lock()
 # Per-thread workflow context: the prefetch thread runs download helpers with its own
@@ -297,7 +302,19 @@ class VideoDownloadError(RuntimeError):
 
 
 class EdgeLoginRequired(RuntimeError):
-    pass
+    """Gemini Notebook needs the user to sign in to Google in the automation browser."""
+
+
+class BrowserStartError(RuntimeError):
+    """The automation browser could not be started or reached; the message says why."""
+
+
+class SourceLoginRequired(VideoDownloadError):
+    """The platform only shows this video to signed-in users."""
+
+
+class PostHasNoVideo(VideoDownloadError):
+    """The post is a photo set; no other download method can find a video."""
 
 
 class QueuePersistenceError(OSError):
@@ -1169,6 +1186,8 @@ def load_app_config(strict=False):
         "output_dir": "",
         "crop_coords": None,
         "edge_background": True,
+        "browser_kind": browser_source.DEFAULT_KIND,
+        "browser_path": "",
         "desktop_shortcut_initialized": False,
         "source_cookies_protected": {},
         "cookies_file": "",
@@ -1640,35 +1659,79 @@ def log_to_app(msg, log_type="system", *, durable=True):
             del progress_status["logs"][:overflow]
             progress_status["log_base_index"] += overflow
 
-def get_edge_debug_port():
-    return EDGE_DEBUG_PORT
+def get_browser_debug_port():
+    return BROWSER_DEBUG_PORT
 
 
-def edge_debug_url(path=""):
-    return f"http://127.0.0.1:{get_edge_debug_port()}{path}"
+def browser_debug_url(path=""):
+    return f"http://127.0.0.1:{get_browser_debug_port()}{path}"
 
 
-def is_valid_edge_debug_payload(payload):
-    if not isinstance(payload, dict):
-        return False
-    browser = str(payload.get("Browser") or "").lower()
-    websocket_url = str(payload.get("webSocketDebuggerUrl") or "")
+def get_browser_kind(config=None):
+    config = load_app_config() if config is None else config
     try:
-        parsed_websocket = urlparse(websocket_url)
-        websocket_port = parsed_websocket.port
+        return browser_source.validate_kind(config.get("browser_kind"))
     except ValueError:
-        return False
+        return browser_source.DEFAULT_KIND
+
+
+def browser_label(kind=None, *, short=False):
+    labels = browser_source.SHORT_LABELS if short else browser_source.LABELS
+    return labels[kind or get_browser_kind()]
+
+
+def browser_profile_dir(kind=None):
+    """Profile folder of the automation browser: one per browser kind, inside CONFIG_DIR."""
+    return browser_source.profile_dir(CONFIG_DIR, kind or get_browser_kind())
+
+
+def resolve_chrome_executable():
+    # PATH is searched last and only in absolute directories, never the current folder.
+    return browser_source.find_chrome(path_lookup=resolve_path_executable)
+
+
+def resolve_browser_executable(config=None):
+    """Executable of the selected automation browser, or "" when it is not installed."""
+    config = load_app_config() if config is None else config
+    kind = get_browser_kind(config)
+    if kind == "edge":
+        return resolve_edge_executable()
+    if kind == "custom":
+        try:
+            return browser_source.validate_custom_executable(config.get("browser_path") or "")
+        except ValueError:
+            return ""
+    return resolve_chrome_executable()
+
+
+def missing_browser_message(kind):
+    if kind == "custom":
+        return "Chưa chọn file .exe hợp lệ cho trình duyệt tuỳ chọn trong Thiết lập."
+    other = "Microsoft Edge" if kind == "chrome" else "Google Chrome"
     return (
-        (browser.startswith("edg/") or browser.startswith("edge/"))
-        and parsed_websocket.scheme == "ws"
-        and parsed_websocket.hostname == "127.0.0.1"
-        and websocket_port == get_edge_debug_port()
-        and parsed_websocket.username is None
-        and parsed_websocket.password is None
-        and not parsed_websocket.query
-        and not parsed_websocket.fragment
-        and re.fullmatch(r"/devtools/browser/[^/]+", parsed_websocket.path) is not None
+        f"Không tìm thấy {browser_label(kind)} trên máy. Hãy cài {browser_label(kind)} hoặc chọn {other} "
+        "hay một file .exe khác ở mục Trình duyệt tự động hoá trong Thiết lập."
     )
+
+
+def is_valid_browser_debug_payload(payload, kind=None):
+    return browser_source.is_valid_debug_payload(payload, kind, get_browser_debug_port())
+
+
+# The debug endpoint is on this machine: never send it through a system or VPN proxy.
+LOCAL_URL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def read_debug_payload():
+    """The /json/version answer on the debug port, or None when nothing answers."""
+    if not debug_port_listening():
+        return None
+    try:
+        with LOCAL_URL_OPENER.open(browser_debug_url("/json/version"), timeout=1.5) as response:
+            payload = json.load(response)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def split_windows_command_line(command_line):
@@ -1692,120 +1755,218 @@ def split_windows_command_line(command_line):
         local_free(ctypes.cast(arguments, ctypes.c_void_p))
 
 
-def edge_command_line_uses_profile(command_line):
-    profile_values = []
+def command_line_profile(command_line):
+    """The single --user-data-dir of a browser command line, or "" (none, empty or several)."""
+    values = []
     arguments = split_windows_command_line(command_line)
     index = 1
     while index < len(arguments):
-        argument = arguments[index]
-        lowered = argument.lower()
+        lowered = arguments[index].lower()
         if lowered == "--user-data-dir":
             if index + 1 >= len(arguments):
-                return False
-            profile_values.append(arguments[index + 1])
+                return ""
+            values.append(arguments[index + 1])
             index += 2
             continue
         if lowered.startswith("--user-data-dir="):
-            profile_values.append(argument.split("=", 1)[1])
+            values.append(arguments[index].split("=", 1)[1])
         index += 1
-    if len(profile_values) != 1 or not profile_values[0]:
+    if len(values) != 1 or not values[0]:
+        return ""
+    return os.path.abspath(os.path.normpath(values[0]))
+
+
+def same_path(left, right):
+    if not left or not right:
         return False
-    actual_profile = os.path.abspath(os.path.normpath(profile_values[0]))
-    expected_profile = os.path.abspath(os.path.normpath(USER_DATA_DIR_DEBUG))
-    return os.path.normcase(actual_profile) == os.path.normcase(expected_profile)
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
 
-def edge_debug_owner_uses_profile():
+def browser_command_line_uses_profile(command_line, expected_profile):
+    return same_path(command_line_profile(command_line), expected_profile)
+
+
+def browser_owner_matches(owner, executable, profile):
+    """True when the process owning the debug port is this browser with this profile."""
+    if not isinstance(owner, dict) or not executable:
+        return False
+    return (
+        str(owner.get("name") or "").lower() == os.path.basename(executable).lower()
+        and same_path(str(owner.get("path") or ""), executable)
+        and browser_command_line_uses_profile(owner.get("command_line"), profile)
+    )
+
+
+def native_listening_pid(port):
+    """PID listening on 127.0.0.1:port (or 0.0.0.0:port) from the Windows TCP table, else None."""
+    import ctypes
+    from ctypes import wintypes
+
+    class TcpRow(ctypes.Structure):
+        _fields_ = [(name, wintypes.DWORD) for name in (
+            "state", "local_addr", "local_port", "remote_addr", "remote_port", "pid")]
+
+    iphlpapi = ctypes.WinDLL("iphlpapi")
+    for _ in range(3):
+        size = wintypes.DWORD(0)
+        # AF_INET (2) and TCP_TABLE_OWNER_PID_LISTENER (3).
+        iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size), False, 2, 3, 0)
+        table = ctypes.create_string_buffer(max(size.value, 4) + 1024)
+        size.value = len(table)
+        result = iphlpapi.GetExtendedTcpTable(table, ctypes.byref(size), False, 2, 3, 0)
+        if result == 0:
+            break
+        # ERROR_INSUFFICIENT_BUFFER (122): the table grew between the two calls.
+        if result != 122:
+            raise OSError(f"GetExtendedTcpTable failed ({result})")
+    else:
+        raise OSError("GetExtendedTcpTable failed")
+    count = wintypes.DWORD.from_buffer(table).value
+    rows = ctypes.cast(ctypes.addressof(table) + ctypes.sizeof(wintypes.DWORD), ctypes.POINTER(TcpRow))
+    return next(
+        (
+            rows[index].pid for index in range(count)
+            if ((rows[index].local_port & 0xFF) << 8 | (rows[index].local_port >> 8) & 0xFF) == port
+            and rows[index].local_addr in (0x0100007F, 0)
+        ),
+        None,
+    )
+
+
+def debug_port_listening():
+    """False only when the Windows TCP table shows no listener on the debug port.
+
+    A refused connection to 127.0.0.1 takes about 2 s on Windows (it retries the SYN), so
+    status checks and cold-start polling read the TCP table first (about 1 ms).
+    """
     if os.name != "nt":
-        return False
-    debug_port = get_edge_debug_port()
-    powershell_script = (
+        return True
+    try:
+        return native_listening_pid(get_browser_debug_port()) is not None
+    except Exception:
+        return True
+
+
+def native_debug_port_owner(port):
+    """Process that listens on 127.0.0.1:port, read with the Windows API (about 2 ms)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [("length", wintypes.USHORT), ("maximum", wintypes.USHORT), ("buffer", ctypes.c_void_p)]
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    ntdll = ctypes.WinDLL("ntdll")
+    pid = native_listening_pid(port)
+    if pid is None:
+        return None
+    # PROCESS_QUERY_LIMITED_INFORMATION is enough for a process of the same user.
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return {"pid": pid, "name": "", "path": "", "command_line": ""}
+    try:
+        path_buffer = ctypes.create_unicode_buffer(32768)
+        path_length = wintypes.DWORD(len(path_buffer))
+        kernel32.QueryFullProcessImageNameW(handle, 0, path_buffer, ctypes.byref(path_length))
+        needed = wintypes.ULONG(0)
+        # ProcessCommandLineInformation (60), Windows 8.1 and later.
+        ntdll.NtQueryInformationProcess(handle, 60, None, 0, ctypes.byref(needed))
+        command_line = ""
+        if needed.value:
+            buffer = ctypes.create_string_buffer(needed.value)
+            if ntdll.NtQueryInformationProcess(handle, 60, buffer, needed, ctypes.byref(needed)) == 0:
+                text = UnicodeString.from_buffer(buffer)
+                command_line = ctypes.wstring_at(text.buffer, text.length // 2) if text.buffer else ""
+    finally:
+        kernel32.CloseHandle(handle)
+    path = path_buffer.value
+    return {"pid": pid, "name": os.path.basename(path), "path": path, "command_line": command_line}
+
+
+def powershell_debug_port_owner(port):
+    script = (
         f"$connection = Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 "
-        f"-LocalPort {debug_port} -ErrorAction SilentlyContinue | Select-Object -First 1; "
+        f"-LocalPort {int(port)} -ErrorAction SilentlyContinue | Select-Object -First 1; "
         "if (-not $connection) { exit 1 }; "
         "$process = Get-CimInstance Win32_Process -Filter "
         "(\"ProcessId=\" + $connection.OwningProcess) -ErrorAction SilentlyContinue; "
         "if (-not $process.CommandLine) { exit 1 }; "
-        "[PSCustomObject]@{ Name = $process.Name; ExecutablePath = $process.ExecutablePath; "
-        "CommandLine = $process.CommandLine } | ConvertTo-Json -Compress"
+        "[PSCustomObject]@{ ProcessId = $process.ProcessId; Name = $process.Name; "
+        "ExecutablePath = $process.ExecutablePath; CommandLine = $process.CommandLine } | ConvertTo-Json -Compress"
     )
     try:
         completed = subprocess.run(
-            [
-                POWERSHELL_EXE,
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                powershell_script,
-            ],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=5,
+            [POWERSHELL_EXE, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, errors="replace", timeout=8,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         metadata = json.loads(completed.stdout or "")
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return False
-    if not isinstance(metadata, dict):
-        return False
-    expected_executable = resolve_edge_executable()
-    if not expected_executable:
-        return False
-    expected_executable = os.path.abspath(expected_executable)
-    actual_executable = os.path.abspath(str(metadata.get("ExecutablePath") or ""))
-    return (
-        completed.returncode == 0
-        and str(metadata.get("Name") or "").lower() == "msedge.exe"
-        and os.path.normcase(actual_executable) == os.path.normcase(expected_executable)
-        and edge_command_line_uses_profile(metadata.get("CommandLine"))
+        return None
+    if completed.returncode != 0 or not isinstance(metadata, dict):
+        return None
+    return {
+        "pid": int(metadata.get("ProcessId") or 0),
+        "name": str(metadata.get("Name") or ""),
+        "path": str(metadata.get("ExecutablePath") or ""),
+        "command_line": str(metadata.get("CommandLine") or ""),
+    }
+
+
+def get_debug_port_owner():
+    """{"pid", "name", "path", "command_line"} of the debug port's owner, or None."""
+    if os.name != "nt":
+        return None
+    port = get_browser_debug_port()
+    try:
+        return native_debug_port_owner(port)
+    except Exception:
+        # PowerShell and WMI are slower (about 1 s) but work where the Windows API call fails.
+        return powershell_debug_port_owner(port)
+
+
+def browser_debug_owner_uses_profile(config=None):
+    config = load_app_config() if config is None else config
+    kind = get_browser_kind(config)
+    return browser_owner_matches(
+        get_debug_port_owner(), resolve_browser_executable(config), browser_profile_dir(kind)
     )
 
 
-def reset_edge_status_cache():
-    with edge_status_lock:
-        edge_status_cache.clear()
+def reset_browser_status_cache():
+    with browser_status_lock:
+        browser_status_cache.clear()
 
 
-def check_edge_status(fresh=False):
-    """Return True when the dedicated Edge profile owns the CDP port.
+def check_browser_status(fresh=False):
+    """True when the selected browser, started with the app's own profile, owns the debug port.
 
-    The owner check starts PowerShell and WMI (1-2.5 s), so UI polling reuses the
-    result while the same browser session (webSocketDebuggerUrl) keeps answering.
-    Automation passes fresh=True and always re-verifies the owner.
+    Status polling from the UI reuses the owner check while the same browser session
+    (webSocketDebuggerUrl) keeps answering; automation passes fresh=True.
     """
-    try:
-        req = urllib.request.Request(edge_debug_url("/json/version"))
-        with urllib.request.urlopen(req, timeout=1.5) as response:
-            payload = json.load(response)
-    except Exception:
-        reset_edge_status_cache()
+    payload = read_debug_payload()
+    kind = get_browser_kind()
+    if not is_valid_browser_debug_payload(payload, kind):
+        reset_browser_status_cache()
         return False
-    if not is_valid_edge_debug_payload(payload):
-        reset_edge_status_cache()
-        return False
-    session_key = str(payload.get("webSocketDebuggerUrl") or "")
+    session_key = f"{kind}|{payload.get('webSocketDebuggerUrl')}"
     now = time.monotonic()
-    with edge_status_lock:
-        cached = dict(edge_status_cache)
+    with browser_status_lock:
+        cached = dict(browser_status_cache)
     if (
         not fresh
         and cached.get("session_key") == session_key
-        and now - float(cached.get("checked_at") or 0.0) < EDGE_OWNER_CACHE_SECONDS
+        and now - float(cached.get("checked_at") or 0.0) < BROWSER_OWNER_CACHE_SECONDS
     ):
         return bool(cached.get("owner_ok"))
     try:
-        owner_ok = bool(edge_debug_owner_uses_profile())
+        owner_ok = bool(browser_debug_owner_uses_profile())
     except Exception:
         owner_ok = False
-    with edge_status_lock:
-        edge_status_cache.update({
-            "session_key": session_key,
-            "owner_ok": owner_ok,
-            "checked_at": now,
-        })
+    with browser_status_lock:
+        browser_status_cache.update({"session_key": session_key, "owner_ok": owner_ok, "checked_at": now})
     return owner_ok
+
 
 def edge_executable_candidates():
     candidates = [
@@ -1830,55 +1991,133 @@ def resolve_edge_executable():
     )
 
 
-def ensure_edge_running(notebook_url, background=None):
+def browser_profile_in_use(profile):
+    """True while a browser runs with this profile: Chromium keeps its lockfile open."""
+    lock_path = os.path.join(profile, "lockfile")
+    if not os.path.exists(lock_path):
+        return False
+    try:
+        with open(lock_path, "rb"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def is_app_browser_profile(profile):
+    """A profile this app created: one per browser kind, plus the v1.6.0 Edge profile."""
+    managed = [browser_source.profile_dir(CONFIG_DIR, kind) for kind in browser_source.KINDS]
+    return any(same_path(profile, item) for item in managed + [USER_DATA_DIR_DEBUG])
+
+
+def close_debug_browser(owner):
+    """Close an earlier automation browser of this app that still holds the debug port."""
+    pid = int(owner.get("pid") or 0)
+    if pid > 0:
+        subprocess.run(
+            [TASKKILL_EXE, "/PID", str(pid), "/T", "/F"],
+            capture_output=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+
+def wait_for_debug_port(accept, polls):
+    """Poll /json/version every POLL_SECONDS until accept(payload) is true.
+
+    False after polls tries or polls * POLL_SECONDS of wall time, whichever comes first,
+    so slow answers can never stretch the wait past its limit.
+    """
+    polls = int(polls)
+    deadline = time.monotonic() + polls * browser_source.POLL_SECONDS
+    for attempt in range(polls):
+        check_cancel_requested()
+        if accept(read_debug_payload()):
+            return True
+        if attempt + 1 >= polls or time.monotonic() >= deadline:
+            break
+        time.sleep(browser_source.POLL_SECONDS)
+    return False
+
+
+def minimize_browser_window():
+    try:
+        with get_sync_playwright()() as playwright:
+            browser = playwright.chromium.connect_over_cdp(browser_debug_url())
+            context = browser.contexts[0] if browser.contexts else None
+            if context and context.pages:
+                set_browser_window_visibility(context, context.pages[0], False)
+    except Exception:
+        pass
+
+
+def make_room_on_debug_port(label, port):
+    """Close an older automation browser of this app on the port; refuse anything else."""
+    owner = get_debug_port_owner()
+    profile = command_line_profile((owner or {}).get("command_line"))
+    if owner and profile and is_app_browser_profile(profile):
+        log_to_app(f"Đóng trình duyệt tự động hoá cũ ({owner.get('name') or 'không rõ'}) đang giữ cổng {port}...")
+        close_debug_browser(owner)
+        if wait_for_debug_port(lambda payload: payload is None, round(5 / browser_source.POLL_SECONDS)):
+            return
+        raise BrowserStartError(f"Không đóng được trình duyệt tự động hoá cũ đang giữ cổng {port}.")
+    name = (owner or {}).get("name") or "một chương trình khác"
+    raise BrowserStartError(
+        f"Cổng điều khiển {port} đang được {name} dùng, nên app chưa mở được {label}. "
+        f"Hãy đóng chương trình đó (hoặc tắt chế độ remote debugging của nó) rồi thử lại."
+    )
+
+
+def ensure_browser_running(background=None, config=None):
+    """Start the automation browser when needed; True once the app's own browser owns the port.
+
+    Only Gemini Notebook, a download that needs a page, or a login button call this, so
+    opening the app never starts a browser. The lock serializes launches: two requests at
+    once start one browser and never open an extra tab. Raises BrowserStartError with
+    the reason when the browser cannot be used.
+    """
     check_cancel_requested()
-    if check_edge_status(fresh=True):
-        log_to_app("Trình duyệt Edge debug đang mở sẵn.")
+    config = load_app_config() if config is None else config
+    kind = get_browser_kind(config)
+    label = browser_label(kind)
+    port = get_browser_debug_port()
+    with browser_launch_lock:
+        if check_browser_status(fresh=True):
+            return True
+        if read_debug_payload() is not None:
+            make_room_on_debug_port(label, port)
+        executable = resolve_browser_executable(config)
+        if not executable:
+            raise BrowserStartError(missing_browser_message(kind))
+        profile = browser_profile_dir(kind)
+        if browser_profile_in_use(profile):
+            raise BrowserStartError(
+                f"{label} của VietSub Studio đang mở nhưng chưa bật cổng điều khiển {port}. "
+                f"Hãy đóng cửa sổ {label} đó rồi thử lại."
+            )
+        if background is None:
+            background = bool(config.get("edge_background", True))
+        os.makedirs(profile, exist_ok=True)
+        log_to_app(f"Đang mở {label} với profile riêng của app: {profile}")
+        subprocess.Popen(
+            browser_source.launch_command(executable, profile, port=port, background=background),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            close_fds=True,
+        )
+        if not wait_for_debug_port(lambda payload: is_valid_browser_debug_payload(payload, kind),
+                                   BROWSER_COLD_START_POLLS):
+            raise BrowserStartError(
+                f"{label} đã mở nhưng cổng điều khiển {port} không phản hồi sau "
+                f"{browser_source.COLD_START_SECONDS} giây. Hãy đóng cửa sổ {label} của app rồi thử lại."
+            )
+        if not check_browser_status(fresh=True):
+            raise BrowserStartError(f"Cổng {port} đã phản hồi nhưng không thuộc {label} của VietSub Studio.")
+        if background:
+            minimize_browser_window()
+        log_to_app(f"Đã mở {label} và kết nối cổng điều khiển {port}.")
         return True
 
-    if background is None:
-        background = bool(load_app_config().get("edge_background", True))
 
-    log_to_app("Trình duyệt Edge debug chưa mở. Đang tự động kích hoạt...")
-    edge_bin = resolve_edge_executable()
-    if not edge_bin:
-        log_to_app("Không tìm thấy msedge.exe ở vị trí tin cậy.", "error")
-        return False
-
-    debug_port = get_edge_debug_port()
-    cmd = [
-        edge_bin,
-        f"--remote-debugging-port={debug_port}",
-        "--remote-debugging-address=127.0.0.1",
-        f"--user-data-dir={USER_DATA_DIR_DEBUG}",
-    ]
-    if background:
-        cmd.extend([
-            "--start-minimized",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-        ])
-    cmd.append(notebook_url)
-    try:
-        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        subprocess.Popen(cmd, creationflags=creation_flags)
-        # Wait for port to bind
-        for _ in range(40):
-            check_cancel_requested()
-            time.sleep(0.25)
-            if check_edge_status(fresh=True):
-                log_to_app("Kích hoạt Edge thành công và đã kết nối cổng debug.")
-                return True
-        raise RuntimeError(f"Trình duyệt đã bật nhưng cổng debug {debug_port} không phản hồi.")
-    except WorkflowCancelled:
-        raise
-    except Exception as e:
-        log_to_app(f"Lỗi kích hoạt Edge tự động: {e}", "error")
-        return False
-
-
-def set_edge_window_visibility(context, page, visible):
+def set_browser_window_visibility(context, page, visible):
     try:
         session = context.new_cdp_session(page)
         window_id = session.send("Browser.getWindowForTarget")["windowId"]
@@ -1904,6 +2143,20 @@ def set_edge_window_visibility(context, page, visible):
         return True
     except Exception:
         return False
+
+
+BLANK_PAGE_URLS = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/", "edge://newtab/")
+
+
+def reuse_blank_page(context):
+    """The browser's empty start tab when there is one, else a new tab (so no stray blank tabs)."""
+    for page in context.pages:
+        try:
+            if (page.url or "") in BLANK_PAGE_URLS:
+                return page
+        except Exception:
+            continue
+    return context.new_page()
 
 
 GEMINI_INPUT_SELECTORS = (
@@ -1964,21 +2217,26 @@ def get_sync_playwright():
     return sync_playwright
 
 
+def browser_context(playwright):
+    """The persistent context of the automation browser (its own profile)."""
+    browser = playwright.chromium.connect_over_cdp(browser_debug_url())
+    if not browser.contexts:
+        raise BrowserStartError(f"Không tìm thấy profile {browser_label()} của app đang hoạt động.")
+    return browser.contexts[0]
+
+
 def show_edge_for_login(notebook_url):
+    """Show Gemini Notebook in the automation browser so the user can sign in to Google."""
     notebook_url = validate_notebook_url(notebook_url)
-    if not ensure_edge_running(notebook_url, background=False):
-        raise RuntimeError("Không thể mở Edge để đăng nhập.")
+    ensure_browser_running(background=False)
     with get_sync_playwright()() as playwright:
-        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
-        if not browser.contexts:
-            raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
-        context = browser.contexts[0]
+        context = browser_context(playwright)
         notebook_id = urlparse(notebook_url).path.rstrip("/").rsplit("/", 1)[-1]
         page = next((item for item in context.pages if notebook_id in item.url), None)
         if page is None:
-            page = context.new_page()
+            page = reuse_blank_page(context)
             page.goto(notebook_url)
-        if not set_edge_window_visibility(context, page, True):
+        if not set_browser_window_visibility(context, page, True):
             page.bring_to_front()
     return True
 
@@ -3415,23 +3673,20 @@ def run_videocr(
     log_to_app(f"Quét phụ đề thành công: {output_srt}")
     return output_srt
 
-def resolve_url_via_edge(short_url, notebook_url):
+def resolve_url_via_browser(short_url, notebook_url=""):
+    """Follow a share link in the automation browser when the HTTP resolution failed."""
     check_cancel_requested()
-    # API translation does not require a Notebook URL; Edge is only used here
-    # to follow Douyin's browser redirect for short share links.
-    startup_url = notebook_url or short_url
-    if not ensure_edge_running(startup_url):
-        log_to_app("Không kết nối được Edge để giải mã URL.", "error")
+    label = browser_label(short=True)
+    try:
+        ensure_browser_running()
+    except BrowserStartError as error:
+        log_to_app(f"Không mở được {label} để giải mã link share: {error}", "error")
         return None
 
-    log_to_app(f"Giải mã URL di động bằng Edge: {short_url}")
+    log_to_app(f"Giải mã link share bằng {label}: {short_url}")
     try:
         with get_sync_playwright()() as p:
-            browser = p.chromium.connect_over_cdp(edge_debug_url())
-            contexts = browser.contexts
-            if not contexts:
-                raise RuntimeError("Không tìm thấy Context trình duyệt.")
-            context = contexts[0]
+            context = browser_context(p)
             page = context.new_page()
             try:
                 page.goto(short_url, wait_until="commit", timeout=15000)
@@ -3450,7 +3705,7 @@ def resolve_url_via_edge(short_url, notebook_url):
     except WorkflowCancelled:
         raise
     except Exception as e:
-        log_to_app(f"Lỗi giải mã URL qua Edge: {e}", "error")
+        log_to_app(f"Lỗi giải mã link share qua {label}: {e}", "error")
         return None
 
 SRT_TIMECODE_PATTERN = re.compile(
@@ -4624,24 +4879,21 @@ def translate_srt_via_gemini_edge(
 
     notebook_url = validate_notebook_url(notebook_url)
     edge_background = bool(load_app_config().get("edge_background", True))
-    if not ensure_edge_running(notebook_url):
-        raise RuntimeError("Trình duyệt Microsoft Edge chưa được chạy ở chế độ debug.")
+    ensure_browser_running()
+    label = browser_label(short=True)
 
-    log_to_app("Kết nối Playwright vào Edge để thực hiện dịch phụ đề...")
+    log_to_app(f"Kết nối Playwright vào {label} để thực hiện dịch phụ đề...")
     with get_sync_playwright()() as p:
-        browser = p.chromium.connect_over_cdp(edge_debug_url())
-        contexts = browser.contexts
-        if not contexts:
-            raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
-        context = contexts[0]
+        context = browser_context(p)
         notebook_id = urlparse(notebook_url).path.rstrip("/").rsplit("/", 1)[-1]
         gemini_page = next(
             (page for page in context.pages if notebook_id in page.url),
             None,
         )
         if not gemini_page:
-            log_to_app(f"Notebook chưa mở. Đang tự động mở tab mới tới: {notebook_url}...")
-            gemini_page = context.new_page()
+            log_to_app(f"Notebook chưa mở. Đang mở Notebook trong {label}: {notebook_url}...")
+            # The browser starts on one blank tab; reuse it so Notebook never gets a twin tab.
+            gemini_page = reuse_blank_page(context)
             gemini_page.goto(notebook_url)
             gemini_page.wait_for_timeout(5000)
 
@@ -4649,19 +4901,19 @@ def translate_srt_via_gemini_edge(
         log_to_app("Đang chờ giao diện Notebook sẵn sàng...")
         prompt_input = wait_for_gemini_prompt(gemini_page)
         if prompt_input is None and edge_page_needs_login(gemini_page):
-            set_edge_window_visibility(context, gemini_page, True)
+            set_browser_window_visibility(context, gemini_page, True)
             raise EdgeLoginRequired(
-                "Phiên Google đã hết hạn. Edge đã được mở để đăng nhập; đăng nhập xong hãy bấm Chạy lại."
+                f"Phiên Google đã hết hạn. {label} đã được mở để đăng nhập; đăng nhập xong hãy bấm Chạy lại."
             )
         if prompt_input is None:
             if edge_background:
-                set_edge_window_visibility(context, gemini_page, True)
+                set_browser_window_visibility(context, gemini_page, True)
                 raise EdgeLoginRequired(
-                    "App chưa tìm thấy khung chat của Notebook khi Edge chạy ẩn. "
-                    "Edge đã được mở để kiểm tra; khi khung chat hiện ra hãy bấm Chạy lại."
+                    f"App chưa tìm thấy khung chat của Notebook khi {label} chạy ẩn. "
+                    f"{label} đã được mở để kiểm tra; khi khung chat hiện ra hãy bấm Chạy lại."
                 )
             raise RuntimeError("Không tìm thấy khung nhập liệu chat của Gemini.")
-        set_edge_window_visibility(context, gemini_page, not edge_background)
+        set_browser_window_visibility(context, gemini_page, not edge_background)
 
         response_selectors = [
             "message-content",
@@ -4697,7 +4949,7 @@ def translate_srt_via_gemini_edge(
                 )
             except RuntimeError as error:
                 if edge_background and "nút gửi" in str(error):
-                    set_edge_window_visibility(context, gemini_page, True)
+                    set_browser_window_visibility(context, gemini_page, True)
                     raise EdgeLoginRequired(str(error)) from error
                 raise
 
@@ -4711,7 +4963,7 @@ def translate_srt_via_gemini_edge(
     return output_translated_srt
 
 def resolve_douyin_aweme_id(request, notebook_url=""):
-    """aweme ID of a Douyin SourceRequest: from the URL, over HTTP, or in Edge as a last resort."""
+    """aweme ID of a Douyin SourceRequest: from the URL, over HTTP, or in the browser as a last resort."""
     if request.video_id:
         return request.video_id
     try:
@@ -4719,8 +4971,19 @@ def resolve_douyin_aweme_id(request, notebook_url=""):
         log_to_app(f"Đã giải mã link share Douyin thành video {aweme_id}.")
         return aweme_id
     except SourceError as error:
-        log_to_app(f"Giải mã link share qua HTTP chưa được ({error}); thử lại bằng Edge.", "error")
-    resolved = resolve_url_via_edge(request.url, notebook_url)
+        log_to_app(
+            f"Giải mã link share qua HTTP chưa được ({error}); thử lại bằng {browser_label(short=True)}.",
+            "error",
+        )
+    resolved = resolve_url_via_browser(request.url, notebook_url)
+    previous_page = " ".join(parse_qs(urlparse(resolved or "").query).get("previous_page", []))
+    if "404" in previous_page:
+        # Douyin sends guests from a video it will not show them to the feed, with
+        # another video in the modal; that video is not the one the link points to.
+        raise ValueError(
+            "Douyin không mở được video của link share này (video đã bị xoá, ở chế độ riêng tư "
+            "hoặc cần đăng nhập để xem)."
+        )
     found = douyin_source.extract_aweme_id(resolved or "")
     if not found:
         raise ValueError("Không thể giải mã link share Douyin thành link video.")
@@ -4811,10 +5074,14 @@ def get_cookies_file(config=None):
         return ""
 
 
-def read_edge_cookies(urls):
-    """Cookies of the dedicated Edge profile for these URLs (Edge must already run)."""
+def read_browser_cookies(urls):
+    """Cookies of the automation browser's profile for these URLs (context.cookies() over CDP).
+
+    The browser must already run; yt-dlp never reads a browser cookie store itself, because
+    Chrome's App-Bound Encryption makes --cookies-from-browser fail on Windows.
+    """
     with get_sync_playwright()() as playwright:
-        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
+        browser = playwright.chromium.connect_over_cdp(browser_debug_url())
         if not browser.contexts:
             return []
         return list(browser.contexts[0].cookies(list(urls)))
@@ -4823,9 +5090,10 @@ def read_edge_cookies(urls):
 def prepare_ytdlp_cookie_file(site, *, manual_cookie=""):
     """(cookie file path or None, cleanup) for a yt-dlp download of this site.
 
-    A cookies.txt chosen in Settings wins. Otherwise the site's cookies are exported
-    from the running Edge profile into a temporary file, except for YouTube, and a
-    Cookie header pasted for the platform replaces the cookies with the same name.
+    A cookies.txt chosen in Settings wins. Otherwise the site's cookies are exported from
+    the running automation browser (context.cookies()) into a temporary Netscape file,
+    except for YouTube, and a Cookie header pasted for the platform replaces the cookies
+    with the same name.
     yt-dlp writes its cookie jar back to the file when it closes, so it always gets
     a temporary file and the user's cookies.txt is never modified.
     """
@@ -4837,15 +5105,17 @@ def prepare_ytdlp_cookie_file(site, *, manual_cookie=""):
             shutil.copyfile(configured, path)
             return path, lambda: shutil.rmtree(folder, ignore_errors=True)
         except OSError as error:
-            # Same as an unreadable file in get_cookies_file: fall back to the Edge cookies.
+            # Same as an unreadable file in get_cookies_file: fall back to the browser cookies.
             shutil.rmtree(folder, ignore_errors=True)
             log_to_app(f"Bỏ qua file cookies.txt trong Thiết lập: {error}", "error")
     browser_cookies = []
-    if site in SOURCE_COOKIE_URLS and check_edge_status():
+    if site in SOURCE_COOKIE_URLS and check_browser_status():
         try:
-            browser_cookies = read_edge_cookies(list(SOURCE_COOKIE_URLS[site]))
+            browser_cookies = read_browser_cookies(list(SOURCE_COOKIE_URLS[site]))
         except Exception as error:
-            log_to_app(f"Không đọc được cookie từ Edge, tải không kèm cookie: {error}", "error")
+            log_to_app(
+                f"Không đọc được cookie từ {browser_label(short=True)}, tải không kèm cookie: {error}", "error"
+            )
     if manual_cookie and site in SESSION_SITES:
         overrides = cookie_utils.browser_cookies_from_header(manual_cookie, SESSION_SITES[site].cookie_domain)
         names = {item["name"] for item in overrides}
@@ -4930,70 +5200,33 @@ def raise_if_download_cancelled(error):
     raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.") from error
 
 
-def download_douyin_via_edge(aweme_id, target_path, notebook_url, *, quiet):
-    """Tier 1: let Douyin's own page sign its API call in Edge, then stream the clean MP4."""
-    config = load_app_config()
-    edge_background = bool(config.get("edge_background", True))
-    manual_cookie = get_douyin_manual_cookie(config)
-    canonical_url = douyin_source.canonical_video_url(aweme_id)
-    set_download_progress(phase="capture", notice="")
-    if not ensure_edge_running(notebook_url or DOUYIN_HOME_URL):
-        raise VideoDownloadError("Không mở được Microsoft Edge để tải video Douyin.")
-    log_to_app(f"Mở trang video trong Edge để đọc dữ liệu: {canonical_url}")
-    with get_sync_playwright()() as playwright:
-        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
-        if not browser.contexts:
-            raise VideoDownloadError("Không tìm thấy profile Edge đang hoạt động.")
-        context = browser.contexts[0]
-        if manual_cookie:
-            # The cookie pasted in Settings replaces the matching cookies of the debug profile.
-            context.add_cookies(cookie_utils.browser_cookies_from_header(manual_cookie))
+def douyin_login_notice(config=None):
+    browser = browser_label(get_browser_kind(config) if config is not None else None, short=True)
+    return (
+        "Douyin yêu cầu đăng nhập để tải video này. "
+        f"Hãy bấm 'Mở Douyin trên {browser}' trong Thiết lập, đăng nhập 1 lần rồi thử lại."
+    )
 
-        def on_captcha(active, page):
-            if active:
-                if not set_edge_window_visibility(context, page, True):
-                    try:
-                        page.bring_to_front()
-                    except Exception:
-                        pass
-                set_download_progress(phase="captcha", notice=DOUYIN_CAPTCHA_NOTICE)
-                log_to_app(f"{DOUYIN_CAPTCHA_NOTICE} (app chờ tối đa 3 phút).", "error")
-            else:
-                set_download_progress(phase="capture", notice="")
-                log_to_app("Đã qua bước xác minh; tiếp tục đọc dữ liệu video.")
-                if edge_background:
-                    set_edge_window_visibility(context, page, False)
 
-        try:
-            capture = douyin_source.capture_video_from_page(
-                context,
-                aweme_id,
-                url=canonical_url,
-                is_cancelled=cancel_requested,
-                on_captcha=on_captcha,
-                allow_captcha_wait=not quiet,
-            )
-        except DownloadCancelledError as error:
-            raise_if_download_cancelled(error)
-        browser_cookies = context.cookies([DOUYIN_HOME_URL])
+def douyin_captcha_notice():
+    return douyin_source.CAPTCHA_NOTICE.format(browser=browser_label(short=True))
 
-    if capture.detail is not None:
-        video = douyin_source.parse_aweme_detail(capture.detail)
-    else:
-        video = douyin_source.DouyinVideo(
-            aweme_id=aweme_id,
-            title=douyin_source.title_from_page(capture.page_title, aweme_id),
-            play_urls=list(capture.dom_urls) + list(capture.network_urls),
-        )
-    cookie_jar = cookie_utils.jar_from_browser_cookies(browser_cookies)
-    if manual_cookie:
-        cookie_utils.add_header_cookies(cookie_jar, manual_cookie)
-    headers = {
-        "User-Agent": capture.user_agent or douyin_source.DEFAULT_USER_AGENT,
-        "Referer": douyin_source.DOUYIN_REFERER,
-        "Accept": "*/*",
+
+def browser_attention_notice():
+    return browser_capture.ATTENTION_NOTICE.format(browser=browser_label(short=True))
+
+
+def douyin_download_result(aweme_id, path, title):
+    return {
+        "source_url": douyin_source.canonical_video_url(aweme_id),
+        "video_id": aweme_id,
+        "source_video": path,
+        "video_title": title,
+        "source_type": "douyin",
     }
-    log_to_app(f"Đã đọc dữ liệu video: {video.title}. Đang tải file MP4 không watermark...")
+
+
+def stream_douyin_video(video, target_path, headers, cookie_jar):
     set_download_progress(phase="download", notice="")
     try:
         http_download.stream_download(
@@ -5009,15 +5242,111 @@ def download_douyin_via_edge(aweme_id, target_path, notebook_url, *, quiet):
         raise_if_download_cancelled(error)
     except SourceError as error:
         raise VideoDownloadError(str(error)) from error
-    save_douyin_assets(video, target_path, canonical_url)
-    log_to_app(f"Đã tải xong video Douyin: {target_path}")
-    return {
-        "source_url": canonical_url,
-        "video_id": aweme_id,
-        "source_video": target_path,
-        "video_title": video.title,
-        "source_type": "douyin",
+
+
+def download_douyin_via_share_page(aweme_id, target_path):
+    """Tier 1: the public share page over HTTP with an iPhone User-Agent; no browser is started."""
+    set_download_progress(phase="capture", notice="")
+    log_to_app("Đọc trang chia sẻ Douyin qua HTTP (chưa cần mở trình duyệt)...")
+    cookie_jar = cookie_utils.jar_from_browser_cookies([])
+    try:
+        video = douyin_source.video_from_share_page(aweme_id, cookie_jar=cookie_jar)
+    except douyin_source.ImagePostError as error:
+        raise PostHasNoVideo(str(error)) from error
+    except SourceError as error:
+        raise VideoDownloadError(str(error)) from error
+    headers = {
+        "User-Agent": douyin_source.MOBILE_USER_AGENT,
+        "Referer": douyin_source.SHARE_REFERER,
+        "Accept": "*/*",
     }
+    log_to_app(f"Trang chia sẻ có địa chỉ video: {video.title}. Đang tải file MP4 không watermark...")
+    stream_douyin_video(video, target_path, headers, cookie_jar)
+    save_douyin_assets(video, target_path, douyin_source.canonical_video_url(aweme_id))
+    log_to_app(f"Đã tải xong video Douyin: {target_path}")
+    return douyin_download_result(aweme_id, target_path, video.title)
+
+
+def download_douyin_via_browser(aweme_id, target_path, notebook_url="", *, quiet):
+    """Tier 2: Douyin's own page signs its API calls in the automation browser; the app
+    reads the video data that page receives and streams the clean MP4.
+
+    A redirect away from the video or a lasting login popup ends the wait at once with
+    SourceLoginRequired, instead of waiting for the deadline.
+    """
+    config = load_app_config()
+    edge_background = bool(config.get("edge_background", True))
+    manual_cookie = get_douyin_manual_cookie(config)
+    label = browser_label(get_browser_kind(config), short=True)
+    page_url = douyin_source.jingxuan_url(aweme_id)
+    set_download_progress(phase="capture", notice="")
+    try:
+        ensure_browser_running(config=config)
+    except BrowserStartError as error:
+        raise VideoDownloadError(str(error)) from error
+    log_to_app(f"Mở video trong {label} để đọc dữ liệu: {page_url}")
+    notice = douyin_captcha_notice()
+    with get_sync_playwright()() as playwright:
+        context = browser_context(playwright)
+        if manual_cookie:
+            # The cookie pasted in Settings replaces the matching cookies of the app's profile.
+            context.add_cookies(cookie_utils.browser_cookies_from_header(manual_cookie))
+
+        def on_captcha(active, page):
+            if active:
+                if not set_browser_window_visibility(context, page, True):
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                set_download_progress(phase="captcha", notice=notice)
+                log_to_app(f"{notice} (app chờ tối đa 3 phút).", "error")
+            else:
+                set_download_progress(phase="capture", notice="")
+                log_to_app("Đã qua bước xác minh; tiếp tục đọc dữ liệu video.")
+                if edge_background:
+                    set_browser_window_visibility(context, page, False)
+
+        try:
+            capture = douyin_source.capture_video_from_page(
+                context,
+                aweme_id,
+                url=page_url,
+                is_cancelled=cancel_requested,
+                on_captcha=on_captcha,
+                allow_captcha_wait=not quiet,
+            )
+        except DownloadCancelledError as error:
+            raise_if_download_cancelled(error)
+        except douyin_source.LoginRequiredError as error:
+            log_to_app(f"{error} Dừng chờ ngay.", "error")
+            raise SourceLoginRequired(douyin_login_notice(config)) from error
+        browser_cookies = context.cookies([DOUYIN_HOME_URL])
+
+    if capture.detail is not None:
+        try:
+            video = douyin_source.parse_aweme_detail(capture.detail)
+        except douyin_source.ImagePostError as error:
+            raise PostHasNoVideo(str(error)) from error
+    else:
+        video = douyin_source.DouyinVideo(
+            aweme_id=aweme_id,
+            title=douyin_source.title_from_page(capture.page_title, aweme_id),
+            play_urls=list(capture.dom_urls),
+        )
+    cookie_jar = cookie_utils.jar_from_browser_cookies(browser_cookies)
+    if manual_cookie:
+        cookie_utils.add_header_cookies(cookie_jar, manual_cookie)
+    headers = {
+        "User-Agent": capture.user_agent or douyin_source.DEFAULT_USER_AGENT,
+        "Referer": douyin_source.DOUYIN_REFERER,
+        "Accept": "*/*",
+    }
+    log_to_app(f"Đã đọc dữ liệu video: {video.title}. Đang tải file MP4 không watermark...")
+    stream_douyin_video(video, target_path, headers, cookie_jar)
+    save_douyin_assets(video, target_path, douyin_source.canonical_video_url(aweme_id))
+    log_to_app(f"Đã tải xong video Douyin: {target_path}")
+    return douyin_download_result(aweme_id, target_path, video.title)
 
 
 def run_ytdlp_download(url, site, cache_dir, *, manual_cookie=""):
@@ -5041,9 +5370,10 @@ def run_ytdlp_download(url, site, cache_dir, *, manual_cookie=""):
 
 
 def download_douyin_via_ytdlp(aweme_id, cache_dir):
-    """Tier 2 for Douyin: yt-dlp with the Edge profile cookies (or the pasted cookie)."""
+    """Tier 3: yt-dlp with fresh cookies exported from the automation browser through CDP
+    (or the pasted cookie / cookies.txt), handed over in a temporary Netscape file."""
     canonical_url = douyin_source.canonical_video_url(aweme_id)
-    log_to_app("Thử tải Douyin bằng yt-dlp với cookie của profile Edge...")
+    log_to_app(f"Thử tải Douyin bằng yt-dlp với cookie xuất từ {browser_label(short=True)}...")
     try:
         result = run_ytdlp_download(
             canonical_url, "douyin", cache_dir, manual_cookie=get_douyin_manual_cookie()
@@ -5060,40 +5390,49 @@ def download_douyin_via_ytdlp(aweme_id, cache_dir):
 
 
 def download_douyin_video(request, notebook_url):
+    """Cache, old Douzy library, then the share page (HTTP), the browser page, and yt-dlp."""
     aweme_id = resolve_douyin_aweme_id(request, notebook_url)
-    canonical_url = douyin_source.canonical_video_url(aweme_id)
     cache_dir = get_download_cache_dir()
     cached = find_cached_download("douyin", aweme_id, cache_dir)
     if cached:
         log_to_app("Video này đã có trong thư mục tải tạm; dùng lại, không tải lại.")
-        return {
-            "source_url": canonical_url,
-            "video_id": aweme_id,
-            "source_video": cached["source_video"],
-            "video_title": cached["video_title"] or f"Douyin {aweme_id}",
-            "source_type": "douyin",
-        }
+        return douyin_download_result(
+            aweme_id, cached["source_video"], cached["video_title"] or f"Douyin {aweme_id}"
+        )
     legacy_video = find_legacy_douzy_video(aweme_id)
     if legacy_video:
         log_to_app("Tìm thấy video này trong thư viện Douzy cũ; dùng lại file đã có.")
-        return {
-            "source_url": canonical_url,
-            "video_id": aweme_id,
-            "source_video": legacy_video,
-            "video_title": get_video_title(aweme_id) or f"Douyin {aweme_id}",
-            "source_type": "douyin",
-        }
+        return douyin_download_result(
+            aweme_id, legacy_video, get_video_title(aweme_id) or f"Douyin {aweme_id}"
+        )
     target_path = os.path.join(cache_dir, f"douyin-{aweme_id}", f"douyin-{aweme_id}.mp4")
     quiet = bool(getattr(workflow_context, "quiet", False))
+    tiers = (
+        ("HTTP", lambda: download_douyin_via_share_page(aweme_id, target_path)),
+        (browser_label(short=True), lambda: download_douyin_via_browser(aweme_id, target_path, notebook_url, quiet=quiet)),
+    )
     errors = []
-    try:
-        return download_douyin_via_edge(aweme_id, target_path, notebook_url, quiet=quiet)
-    except WorkflowCancelled:
-        raise
-    except Exception as error:
-        check_cancel_requested()
-        errors.append(f"Edge: {error}")
-        log_to_app(f"Chưa tải được qua Edge ({error}); chuyển sang yt-dlp.", "error")
+    login_wall = None
+    for name, attempt in tiers:
+        try:
+            return attempt()
+        except (WorkflowCancelled, PostHasNoVideo):
+            raise
+        except SourceLoginRequired as error:
+            check_cancel_requested()
+            login_wall = error
+            break
+        except Exception as error:
+            check_cancel_requested()
+            errors.append(f"{name}: {error}")
+            if name == "HTTP":
+                # Expected for most videos today: the share page loads its data with JavaScript.
+                log_to_app(f"Chưa tải được qua HTTP ({error}); chuyển sang {browser_label(short=True)}.")
+            else:
+                log_to_app(f"Chưa tải được qua {name} ({error}); thử cách tiếp theo.", "error")
+    if login_wall is not None and not (get_douyin_manual_cookie() or get_cookies_file()):
+        # yt-dlp would get the same guest cookies; only a pasted login cookie can help.
+        raise login_wall
     try:
         return download_douyin_via_ytdlp(aweme_id, cache_dir)
     except WorkflowCancelled:
@@ -5101,6 +5440,8 @@ def download_douyin_video(request, notebook_url):
     except Exception as error:
         check_cancel_requested()
         errors.append(f"yt-dlp: {error}")
+    if login_wall is not None:
+        raise SourceLoginRequired(f"{login_wall} ({errors[-1]})")
     raise VideoDownloadError("Không tải được video Douyin. " + " | ".join(errors))
 
 
@@ -5124,37 +5465,39 @@ def save_source_metadata(video_path, *, site, video_id, title, source_url, durat
 
 
 def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
-    """Open the post in the dedicated Edge profile and stream the video file the page plays."""
+    """Open the post in the automation browser's profile and stream the video file the page plays."""
     site = SESSION_SITES.get(request.site)
     label = SOURCE_LABELS.get(request.site, request.site)
     home_url = site.home_url if site else request.url
-    edge_background = bool(load_app_config().get("edge_background", True))
-    manual_cookie = get_source_manual_cookie(request.site) if site else ""
+    config = load_app_config()
+    edge_background = bool(config.get("edge_background", True))
+    manual_cookie = get_source_manual_cookie(request.site, config) if site else ""
+    browser = browser_label(get_browser_kind(config), short=True)
     set_download_progress(phase="capture", notice="")
-    if not ensure_edge_running(notebook_url or home_url):
-        raise VideoDownloadError(f"Không mở được Microsoft Edge để tải video {label}.")
-    log_to_app(f"Mở trang {label} trong Edge để tìm file video: {request.url}")
+    try:
+        ensure_browser_running(config=config)
+    except BrowserStartError as error:
+        raise VideoDownloadError(str(error)) from error
+    log_to_app(f"Mở trang {label} trong {browser} để tìm file video: {request.url}")
+    notice = browser_attention_notice()
     with get_sync_playwright()() as playwright:
-        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
-        if not browser.contexts:
-            raise VideoDownloadError("Không tìm thấy profile Edge đang hoạt động.")
-        context = browser.contexts[0]
+        context = browser_context(playwright)
         if manual_cookie:
             context.add_cookies(cookie_utils.browser_cookies_from_header(manual_cookie, site.cookie_domain))
 
         def on_attention(active, page):
             if active:
-                if not set_edge_window_visibility(context, page, True):
+                if not set_browser_window_visibility(context, page, True):
                     try:
                         page.bring_to_front()
                     except Exception:
                         pass
-                set_download_progress(phase="captcha", notice=BROWSER_ATTENTION_NOTICE)
-                log_to_app(f"{BROWSER_ATTENTION_NOTICE} (app chờ tối đa 3 phút).", "error")
+                set_download_progress(phase="captcha", notice=notice)
+                log_to_app(f"{notice} (app chờ tối đa 3 phút).", "error")
             else:
                 set_download_progress(phase="capture", notice="")
                 if edge_background:
-                    set_edge_window_visibility(context, page, False)
+                    set_browser_window_visibility(context, page, False)
 
         try:
             capture = browser_capture.capture_media_from_page(
@@ -5220,7 +5563,7 @@ def short_link_code(url):
 
 def download_web_video(request, notebook_url=""):
     """TikTok, YouTube, Bilibili and Xiaohongshu through yt-dlp; Kuaishou (and the
-    Xiaohongshu fallback) through the post's page in Edge."""
+    Xiaohongshu fallback) through the post's page in the automation browser."""
     label = SOURCE_LABELS.get(request.site, request.site)
     if request.short_link:
         try:
@@ -5280,8 +5623,9 @@ def download_web_video(request, notebook_url=""):
                 raise VideoDownloadError(
                     "Ghi chú Xiaohongshu này không có video (bài đăng ảnh); không có gì để OCR."
                 ) from error
-            errors.append(f"{'Edge' if tier == 'browser' else 'yt-dlp'}: {message}")
-            log_to_app(f"Chưa tải được bằng {'Edge' if tier == 'browser' else 'yt-dlp'}: {message}", "error")
+            method = browser_label(short=True) if tier == "browser" else "yt-dlp"
+            errors.append(f"{method}: {message}")
+            log_to_app(f"Chưa tải được bằng {method}: {message}", "error")
     if len(errors) == 1:
         raise VideoDownloadError(errors[0].split(": ", 1)[1])
     raise VideoDownloadError(f"Không tải được video {label}. " + " | ".join(errors))
@@ -5290,9 +5634,10 @@ def download_web_video(request, notebook_url=""):
 def download_video_source(video_url, notebook_url):
     """Prepare the video for a link: {source_url, video_id, source_video, video_title, source_type}.
 
-    Douyin uses the dedicated Edge profile (cache, old Douzy library, Edge capture,
-    then yt-dlp); Kuaishou is captured in Edge; TikTok, YouTube, Bilibili and
-    Xiaohongshu use yt-dlp, with Edge as the Xiaohongshu fallback.
+    Douyin tries the cache, the public share page over HTTP, the video page in the
+    automation browser (Chrome by default, with its own profile), then yt-dlp;
+    Kuaishou is captured in the browser; TikTok, YouTube, Bilibili and Xiaohongshu
+    use yt-dlp, with the browser as the Xiaohongshu fallback.
     """
     request = detect_video_source(video_url)
     if request.site == "douyin":
@@ -6008,10 +6353,10 @@ def missing_runtime_dependencies(source_types):
     except (OSError, UnicodeError, ValueError):
         missing.append("cấu hình dịch")
         translation_config = {"provider": ""}
-    # Douyin and Kuaishou downloads run in the dedicated Edge profile, like Notebook translation.
-    needs_edge = translation_config.get("provider") == "notebook" or bool(source_types & EDGE_SOURCE_TYPES)
-    if needs_edge and not resolve_edge_executable():
-        missing.append("Microsoft Edge")
+    # Douyin and Kuaishou pages open in the automation browser, like Notebook translation.
+    needs_browser = translation_config.get("provider") == "notebook" or bool(source_types & BROWSER_SOURCE_TYPES)
+    if needs_browser and not resolve_browser_executable():
+        missing.append(browser_label())
     if source_types & YTDLP_SOURCE_TYPES and not ytdlp_source.ytdlp_version():
         missing.append("yt-dlp")
     return missing
@@ -6528,8 +6873,8 @@ def avatar_image():
 
 @app.route('/api/check-edge')
 def check_edge():
-    connected = check_edge_status()
-    return jsonify({"connected": connected})
+    # Status only: never starts the browser (it opens on demand).
+    return jsonify({"connected": check_browser_status(), "browser": browser_label(short=True)})
 
 
 @app.route('/api/edge/show', methods=['POST'])
@@ -6539,6 +6884,9 @@ def show_edge():
         show_edge_for_login(config.get("notebook_url"))
     except (RuntimeError, ValueError, OSError) as error:
         return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        # Playwright errors are not RuntimeError subclasses.
+        return jsonify({"error": f"Không mở được {browser_label(short=True)}: {error}"}), 400
     return jsonify({"ok": True})
 
 
@@ -6644,14 +6992,17 @@ def health():
         runtime_config = get_translation_runtime_config(config, require_ready=True)
         translation_ok = True
         translation_detail = (
-            "Dịch bằng Gemini Notebook qua Edge."
+            f"Dịch bằng Gemini Notebook qua {browser_label(get_browser_kind(config), short=True)}."
             if runtime_config["provider"] == "notebook"
             else f"{runtime_config['label']} · model {runtime_config['model']}"
         )
     except (OSError, UnicodeError, ValueError) as error:
         translation_ok = False
         translation_detail = str(error)
-    edge_available = bool(resolve_edge_executable())
+    browser_kind = get_browser_kind(config)
+    browser_name = browser_label(browser_kind)
+    browser_executable = resolve_browser_executable(config)
+    browser_available = bool(browser_executable)
     ytdlp_version = ytdlp_source.ytdlp_version()
     js_runtime = get_js_runtime()
     js_runtime_name = next(iter(js_runtime), "") if js_runtime else ""
@@ -6685,22 +7036,25 @@ def health():
                 else "Không cần khi đang dịch bằng API."
             ),
         },
-        "edge": {
-            "ok": edge_available,
+        "browser": {
+            "ok": browser_available,
             "required": translation_provider == "notebook",
-            "connected": check_edge_status(),
+            "connected": check_browser_status(),
+            "label": browser_name,
             "detail": (
-                "Cần Microsoft Edge để dịch bằng Notebook và để tải video Douyin."
-                if translation_provider == "notebook"
-                else "Cần để tải video Douyin; app tự mở profile Edge riêng khi tải."
+                f"{browser_name}: {browser_executable}. Chỉ mở khi dịch bằng Notebook, khi tải video cần "
+                "trình duyệt hoặc khi bạn bấm mở trang đăng nhập; dùng profile riêng của app."
+                if browser_available
+                else missing_browser_message(browser_kind)
             ),
         },
         "douyin_source": {
-            "ok": edge_available,
+            "ok": browser_available,
             "required": False,
             "detail": (
-                "Douyin và Kuaishou tải qua profile Edge riêng của app. Đăng nhập một lần "
-                "trong Thiết lập để ít gặp captcha hơn."
+                f"Douyin thử trang chia sẻ qua HTTP trước, rồi mới mở {browser_name} riêng của app; "
+                f"Kuaishou luôn tải qua {browser_name}. Đăng nhập một lần trong Thiết lập để ít gặp "
+                "captcha và tải được video cần tài khoản."
             ),
         },
         "ytdlp": {
@@ -6727,15 +7081,15 @@ def health():
         },
     }
     ready_local = all(item["ok"] for item in checks.values() if item["required"])
-    ready_edge = ready_local and edge_available
+    ready_browser = ready_local and browser_available
     ready_ytdlp = ready_local and bool(ytdlp_version)
     ready_sources = {"local": ready_local}
     for source in source_registry.SUPPORTED_SITES:
-        ready_sources[source] = ready_edge if source in EDGE_SOURCE_TYPES else ready_ytdlp
+        ready_sources[source] = ready_browser if source in BROWSER_SOURCE_TYPES else ready_ytdlp
     return jsonify({
         "ready": ready_local,
         "ready_local": ready_local,
-        "ready_douyin": ready_edge,
+        "ready_douyin": ready_browser,
         "ready_web": ready_ytdlp,
         "ready_sources": ready_sources,
         "checks": checks,
@@ -6855,6 +7209,37 @@ def clear_queue_finished():
     clear_finished_jobs()
     return jsonify({"ok": True})
 
+def apply_browser_settings(config, data):
+    """Validate the automation browser choice; the custom kind needs an existing .exe."""
+    if "browser_kind" not in data and "browser_path" not in data:
+        return
+    previous_kind = get_browser_kind(config)
+    if "browser_kind" in data:
+        config["browser_kind"] = browser_source.validate_kind(data["browser_kind"])
+    if "browser_path" in data:
+        value = data["browser_path"]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            config["browser_path"] = ""
+        else:
+            config["browser_path"] = browser_source.validate_custom_executable(value)
+    if get_browser_kind(config) == "custom":
+        browser_source.validate_custom_executable(config.get("browser_path") or "")
+    if get_browser_kind(config) != previous_kind:
+        reset_browser_status_cache()
+
+
+def browser_settings_fields(config):
+    kind = get_browser_kind(config)
+    return {
+        "browser_kind": kind,
+        "browser_path": str(config.get("browser_path") or ""),
+        "browser_label": browser_label(kind),
+        "browser_short_label": browser_label(kind, short=True),
+        "browser_profile_dir": browser_profile_dir(kind),
+        "browser_executable": resolve_browser_executable(config),
+    }
+
+
 def apply_settings_update(data):
     try:
         config = load_app_config(strict=True)
@@ -6921,8 +7306,9 @@ def apply_settings_update(data):
             config["crop_coords"] = validate_crop_coords(data["crop_coords"])
         if "edge_background" in data:
             if not isinstance(data["edge_background"], bool):
-                raise ValueError("Tuỳ chọn chạy Edge ẩn không hợp lệ.")
+                raise ValueError("Tuỳ chọn chạy trình duyệt ẩn không hợp lệ.")
             config["edge_background"] = data["edge_background"]
+        apply_browser_settings(config, data)
         if "source_cookies" in data:
             apply_source_cookie_updates(config, data["source_cookies"])
         if "cookies_file" in data:
@@ -6941,6 +7327,7 @@ def apply_settings_update(data):
         "translation_api_key_set": api_key_set,
         "source_cookies_set": source_cookies_set(config),
         "cookies_file": config.get("cookies_file") or "",
+        **browser_settings_fields(config),
     })
 
 
@@ -7043,6 +7430,7 @@ def handle_settings():
             "default_output_dir": get_default_output_directory(),
             "output_dir_synced": is_cloud_synced_path(effective_output_dir),
             "edge_background": bool(config.get("edge_background", True)),
+            **browser_settings_fields(config),
             "desktop_shortcut_supported": shortcut_supported,
             "desktop_shortcut_exists": shortcut_exists,
             "source_cookies_set": source_cookies_set(config),
@@ -7056,24 +7444,29 @@ def handle_settings():
 
 
 def get_source_session_status():
-    """Login state of each platform in the dedicated Edge profile; cookie values never leave."""
+    """Login state of each platform in the automation browser's profile; cookie values never leave.
+
+    Reading the state never starts the browser: it is only read while the browser runs.
+    """
     config = load_app_config()
     manual = source_cookies_set(config)
+    browser = browser_label(get_browser_kind(config), short=True)
     status = {
-        "edge_connected": False,
+        "browser_connected": False,
+        "browser": browser,
         "cookies_file": bool(config.get("cookies_file")),
         "sites": {
             key: {"label": site.label, "logged_in": None, "has_cookies": False, "manual_cookie": manual[key]}
             for key, site in SESSION_SITES.items()
         },
     }
-    if not check_edge_status():
+    if not check_browser_status():
         return status
-    status["edge_connected"] = True
+    status["browser_connected"] = True
     try:
-        browser_cookies = read_edge_cookies(session_sites.all_cookie_urls())
+        browser_cookies = read_browser_cookies(session_sites.all_cookie_urls())
     except Exception as error:
-        status["error"] = f"Không đọc được cookie từ Edge: {error}"
+        status["error"] = f"Không đọc được cookie từ {browser}: {error}"
         return status
     for key in SESSION_SITES:
         site_cookies = session_sites.cookies_of_site(key, browser_cookies)
@@ -7082,17 +7475,13 @@ def get_source_session_status():
     return status
 
 
-def open_source_in_edge(site_key):
-    """Show the platform in the dedicated Edge profile so the user can sign in once."""
+def open_source_in_browser(site_key):
+    """Show the platform in the automation browser's own profile so the user can sign in once."""
     site = SESSION_SITES[site_key]
-    if not ensure_edge_running(site.home_url, background=False):
-        raise RuntimeError("Không thể mở Microsoft Edge.")
+    ensure_browser_running(background=False)
     domain = site.cookie_domain.lstrip(".")
     with get_sync_playwright()() as playwright:
-        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
-        if not browser.contexts:
-            raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
-        context = browser.contexts[0]
+        context = browser_context(playwright)
         page = next(
             (
                 item for item in context.pages
@@ -7101,12 +7490,12 @@ def open_source_in_edge(site_key):
             None,
         )
         if page is None:
-            page = context.new_page()
+            page = reuse_blank_page(context)
             try:
                 page.goto(site.home_url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
                 pass
-        if not set_edge_window_visibility(context, page, True):
+        if not set_browser_window_visibility(context, page, True):
             page.bring_to_front()
     return True
 
@@ -7119,13 +7508,13 @@ def source_sessions():
 @app.route('/api/sources/<site_key>/open', methods=['POST'])
 def open_source_login(site_key):
     if site_key not in SESSION_SITES:
-        return jsonify({"error": "Nền tảng này không có phiên đăng nhập trong Edge."}), 404
+        return jsonify({"error": "Nền tảng này không có phiên đăng nhập trong trình duyệt tự động hoá."}), 404
     try:
-        open_source_in_edge(site_key)
+        open_source_in_browser(site_key)
     except (RuntimeError, OSError) as error:
         return jsonify({"error": str(error)}), 400
     except Exception as error:
-        return jsonify({"error": f"Không mở được Edge: {error}"}), 400
+        return jsonify({"error": f"Không mở được {browser_label(short=True)}: {error}"}), 400
     return jsonify({"ok": True})
 
 
@@ -7327,6 +7716,18 @@ class DesktopApi:
             self._webview.FileDialog.OPEN,
             allow_multiple=False,
             file_types=COOKIE_FILE_TYPES,
+        )
+        if not selected:
+            return ""
+        path = selected[0] if isinstance(selected, (list, tuple)) else selected
+        return os.path.abspath(str(path))
+
+    def choose_browser_executable(self):
+        """Native dialog for a Chromium-based browser .exe (the custom automation browser)."""
+        selected = self._window.create_file_dialog(
+            self._webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=BROWSER_FILE_TYPES,
         )
         if not selected:
             return ""

@@ -9,14 +9,16 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
   },
   "type": "module",
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "framer-motion": "^12.43.0",
     "lucide-react": "^1.28.0",
-    "next": "^16.3.0",
+    "next": "^16.4.6",
     "postcss": "^8.5.25",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -26,6 +28,9 @@
     "@types/node": "^26.1.2",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "typescript": "^7.0.2"
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.4.6",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   }
 }

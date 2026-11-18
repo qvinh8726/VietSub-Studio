@@ -1,15 +1,18 @@
-"""Douyin links, aweme metadata, and the Edge page capture used to download videos.
+"""Douyin links, aweme metadata, the public share page and the browser page capture.
 
 Douyin signs its web API requests (a_bogus / X-Bogus) in page JavaScript, and the
-algorithm changes often. VietSub Studio does not re-implement it. It opens the video
-page in the user's own Edge profile and reads the JSON that the page itself receives
-from /aweme/v1/web/aweme/detail/, with the page's SSR data and <video> element as
-fallbacks.
+algorithm changes often. VietSub Studio does not re-implement it. It first reads the
+public share page over HTTP; when that page has no data, it opens the video in the
+automation browser's own profile (Chrome by default) and reads the JSON that the page
+itself receives from /aweme/v1/web/aweme/detail/, with the page's SSR data and the
+modal's <video> element as fallbacks. A login wall stops the capture at once.
 """
 
 import json
 import re
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -20,21 +23,57 @@ from .base import (
     follow_redirects,
     host_matches,
     normalize_media_url,
+    url_host,
 )
-from .browser_capture import DOM_VIDEO_SCRIPT, MUTE_MEDIA_SCRIPT, is_media_response
+from .browser_capture import MUTE_MEDIA_SCRIPT
 
 DOUYIN_DOMAINS = ("douyin.com", "iesdouyin.com")
 SHORT_LINK_HOSTS = {"v.douyin.com"}
 CANONICAL_VIDEO_URL = "https://www.douyin.com/video/{}"
+# The feed page with the video in a modal; it plays for guests where /video/<id> may not.
+JINGXUAN_MODAL_URL = "https://www.douyin.com/jingxuan?modal_id={}"
 DETAIL_API_MARKER = "/aweme/v1/web/aweme/detail"
 DOUYIN_REFERER = "https://www.douyin.com/"
-CAPTCHA_NOTICE = "Vui lòng kéo captcha trên trình duyệt Edge để tiếp tục tải"
+# {browser} is the short name of the automation browser ("Chrome", "Edge"...).
+CAPTCHA_NOTICE = "Vui lòng kéo captcha trên trình duyệt {browser} để tiếp tục tải"
+# Public share page that the phone app's links open; parsed without a browser.
+SHARE_PAGE_URL = "https://www.iesdouyin.com/share/video/{}/"
+SHARE_REFERER = "https://www.iesdouyin.com/"
+MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+)
+MAX_SHARE_PAGE_BYTES = 4 * 1024 * 1024
+ROUTER_DATA_PATTERN = re.compile(r"window\._ROUTER_DATA\s*=\s*(\{.*?\})\s*;?\s*</script>", re.S)
+RENDER_DATA_PATTERN = re.compile(r'<script[^>]*\bid="RENDER_DATA"[^>]*>(.*?)</script>', re.S)
+# Guests see Douyin's login popup on every page; it only counts when no video data came.
+LOGIN_GRACE_SECONDS = 1.5
 
 _AWEME_ID = r"\d{1,25}"
 PATH_ID_PATTERN = re.compile(rf"/(?:share/)?(video|note|slides)/({_AWEME_ID})(?:/|$)")
 ID_QUERY_KEYS = ("modal_id", "aweme_id", "item_id", "vid")
 CAPTCHA_TITLE_PATTERN = re.compile(r"验证码|安全验证|人机验证|captcha", re.IGNORECASE)
 MAX_SEARCH_NODES = 200_000
+
+
+class LoginRequiredError(SourceError):
+    """Douyin shows this video only to signed-in users.
+
+    reason is "redirect" when the page left the video (for example to the feed) and
+    "login" when the login popup stays while no video data arrived.
+    """
+
+    def __init__(self, reason="login"):
+        self.reason = reason
+        super().__init__(
+            "Douyin chuyển trang khỏi video này vì cần đăng nhập."
+            if reason == "redirect"
+            else "Douyin hiện bảng đăng nhập thay vì video này."
+        )
+
+
+class ImagePostError(SourceError):
+    """The post is a photo set (图文): there is no video to OCR."""
 
 
 @dataclass(frozen=True)
@@ -123,7 +162,7 @@ def resolve_short_link(url, *, opener=None, timeout=10, max_hops=5, user_agent=D
 
     Every redirect must stay on a Douyin host. Raises SourceError when the link
     leaves Douyin, loops, or never reaches a video page; the caller can then fall
-    back to resolving it in Edge.
+    back to resolving it in the automation browser.
     """
 
     def aweme_id_of(candidate):
@@ -286,7 +325,7 @@ def parse_aweme_detail(detail):
     play_urls = select_play_urls(video)
     if not play_urls:
         if detail.get("images") or detail.get("image_infos") or detail.get("imageInfos"):
-            raise SourceError("Bài đăng Douyin này là ảnh (图文), không có video để OCR.")
+            raise ImagePostError("Bài đăng Douyin này là ảnh (图文), không có video để OCR.")
         raise SourceError("Douyin không trả về địa chỉ video cho bài đăng này.")
     covers = []
     for key in ("origin_cover", "originCover", "cover", "cover_original_scale"):
@@ -301,6 +340,104 @@ def parse_aweme_detail(detail):
     )
 
 
+def share_page_payloads(html):
+    """JSON blobs a share page can carry: window._ROUTER_DATA and <script id="RENDER_DATA">."""
+    payloads = []
+    for match in ROUTER_DATA_PATTERN.finditer(html or ""):
+        try:
+            payloads.append(json.loads(match.group(1)))
+        except ValueError:
+            continue
+    for match in RENDER_DATA_PATTERN.finditer(html or ""):
+        data = parse_render_data(match.group(1))
+        if data is not None:
+            payloads.append(data)
+    return payloads
+
+
+def filter_reason(payload, aweme_id):
+    """Why Douyin filtered this video out of a share page (videoInfoRes.filter_list), or ""."""
+    stack, visited = [payload], 0
+    while stack and visited < MAX_SEARCH_NODES:
+        node = stack.pop()
+        visited += 1
+        if isinstance(node, dict):
+            for entry in node.get("filter_list") or []:
+                if isinstance(entry, dict) and str(entry.get("aweme_id") or aweme_id) == str(aweme_id):
+                    reason = entry.get("filter_reason") or entry.get("detail_msg") or entry.get("notice")
+                    if reason:
+                        return str(reason)
+            stack.extend(value for value in node.values() if isinstance(value, (dict, list)))
+        elif isinstance(node, list):
+            stack.extend(value for value in node if isinstance(value, (dict, list)))
+    return ""
+
+
+def parse_share_page(html, aweme_id):
+    """Video of www.iesdouyin.com/share/video/<id>/ from the data the server rendered into it.
+
+    Raises SourceError when the page carries no data for this video; the page often
+    loads it with signed JavaScript requests only, and then a browser is needed.
+    """
+    payloads = share_page_payloads(html)
+    for payload in payloads:
+        detail = find_aweme_detail(payload, aweme_id)
+        if detail:
+            return parse_aweme_detail(detail)
+    reason = next((found for found in (filter_reason(item, aweme_id) for item in payloads) if found), "")
+    if reason:
+        raise SourceError(f"Douyin không cho xem video này qua trang chia sẻ ({reason}).")
+    raise SourceError("Trang chia sẻ Douyin không có dữ liệu video (trang chỉ tải dữ liệu bằng JavaScript).")
+
+
+def fetch_share_page(aweme_id, *, opener=None, cookie_jar=None, timeout=15):
+    """HTML of the public share page, requested with an iPhone User-Agent."""
+    url = SHARE_PAGE_URL.format(extract_aweme_id(canonical_video_url(aweme_id))[1])
+    request = urllib.request.Request(url, headers={
+        "User-Agent": MOBILE_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
+    })
+    if opener is None:
+        handlers = [urllib.request.HTTPCookieProcessor(cookie_jar)] if cookie_jar is not None else []
+        opener = urllib.request.build_opener(*handlers)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            final_url = response.geturl()
+            body = response.read(MAX_SHARE_PAGE_BYTES + 1)
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        raise SourceError(f"Không mở được trang chia sẻ Douyin: {error}") from error
+    if not is_douyin_host(url_host(final_url)):
+        raise SourceError("Trang chia sẻ chuyển hướng ra ngoài Douyin; app đã dừng để an toàn.")
+    if len(body) > MAX_SHARE_PAGE_BYTES:
+        raise SourceError("Trang chia sẻ Douyin lớn bất thường; app bỏ qua cách tải này.")
+    return body.decode("utf-8", "replace")
+
+
+def video_from_share_page(aweme_id, *, opener=None, cookie_jar=None, timeout=15):
+    """Tier 1 of the Douyin download: the share page over HTTP, no browser needed."""
+    html = fetch_share_page(aweme_id, opener=opener, cookie_jar=cookie_jar, timeout=timeout)
+    return parse_share_page(html, aweme_id)
+
+
+def jingxuan_url(aweme_id):
+    return JINGXUAN_MODAL_URL.format(extract_aweme_id(canonical_video_url(aweme_id))[1])
+
+
+def page_shows_video(url, aweme_id):
+    """False when a Douyin page left this video: another page, or the feed without its modal."""
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return True
+    if not is_douyin_host(parsed.hostname or ""):
+        # about:blank while loading, or a verification page handled by the captcha probe.
+        return True
+    if re.search(rf"/(?:video|note)/{re.escape(str(aweme_id))}(?:/|$)", parsed.path or ""):
+        return True
+    return str(aweme_id) in parse_qs(parsed.query).get("modal_id", [])
+
+
 def is_captcha_probe(probe):
     """True when the page shows Douyin's captcha (from CAPTCHA_PROBE_SCRIPT)."""
     if not isinstance(probe, dict):
@@ -308,20 +445,42 @@ def is_captcha_probe(probe):
     return bool(probe.get("captcha")) or bool(CAPTCHA_TITLE_PATTERN.search(str(probe.get("title") or "")))
 
 
+def is_login_probe(probe):
+    """True when the page shows Douyin's login popup (from CAPTCHA_PROBE_SCRIPT)."""
+    return isinstance(probe, dict) and bool(probe.get("login"))
+
+
 # Runs in the page. Douyin's slider captcha lives in a container or an iframe from
 # its verification center; the title changes to 验证码中间页 on the full-page variant.
+# #douyin-login-new-id is the "Log in to Douyin / scan to log in" popup shown to guests.
 CAPTCHA_PROBE_SCRIPT = """() => {
     const selectors = ['#captcha_container', '#captcha-verify-image', '.captcha_verify_container',
         '.captcha-verify-container', '[id^="captcha"]', '[class*="captcha_verify"]',
         '[class*="secsdk-captcha"]', 'iframe[src*="captcha"]', 'iframe[src*="verifycenter"]',
         'iframe[src*="verify.snssdk"]'];
+    const loginSelectors = ['#douyin-login-new-id', '#login-pannel', '#login-panel',
+        '[id^="login-full-panel"]', '[data-e2e="login-panel"]'];
     const visible = element => {
         const box = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
         return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     };
-    const captcha = selectors.some(selector => Array.from(document.querySelectorAll(selector)).some(visible));
-    return {captcha, title: document.title || ''};
+    const shown = list => list.some(selector => Array.from(document.querySelectorAll(selector)).some(visible));
+    return {captcha: shown(selectors), login: shown(loginSelectors), title: document.title || ''};
+}"""
+
+# The <video> of the requested post only: inside the modal on the feed page, or the
+# whole document on a /video/<id> page. A feed video behind the modal is never taken.
+DOM_VIDEO_SCRIPT = """() => {
+    const modal = document.querySelector('[data-e2e="modal-video-container"], #modal-video-container');
+    const root = modal || (/\\/(?:video|note)\\/\\d+/.test(location.pathname) ? document : null);
+    const urls = [];
+    if (!root) return urls;
+    root.querySelectorAll('video, video source').forEach(element => {
+        [element.currentSrc, element.src, element.getAttribute && element.getAttribute('src')]
+            .forEach(value => { if (value && !urls.includes(value)) urls.push(value); });
+    });
+    return urls;
 }"""
 
 RENDER_DATA_SCRIPT = """() => {
@@ -334,7 +493,6 @@ RENDER_DATA_SCRIPT = """() => {
 class CaptureResult:
     detail: dict = None
     dom_urls: list = field(default_factory=list)
-    network_urls: list = field(default_factory=list)
     user_agent: str = ""
     page_title: str = ""
     captcha_seen: bool = False
@@ -348,23 +506,25 @@ def capture_video_from_page(
     is_cancelled=lambda: False,
     on_captcha=None,
     allow_captcha_wait=True,
-    load_timeout=45,
+    load_timeout=30,
     captcha_timeout=180,
     poll_interval_ms=500,
     clock=time.monotonic,
 ):
-    """Open the video page in a new tab of an existing browser context and capture its data.
+    """Open the video in a new tab of an existing browser context and capture its data.
 
-    Returns a CaptureResult with the aweme_detail JSON, or with media URLs read from
-    the page when the API response could not be read. on_captcha(active, page) is
-    called when a captcha appears and when it is gone; the wait is then extended to
+    The default page is the feed with the video in a modal (jingxuan?modal_id=<id>).
+    Returns a CaptureResult with the aweme_detail JSON of this video (API response or
+    the page's RENDER_DATA), or with the modal's <video> URL. Raises LoginRequiredError
+    at once when the page leaves the video, or when the login popup stays while no data
+    came: waiting would only end at the deadline. on_captcha(active, page) is called
+    when a captcha appears and when it is gone; the wait is then extended to
     captcha_timeout seconds. With allow_captcha_wait=False (background prefetch) a
     captcha stops the capture at once.
     """
-    target_url = url or canonical_video_url(aweme_id)
+    target_url = url or jingxuan_url(aweme_id)
     page = context.new_page()
     detail_responses = []
-    network_urls = []
 
     def on_response(response):
         try:
@@ -373,13 +533,10 @@ def capture_video_from_page(
             return
         if DETAIL_API_MARKER in response_url:
             detail_responses.append(response)
-        elif is_media_response(response):
-            media_url = normalize_media_url(response_url)
-            if media_url and media_url not in network_urls:
-                network_urls.append(media_url)
 
     result = CaptureResult()
     captcha_active = False
+    login_seen_at = None
     try:
         try:
             page.add_init_script(MUTE_MEDIA_SCRIPT)
@@ -430,18 +587,31 @@ def capture_video_from_page(
                     deadline = clock() + captcha_timeout
                     if on_captcha:
                         on_captcha(True, page)
-            elif captcha_active:
-                captcha_active = False
-                if on_captcha:
-                    on_captcha(False, page)
-                deadline = max(deadline, clock() + 20)
-                if not reloaded_after_captcha:
-                    # The page usually reloads itself after the captcha; reload once if not.
-                    reloaded_after_captcha = True
-                    try:
-                        page.reload(wait_until="domcontentloaded", timeout=int(load_timeout * 1000))
-                    except Exception:
-                        pass
+            else:
+                if captcha_active:
+                    captcha_active = False
+                    if on_captcha:
+                        on_captcha(False, page)
+                    deadline = max(deadline, clock() + 20)
+                    if not reloaded_after_captcha:
+                        # The page usually reloads itself after the captcha; reload once if not.
+                        reloaded_after_captcha = True
+                        try:
+                            page.reload(wait_until="domcontentloaded", timeout=int(load_timeout * 1000))
+                        except Exception:
+                            pass
+                try:
+                    current_url = str(getattr(page, "url", "") or "")
+                except Exception:
+                    current_url = ""
+                if not page_shows_video(current_url, aweme_id):
+                    raise LoginRequiredError("redirect")
+                if is_login_probe(probe):
+                    login_seen_at = clock() if login_seen_at is None else login_seen_at
+                    if clock() - login_seen_at >= LOGIN_GRACE_SECONDS:
+                        raise LoginRequiredError("login")
+                else:
+                    login_seen_at = None
             if clock() >= deadline:
                 break
             page.wait_for_timeout(poll_interval_ms)
@@ -453,7 +623,6 @@ def capture_video_from_page(
                 ]
             except Exception:
                 result.dom_urls = []
-        result.network_urls = list(network_urls)
         try:
             result.user_agent = str(page.evaluate("() => navigator.userAgent") or "")
         except Exception:
@@ -462,11 +631,11 @@ def capture_video_from_page(
             result.page_title = str(page.title() or "")
         except Exception:
             result.page_title = ""
-        if result.detail is None and not result.dom_urls and not result.network_urls:
+        if result.detail is None and not result.dom_urls:
             if result.captcha_seen:
                 raise SourceError(
-                    f"Hết {int(captcha_timeout // 60)} phút chờ giải captcha Douyin; hãy kéo captcha trong Edge "
-                    "rồi chạy lại."
+                    f"Hết {int(captcha_timeout // 60)} phút chờ giải captcha Douyin; hãy kéo captcha trong "
+                    "trình duyệt của app rồi chạy lại."
                 )
             raise SourceError(
                 "Không đọc được dữ liệu video từ trang Douyin. Video có thể ở chế độ riêng tư, bị giới hạn "

@@ -1,5 +1,6 @@
 """Tests for cookies, the streaming downloader, the Douyin page capture, yt-dlp and local files."""
 
+import json
 import os
 import tempfile
 import threading
@@ -7,6 +8,7 @@ import time
 import unittest
 import urllib.request
 from http.cookiejar import MozillaCookieJar
+from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -274,8 +276,9 @@ class FakeResponse:
 
 
 class FakePage:
-    def __init__(self, clock, *, deliveries=None, probes=None, dom_urls=None, render_data=""):
+    def __init__(self, clock, *, deliveries=None, probes=None, dom_urls=None, render_data="", url=None):
         self.clock = clock
+        self.url = url
         self.deliveries = deliveries or {}
         self.probes = list(probes or [])
         self.dom_urls = dom_urls or []
@@ -315,7 +318,8 @@ class FakePage:
             return self.probes.pop(0) if self.probes else {"captcha": False, "title": "Video - 抖音"}
         if script == douyin.RENDER_DATA_SCRIPT:
             return self.render_data
-        if script == douyin.DOM_VIDEO_SCRIPT:
+        # Douyin reads only the video of its modal; other sites read every <video> on the page.
+        if script in (douyin.DOM_VIDEO_SCRIPT, browser_capture.DOM_VIDEO_SCRIPT):
             return self.dom_urls
         return "FakeEdge/1.0"
 
@@ -350,7 +354,8 @@ class DouyinCaptureTests(unittest.TestCase):
         result = douyin.capture_video_from_page(FakeContext(page), AWEME_ID, clock=clock)
         self.assertEqual(result.detail["desc"], "Từ API")
         self.assertEqual(result.user_agent, "FakeEdge/1.0")
-        self.assertEqual(page.visited, [f"https://www.douyin.com/video/{AWEME_ID}"])
+        # The video opens as a modal on the feed page, which also works for guests.
+        self.assertEqual(page.visited, [f"https://www.douyin.com/jingxuan?modal_id={AWEME_ID}"])
         self.assertIn(douyin.MUTE_MEDIA_SCRIPT, page.init_scripts)
         self.assertTrue(page.closed)
 
@@ -405,6 +410,55 @@ class DouyinCaptureTests(unittest.TestCase):
             )
         self.assertEqual(events, [True, False])
         self.assertTrue(page.closed)
+
+
+MODAL_URL = f"https://www.douyin.com/jingxuan?modal_id={AWEME_ID}"
+
+
+class DouyinLoginWallTests(unittest.TestCase):
+    def capture(self, page, clock, **kwargs):
+        return douyin.capture_video_from_page(FakeContext(page), AWEME_ID, clock=clock, **kwargs)
+
+    def test_a_redirect_to_jingxuan_without_the_video_stops_at_once(self):
+        clock = FakeClock()
+        page = FakePage(clock, url="https://www.douyin.com/jingxuan")
+        with self.assertRaises(douyin.LoginRequiredError) as raised:
+            self.capture(page, clock, load_timeout=45)
+        self.assertEqual(raised.exception.reason, "redirect")
+        self.assertLess(clock.now - 1000.0, 2, "must not wait for the 45 s deadline")
+        self.assertEqual(page.visited, [MODAL_URL])
+        self.assertTrue(page.closed)
+
+    def test_another_video_in_the_modal_counts_as_a_redirect(self):
+        clock = FakeClock()
+        page = FakePage(clock, url=(
+            "https://www.douyin.com/jingxuan?previous_page=web_video_404_link&modal_id=7693052223881891122"))
+        with self.assertRaises(douyin.LoginRequiredError):
+            self.capture(page, clock)
+
+    def test_the_login_popup_without_video_data_stops_the_wait(self):
+        clock = FakeClock()
+        page = FakePage(clock, probes=[{"captcha": False, "login": True, "title": "抖音"}] * 40, url=MODAL_URL)
+        with self.assertRaises(douyin.LoginRequiredError) as raised:
+            self.capture(page, clock, load_timeout=45)
+        self.assertEqual(raised.exception.reason, "login")
+        self.assertLess(clock.now - 1000.0, 5)
+        self.assertTrue(page.closed)
+
+    def test_video_data_wins_over_the_login_popup_guests_always_see(self):
+        clock = FakeClock()
+        render = quote(json.dumps({"app": {"videoDetail": {"awemeId": AWEME_ID, "desc": "SSR", "video": {
+            "playAddr": [{"src": "https://v1.douyinvod.com/a.mp4"}]}}}}))
+        page = FakePage(clock, probes=[{"captcha": False, "login": True, "title": ""}] * 5,
+                        render_data=render, url=MODAL_URL)
+        self.assertEqual(self.capture(page, clock).detail["desc"], "SSR")
+
+    def test_a_feed_video_behind_the_modal_is_never_taken_as_the_requested_one(self):
+        clock = FakeClock()
+        media = FakeResponse("https://v5-dy-ov.zjcdn.com/feed.mp4", resource_type="media", content_type="video/mp4")
+        page = FakePage(clock, deliveries={1: [media]}, url=MODAL_URL)
+        with self.assertRaises(base.SourceError):
+            self.capture(page, clock, load_timeout=3)
 
 
 KS_URL = "https://www.kuaishou.com/short-video/3xg9avuebhtfcbu"
@@ -519,6 +573,9 @@ class YtDlpTests(unittest.TestCase):
         self.assertEqual(options["ffmpeg_location"], r"C:\ffmpeg\bin\ffmpeg.exe")
         self.assertEqual(options["js_runtimes"], {"deno": {"path": r"C:\deno\deno.exe"}})
         self.assertNotIn("remote_components", options)
+        # Cookies always come from a file, never from yt-dlp reading a browser's cookie store
+        # (Chrome's App-Bound Encryption breaks that on Windows).
+        self.assertNotIn("cookiesfrombrowser", options)
         self.assertTrue(options["outtmpl"]["default"].startswith(str(self.root / "cache" / "youtube-")))
         without_ffmpeg = ytdlp_source.build_ytdlp_options(self.root, site="tiktok", ffmpeg_path="")
         self.assertNotIn("+", without_ffmpeg["format"])

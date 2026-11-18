@@ -31,7 +31,7 @@ function loadApp({ fetch, confirm = () => true, pywebview } = {}) {
     const elements = {};
     const document = {
         getElementById(id) { return (elements[id] ??= makeElement(id)); },
-        querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.6.0' }; },
+        querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.6.1' }; },
         createElement(tag) { return makeElement(tag); },
     };
     const window = { addEventListener() {}, matchMedia: () => ({ matches: true }), confirm, scrollTo() {}, pywebview };
@@ -124,10 +124,10 @@ test('download progress shows percent, size, speed and the captcha notice', () =
     assert.equal(app.elements['preview-download-notice'].hidden, true);
 
     app.run(`renderDownloadProgress({active: true, source: 'douyin', phase: 'captcha', downloaded: 0, total: null,
-        percent: null, speed: null, notice: 'Vui lòng kéo captcha trên trình duyệt Edge để tiếp tục tải'}, 'preview')`);
+        percent: null, speed: null, notice: 'Vui lòng kéo captcha trên trình duyệt Chrome để tiếp tục tải'}, 'preview')`);
     assert.equal(app.elements['preview-download-notice'].hidden, false);
     assert.match(app.elements['preview-download-notice'].textContent, /captcha/);
-    assert.match(app.elements['preview-download-label'].textContent, /Edge/);
+    assert.match(app.elements['preview-download-label'].textContent, /Chrome/);
 
     app.run("renderDownloadProgress({active: false}, 'preview')");
     assert.equal(app.elements['preview-download'].hidden, true);
@@ -168,7 +168,7 @@ test('platform sessions show the login state of each platform', () => {
     app.run(`
         sourceSessionSites = [{key: 'douyin', label: 'Douyin'}, {key: 'xiaohongshu', label: 'Xiaohongshu'},
             {key: 'kuaishou', label: 'Kuaishou'}];
-        renderSourceSessions({edge_connected: true, sites: {
+        renderSourceSessions({browser_connected: true, sites: {
             douyin: {logged_in: true, has_cookies: true},
             xiaohongshu: {logged_in: null, has_cookies: true},
             kuaishou: {logged_in: false, has_cookies: false, manual_cookie: true}}});
@@ -178,9 +178,36 @@ test('platform sessions show the login state of each platform', () => {
     assert.equal(rows[0].children[1].textContent, 'Đã đăng nhập');
     assert.equal(rows[1].children[1].textContent, 'Có cookie, chưa rõ đăng nhập');
     assert.equal(rows[2].children[1].textContent, 'Chưa đăng nhập');
-    assert.equal(rows[2].children[2].textContent, 'Mở Kuaishou trên Edge');
+    assert.equal(rows[2].children[2].textContent, 'Mở Kuaishou trên Chrome');
     assert.match(rows[2].children[0].children[1].textContent, /cookie thủ công/);
 
-    app.run("renderSourceSessions({edge_connected: false, sites: {}})");
-    assert.equal(app.elements['source-sessions'].children[0].children[1].textContent, 'Edge chưa mở');
+    app.run("renderSourceSessions({browser_connected: false, sites: {}})");
+    assert.equal(app.elements['source-sessions'].children[0].children[1].textContent, 'Chrome chưa mở');
+});
+
+test('session buttons, the captcha label and the pill name the selected automation browser', async () => {
+    const app = loadApp({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ connected: false }) }) });
+    app.run(`
+        applyBrowserName('Edge');
+        sourceSessionSites = [{key: 'douyin', label: 'Douyin'}];
+        renderSourceSessions({browser_connected: false, sites: {}});
+        renderDownloadProgress({active: true, source: 'douyin', phase: 'captcha', notice: 'x'}, 'preview');
+    `);
+    const row = app.elements['source-sessions'].children[0];
+    assert.equal(row.children[2].textContent, 'Mở Douyin trên Edge');
+    assert.equal(row.children[1].textContent, 'Edge chưa mở');
+    assert.match(app.elements['preview-download-label'].textContent, /trên Edge/);
+    assert.match(app.elements['source-sessions-intro'].textContent, /Edge/);
+    // Lazy start: a browser that has not been opened yet is normal, not an error.
+    await app.run('checkEdge()');
+    assert.equal(app.elements['edge-pill'].className, 'status-pill');
+    assert.equal(app.elements['edge-pill-text'].textContent, 'Edge chưa mở');
+});
+
+test('the custom browser path only shows for the custom choice', () => {
+    const app = loadApp({ fetch: okFetch });
+    app.run("byId('setting-browser-kind').value = 'custom'; updateBrowserSettingsUI();");
+    assert.equal(app.elements['browser-path-field'].hidden, false);
+    app.run("byId('setting-browser-kind').value = 'chrome'; updateBrowserSettingsUI();");
+    assert.equal(app.elements['browser-path-field'].hidden, true);
 });

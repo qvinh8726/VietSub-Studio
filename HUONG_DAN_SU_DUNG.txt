@@ -16,33 +16,41 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 2. CAC THANH PHAN CAN CO TREN MAY
 - Windows 10/11.
 - VideOCR duoc cai tai: C:\Program Files\VideOCR\videocr-cli.exe
-- Microsoft Edge: can khi dich bang Gemini Notebook va khi tai video Douyin, Kuaishou.
-  App mo trang video trong mot profile Edge rieng va tai video bang phien cua profile do.
+- Google Chrome (mac dinh) hoac Microsoft Edge: can khi dich bang Gemini Notebook va khi tai
+  video Douyin, Kuaishou. App mo trinh duyet nay voi profile rieng cua app (thu muc
+  chrome_debug_profile trong %APPDATA%\VietSub Studio), chay song song va khong dung toi
+  Chrome/Edge ban dang dung. Trinh duyet chi mo khi can: dich bang Notebook, tai video can
+  trinh duyet, hoac khi ban bam nut dang nhap. Co the doi sang Edge hoac file .exe khac trong Thiet lap.
 - yt-dlp da co san trong file EXE. No tai video Xiaohongshu, Bilibili, TikTok, YouTube
-  va la cach tai thu hai cho Douyin.
+  va la cach tai cuoi cung cho Douyin.
 - Chi khi tai YouTube: Deno 2.3+ (khuyen dung) hoac Node.js 22+, lenh "deno" hoac "node" co trong PATH.
 - Neu dich bang API: tai khoan DeepSeek, OpenRouter hoac dich vu OpenAI-compatible khac, kem API key.
 - Tuy chon: FFmpeg/FFprobe trong PATH de quy doi vung crop OCR chinh xac hon
   va tu sua loi khi video dai doi do phan giai giua chung.
 - Tu ban 1.6.0, app khong can Douzy nua.
+- Tu ban 1.6.1, app dung profile Chrome rieng thay cho profile Edge cu: hay dang nhap lai mot lan.
 
 3. THIET LAP LAN DAU
 - Trong VietSub Studio, mo tab "Thiet lap".
+- Muc "Trinh duyet tu dong hoa": giu "Google Chrome (mac dinh)", hoac chon "Microsoft Edge"
+  hay "File .exe khac" (bam "Chon file..." de chon chrome.exe, msedge.exe, brave.exe...).
+  De bat "Chay trinh duyet an" neu muon: trinh duyet van chay day du nhung duoc thu nho.
 - Muc "Nguon tai video & dang nhap" (tuy chon, nen lam):
-  + Voi Douyin, Bilibili, Xiaohongshu va Kuaishou, bam "Mo ... tren Edge" (vi du "Mo Douyin tren Edge")
-    roi dang nhap mot lan trong cua so Edge do. Cookie o lai trong profile Edge rieng cua app.
+  + Voi Douyin, Bilibili, Xiaohongshu va Kuaishou, bam "Mo ... tren Chrome" (vi du "Mo Douyin tren Chrome";
+    ten nut theo trinh duyet da chon) roi dang nhap mot lan trong cua so do. Cookie o lai trong
+    profile rieng cua app.
   + Bam "Kiem tra lai dang nhap" de xem trang thai tung nen tang.
     Xiaohongshu cho khach cookie giong nguoi da dang nhap, nen app khong biet chac trang thai cua no.
   + Khong dang nhap van tai duoc video Douyin cong khai, nhung de gap captcha hon.
   + "Cookie thu cong (tuy chon)": chon nen tang, dan Cookie header (dang name=value; name2=value2)
-    roi bam "Luu cookie". Dung khi phien trong profile Edge bi hong. Cookie duoc ma hoa bang tai khoan
+    roi bam "Luu cookie". Dung khi phien trong profile trinh duyet bi hong. Cookie duoc ma hoa bang tai khoan
     Windows hien tai va thay cac cookie cung ten cua profile. "Xoa cookie da luu" de bo cookie nay.
   + "File cookies.txt (tuy chon)": file dinh dang Netscape cho cac nguon tai bang yt-dlp.
-    Khi co file nay, yt-dlp khong lay cookie tu Edge.
-  + YouTube khong bao gio nhan cookie cua Edge, vi yt-dlp canh bao cookie tai khoan
+    Khi co file nay, yt-dlp dung file nay thay cho cookie cua trinh duyet.
+  + YouTube khong bao gio nhan cookie cua trinh duyet, vi yt-dlp canh bao cookie tai khoan
     co the khien tai khoan Google bi gan co.
 - Chon "Cach dich phu de":
-  + Gemini Notebook qua Edge: dan link Notebook cua ban, dang
+  + Gemini Notebook qua trinh duyet: dan link Notebook cua ban, dang
     https://gemini.google.com/notebook/ID-CUA-BAN
   + DeepSeek API, OpenRouter hoac API OpenAI-compatible khac: nhap Base URL, model va API key,
     roi bam "Kiem tra ket noi API".
@@ -52,9 +60,10 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
   Voi video game Delta Force, chon mau "Game Delta Force" o "Mau co san" roi bam "Nap mau".
   Bam "Khoi phuc mac dinh" de quay ve prompt trung tinh.
 - Kiem tra cac muc bat buoc. Khi tat ca muc mau do da het, app san sang.
-- De bat "Chay Edge an" neu muon. Edge van render binh thuong nhung duoc thu nho.
-- App chi tu hien Edge khi thay man hinh dang nhap, captcha, hoac khong tim thay khung chat sau khi cho Notebook tai xong.
-- Khi app tu hien Edge, kiem tra tai khoan Google va Notebook roi bam chay lai job.
+- Lan dau dung Notebook: bam "Mo Gemini tren Chrome de dang nhap" va dang nhap Google mot lan.
+- App chi tu hien trinh duyet khi thay man hinh dang nhap, captcha, hoac khong tim thay khung chat
+  sau khi cho Notebook tai xong.
+- Khi app tu hien trinh duyet, kiem tra tai khoan Google va Notebook roi bam chay lai job.
 
 4. XU LY VIDEO
 - Dan link video vao o chinh, hoac bam "Chon video" de chon file MP4/MKV tren may.
@@ -66,12 +75,15 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
   va file duoc upload qua thu muc TEMP.
 - Nhap ten bo file neu muon. Neu de trong, app dung tieu de video hoac ten file.
 - Voi link, bam "Tai preview". Khung duoi cac nut hien phan tram, so MB va toc do tai.
+- Douyin: app doc trang chia se qua HTTP truoc, roi mo video trong Chrome cua app, cuoi cung moi
+  dung yt-dlp. Video chi hien cho nguoi da dang nhap thi app dung ngay va bao "Douyin yeu cau
+  dang nhap...": bam "Mo Douyin tren Chrome" trong Thiet lap, dang nhap 1 lan roi thu lai.
 - Keo va doi kich thuoc khung vang vao vung phu de.
 - Bam "Them vao hang doi" va lap lai voi cac video khac.
 - Bam "Chay hang doi". App xu ly tung video mot, khong chay song song. Trong luc video hien tai
   dang OCR hoac dich, app tai truoc video ke tiep.
 - Neu nut hien "Thieu thanh phan bat buoc", mo Thiet lap va xem bang kiem tra
-  (vi du thieu Edge cho Douyin/Kuaishou).
+  (vi du thieu Google Chrome cho Douyin/Kuaishou).
 - Hang doi duoc luu khi dong app. Job loi/da huy co the chay lai tu video, OCR hoac dich neu file trung gian con ton tai.
 - Bam "Huy job" se dung VideOCR, FFmpeg va luot tai video dang chay cho job do (trong khoang mot giay).
   Dong app giua chung cung dung job hien tai; mo lai app roi bam chay lai.
@@ -95,10 +107,14 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
   Bam chay lai se hoi xac nhan truoc khi lam lai tu dau.
 
 5. THOI GIAN CHO VA KHI APP KHONG PHAN HOI
-- Captcha Douyin: Edge duoc dua len truoc va app hien
-  "Vui long keo captcha tren trinh duyet Edge de tiep tuc tai".
-  Keo thanh truot trong Edge; app cho toi da 3 phut roi tu tai tiep.
-- Kuaishou va Xiaohongshu: neu trang chua hien video sau 30 giay, app dua Edge len de ban
+- Captcha Douyin: trinh duyet duoc dua len truoc va app hien
+  "Vui long keo captcha tren trinh duyet Chrome de tiep tuc tai" (theo ten trinh duyet da chon).
+  Keo thanh truot trong cua so do; app cho toi da 3 phut roi tu tai tiep.
+- Douyin can dang nhap: app dung ngay (khong cho het gio) khi Douyin chuyen khoi video hoac hien
+  bang dang nhap. Bam "Mo Douyin tren Chrome" trong Thiet lap, dang nhap 1 lan roi thu lai.
+- Mo trinh duyet lan dau: app cho toi da 15 giay de cong dieu khien 9222 san sang. Neu cong nay
+  dang bi chuong trinh khac dung, app bao ten chuong trinh do va khong tu tat no.
+- Kuaishou va Xiaohongshu: neu trang chua hien video sau 30 giay, app dua trinh duyet len de ban
   dang nhap hoac keo captcha, roi cho toi da 3 phut. Bai dang anh Xiaohongshu khong co video.
 - Luot tai truoc chay nen khong cho captcha; job se tu tai video khi toi luot.
 - Tai video: moi lan doc du lieu cho toi da 30 giay. Mat ket noi thi app tai tiep tu byte cuoi
@@ -116,18 +132,21 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 
 6. QUYEN RIENG TU
 - Video khong bi upload len may chu cua VietSub Studio. Video duoc tai va VideOCR xu ly ngay tren may.
-- Chi noi dung phu de duoc gui di de dich: toi Gemini Notebook qua Edge, hoac toi dia chi API ban da nhap.
+- Chi noi dung phu de duoc gui di de dich: toi Gemini Notebook qua trinh duyet cua app,
+  hoac toi dia chi API ban da nhap.
 - App ket noi GitHub de kiem tra ban moi moi lan mo app, va nen tang cua link video
   (Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube) de giai ma link, tai video va anh bia.
 - Cookie cua tung nen tang chi duoc gui toi chinh nen tang do. Cookie thu cong va API key
   duoc ma hoa bang tai khoan Windows hien tai va khong bao gio hien lai tren giao dien.
-- Mat khau Google va mat khau cac nen tang video do Edge quan ly; app khong doc va khong luu.
+- Mat khau Google va mat khau cac nen tang video do trinh duyet quan ly; app khong doc va khong luu.
+- App khong bao gio doc profile Chrome/Edge ban dang dung; no chi dung profile rieng cua app.
 
 7. LUU Y KHI GUI CHO NGUOI KHAC
-- File EXE chua VietSub Studio va yt-dlp, nhung khong kem VideOCR, Microsoft Edge, Deno/Node,
+- File EXE chua VietSub Studio va yt-dlp, nhung khong kem VideOCR, Google Chrome/Microsoft Edge, Deno/Node,
   tai khoan Gemini hay API key. Khong can Douzy.
 - Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini hoac API key cua ho.
 - Cau hinh cua moi may duoc luu rieng trong %APPDATA%\VietSub Studio.
-- Khong gui cho nguoi khac file app_config.json, thu muc profile Edge, cookie hay cookies.txt cua ban.
+- Khong gui cho nguoi khac file app_config.json, thu muc chrome_debug_profile (profile trinh duyet),
+  cookie hay cookies.txt cua ban.
 - Khi co phien ban moi, bam "Tai & cai ngay". App se tai ZIP chinh thuc, kiem tra SHA256, thay EXE va tu mo lai.
 - Neu khong the tu cai (vi du thu muc khong co quyen ghi), app se mo GitHub Releases de cap nhat thu cong.

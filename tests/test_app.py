@@ -118,29 +118,11 @@ class ValidationTests(unittest.TestCase):
             self.assertFalse(hasattr(api, "webview"))
             self.assertFalse(hasattr(api, "window"))
 
-    def test_edge_debug_port_is_stable_across_app_sessions(self):
-        self.assertEqual(app.get_edge_debug_port(), 9222)
-        self.assertEqual(app.edge_debug_url("/json/version"), "http://127.0.0.1:9222/json/version")
+    def test_browser_debug_port_is_stable_across_app_sessions(self):
+        self.assertEqual(app.get_browser_debug_port(), 9222)
+        self.assertEqual(app.browser_debug_url("/json/version"), "http://127.0.0.1:9222/json/version")
 
-    def test_edge_start_uses_the_stable_profile_port(self):
-        process = Mock()
-        with (
-            patch.object(app, "check_edge_status", side_effect=[False, False, True]),
-            patch.object(app, "resolve_edge_executable", return_value=r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
-            patch.object(app.subprocess, "Popen", return_value=process) as popen,
-            patch.object(app.time, "sleep"),
-        ):
-            started = app.ensure_edge_running(
-                "https://gemini.google.com/notebook/test-id",
-                background=False,
-            )
-
-        self.assertTrue(started)
-        command = popen.call_args.args[0]
-        self.assertIn("--remote-debugging-port=9222", command)
-        self.assertIn(f"--user-data-dir={app.USER_DATA_DIR_DEBUG}", command)
-
-    def test_edge_status_requires_a_real_local_edge_cdp_payload(self):
+    def test_browser_status_requires_a_real_local_cdp_payload(self):
         invalid_payload = {"Browser": "plain-http-server"}
         valid_payload = {
             "Browser": "Edg/128.0.0.0",
@@ -163,120 +145,57 @@ class ValidationTests(unittest.TestCase):
         ]
         for payload in invalid_cdp_payloads:
             with self.subTest(payload=payload):
-                self.assertFalse(app.is_valid_edge_debug_payload(payload))
-        self.assertTrue(app.is_valid_edge_debug_payload(valid_payload))
+                self.assertFalse(app.is_valid_browser_debug_payload(payload, "edge"))
+        self.assertTrue(app.is_valid_browser_debug_payload(valid_payload, "edge"))
+        # Chrome is the default automation browser, so its payload is the one accepted by default.
+        chrome_payload = {**valid_payload, "Browser": "Chrome/128.0.0.0"}
+        # The debug port is read through LOCAL_URL_OPENER, which never uses a system or VPN proxy.
         with (
-            patch.object(app, "edge_debug_owner_uses_profile", return_value=True),
+            patch.object(app, "debug_port_listening", return_value=True),
+            patch.object(app, "browser_debug_owner_uses_profile", return_value=True),
             patch.object(
-                app.urllib.request,
-                "urlopen",
+                app.LOCAL_URL_OPENER,
+                "open",
                 return_value=io.BytesIO(json.dumps(invalid_payload).encode()),
             ),
         ):
-            self.assertFalse(app.check_edge_status())
+            self.assertFalse(app.check_browser_status())
         with (
-            patch.object(app, "edge_debug_owner_uses_profile", return_value=True),
+            patch.object(app, "debug_port_listening", return_value=True),
+            patch.object(app, "browser_debug_owner_uses_profile", return_value=True),
             patch.object(
-                app.urllib.request,
-                "urlopen",
-                return_value=io.BytesIO(json.dumps(valid_payload).encode()),
-            ),
+                app.LOCAL_URL_OPENER,
+                "open",
+                return_value=io.BytesIO(json.dumps(chrome_payload).encode()),
+            ) as opener,
         ):
-            self.assertTrue(app.check_edge_status())
+            self.assertTrue(app.check_browser_status())
+        self.assertEqual(opener.call_args.args[0], "http://127.0.0.1:9222/json/version")
+        # build_opener(ProxyHandler({})) leaves out the default ProxyHandler, so neither the
+        # proxy environment variables nor the Windows proxy settings apply to this opener.
+        self.assertFalse(any(
+            isinstance(handler, app.urllib.request.ProxyHandler)
+            for handler in app.LOCAL_URL_OPENER.handlers
+        ))
 
-    def test_edge_debug_owner_requires_the_dedicated_profile(self):
-        expected_command = (
-            f'"msedge.exe" --user-data-dir="{app.USER_DATA_DIR_DEBUG}" '
-            "--remote-debugging-port=9222"
+    def test_legacy_owner_command_line_parsing_still_requires_one_exact_profile(self):
+        profile = app.USER_DATA_DIR_DEBUG
+        accepted = (
+            f'"msedge.exe" --user-data-dir="{profile}" --remote-debugging-port=9222',
+            f'"msedge.exe" "--user-data-dir={profile}"',
         )
-        metadata = {
-            "Name": "msedge.exe",
-            "ExecutablePath": r"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-            "CommandLine": expected_command,
-        }
-        with (
-            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
-            patch.object(
-                app.subprocess,
-                "run",
-                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
-            ) as run,
-        ):
-            self.assertTrue(app.edge_debug_owner_uses_profile())
-        self.assertEqual(run.call_args.args[0][0], app.POWERSHELL_EXE)
-        self.assertTrue(os.path.isabs(app.POWERSHELL_EXE))
-
-        metadata["CommandLine"] = f'"msedge.exe" "--user-data-dir={app.USER_DATA_DIR_DEBUG}"'
-        with (
-            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
-            patch.object(
-                app.subprocess,
-                "run",
-                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
-            ),
-        ):
-            self.assertTrue(app.edge_debug_owner_uses_profile())
-
-        metadata["CommandLine"] = f'"msedge.exe" --user-data-dir="{app.USER_DATA_DIR_DEBUG} Backup"'
-        with (
-            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
-            patch.object(
-                app.subprocess,
-                "run",
-                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
-            ),
-        ):
-            self.assertFalse(app.edge_debug_owner_uses_profile())
-
-        metadata["CommandLine"] = (
-            f'"msedge.exe" "--ignored=--user-data-dir={app.USER_DATA_DIR_DEBUG}" '
-            f'"--user-data-dir={app.USER_DATA_DIR_DEBUG} Backup"'
+        rejected = (
+            f'"msedge.exe" --user-data-dir="{profile} Backup"',
+            f'"msedge.exe" "--ignored=--user-data-dir={profile}" "--user-data-dir={profile} Backup"',
+            f'"msedge.exe" --user-data-dir="{profile}" "--user-data-dir={profile}"',
+            '"msedge.exe" --remote-debugging-port=9222',
         )
-        with (
-            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
-            patch.object(
-                app.subprocess,
-                "run",
-                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
-            ),
-        ):
-            self.assertFalse(app.edge_debug_owner_uses_profile())
-
-        metadata["CommandLine"] = f'{expected_command} "--user-data-dir={app.USER_DATA_DIR_DEBUG}"'
-        with (
-            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
-            patch.object(
-                app.subprocess,
-                "run",
-                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
-            ),
-        ):
-            self.assertFalse(app.edge_debug_owner_uses_profile())
-
-        metadata["CommandLine"] = expected_command
-        metadata["Name"] = "python.exe"
-        with (
-            patch.object(app, "resolve_edge_executable", return_value=metadata["ExecutablePath"]),
-            patch.object(
-                app.subprocess,
-                "run",
-                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
-            ),
-        ):
-            self.assertFalse(app.edge_debug_owner_uses_profile())
-
-        metadata["Name"] = "msedge.exe"
-        trusted_executable = metadata["ExecutablePath"]
-        metadata["ExecutablePath"] = r"C:\\Temp\\msedge.exe"
-        with (
-            patch.object(app, "resolve_edge_executable", return_value=trusted_executable),
-            patch.object(
-                app.subprocess,
-                "run",
-                return_value=Mock(returncode=0, stdout=json.dumps(metadata)),
-            ),
-        ):
-            self.assertFalse(app.edge_debug_owner_uses_profile())
+        for command_line in accepted:
+            with self.subTest(command_line=command_line):
+                self.assertTrue(app.browser_command_line_uses_profile(command_line, profile))
+        for command_line in rejected:
+            with self.subTest(command_line=command_line):
+                self.assertFalse(app.browser_command_line_uses_profile(command_line, profile))
 
     def test_edge_resolver_does_not_trust_path_fallback(self):
         with (
@@ -303,20 +222,19 @@ class ValidationTests(unittest.TestCase):
 
     def test_edge_start_reuses_an_existing_debug_endpoint(self):
         with (
-            patch.object(app, "check_edge_status", return_value=True),
+            patch.object(app, "check_browser_status", return_value=True),
             patch.object(app.subprocess, "Popen") as popen,
         ):
             self.assertTrue(
-                app.ensure_edge_running(
-                    "https://gemini.google.com/notebook/test-id",
+                app.ensure_browser_running(
                     background=False,
                 )
             )
         popen.assert_not_called()
 
-    def test_edge_status_polling_reuses_the_verified_debug_session(self):
+    def test_browser_status_polling_reuses_the_verified_debug_session(self):
         payload = {
-            "Browser": "Edg/128.0.0.0",
+            "Browser": "Chrome/128.0.0.0",
             "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/session-1",
         }
 
@@ -324,27 +242,28 @@ class ValidationTests(unittest.TestCase):
             return io.BytesIO(json.dumps(payload).encode())
 
         with (
-            patch.object(app, "edge_status_cache", {}, create=True),
-            patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen),
-            patch.object(app, "edge_debug_owner_uses_profile", return_value=True) as owner_check,
+            patch.object(app, "browser_status_cache", {}, create=True),
+            patch.object(app, "debug_port_listening", return_value=True),
+            patch.object(app.LOCAL_URL_OPENER, "open", side_effect=fake_urlopen),
+            patch.object(app, "browser_debug_owner_uses_profile", return_value=True) as owner_check,
         ):
             for _ in range(3):
-                self.assertTrue(app.check_edge_status())
+                self.assertTrue(app.check_browser_status())
             self.assertEqual(owner_check.call_count, 1)
 
             payload["webSocketDebuggerUrl"] = "ws://127.0.0.1:9222/devtools/browser/session-2"
-            self.assertTrue(app.check_edge_status())
+            self.assertTrue(app.check_browser_status())
             self.assertEqual(owner_check.call_count, 2)
 
-            self.assertTrue(app.check_edge_status(fresh=True))
+            self.assertTrue(app.check_browser_status(fresh=True))
             self.assertEqual(owner_check.call_count, 3)
 
     def test_automation_always_reverifies_the_edge_owner(self):
         with (
-            patch.object(app, "check_edge_status", return_value=True) as status,
+            patch.object(app, "check_browser_status", return_value=True) as status,
             patch.object(app.subprocess, "Popen") as popen,
         ):
-            self.assertTrue(app.ensure_edge_running("https://gemini.google.com/notebook/test-id"))
+            self.assertTrue(app.ensure_browser_running())
         status.assert_called_once_with(fresh=True)
         popen.assert_not_called()
 
@@ -2996,7 +2915,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("ready_local", data)
         self.assertIn("ready_douyin", data)
         self.assertTrue(data["checks"]["videocr"]["required"])
-        self.assertTrue(data["checks"]["edge"]["required"])
+        self.assertTrue(data["checks"]["browser"]["required"])
         self.assertFalse(data["checks"]["ffmpeg"]["required"])
 
     def test_api_translation_health_does_not_require_notebook_or_edge(self):
@@ -3012,7 +2931,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertTrue(data["checks"]["translation"]["ok"])
         self.assertFalse(data["checks"]["notebook"]["required"])
-        self.assertFalse(data["checks"]["edge"]["required"])
+        self.assertFalse(data["checks"]["browser"]["required"])
 
     def test_update_endpoint_reports_a_new_release(self):
         update = {
@@ -3116,8 +3035,8 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(app.workflow_lock.locked())
 
     def test_short_share_link_is_resolved_and_downloaded_without_douzy(self):
-        # v1.6.0: the share link is resolved over HTTP and the video is captured in
-        # the dedicated Edge profile; the Douzy sidecar is never started.
+        # Since v1.6.0 the share link is resolved over HTTP and the video is captured in
+        # the automation browser's own profile; the Douzy sidecar is never started.
         short_url = "https://v.douyin.com/AbCdEfG/"
         downloads = {}
 
@@ -3144,8 +3063,10 @@ class ApiTests(unittest.TestCase):
                 }),
                 patch.object(app, "start_douzy_sidecar", side_effect=AssertionError("Douzy must not run")),
                 patch.object(app.douyin_source, "resolve_short_link", return_value="123") as resolve,
-                patch.object(app, "resolve_url_via_edge") as edge_resolve,
-                patch.object(app, "download_douyin_via_edge", side_effect=fake_edge_download),
+                patch.object(app, "resolve_url_via_browser") as edge_resolve,
+                patch.object(app, "download_douyin_via_share_page",
+                             side_effect=app.VideoDownloadError("Trang chia sẻ không có dữ liệu video")),
+                patch.object(app, "download_douyin_via_browser", side_effect=fake_edge_download),
                 patch.object(app, "prepare_project_files", return_value={
                     "project_name": "Test video",
                     "project_dir": "project",

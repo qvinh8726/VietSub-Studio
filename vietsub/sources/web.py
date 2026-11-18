@@ -1,7 +1,7 @@
 """Links of video sites other than Douyin.
 
 TikTok, YouTube, Bilibili and Xiaohongshu are downloaded by yt-dlp; Kuaishou has
-no yt-dlp extractor and is captured in the user's Edge profile. Only one exact
+no yt-dlp extractor and is captured in the automation browser's profile. Only one exact
 video is accepted per link: playlists, channels and profiles fail, so a queue item
 never expands into many downloads.
 """
@@ -189,7 +189,7 @@ def resolve_short_link(request, *, opener=None, timeout=10, max_hops=5, user_age
 
     yt-dlp resolves TikTok and Bilibili short links itself, so other sites are
     returned unchanged. Raises SourceError when the link leaves the platform or
-    does not lead to a single video; the caller can then open it in Edge.
+    does not lead to a single video; the caller can then open it in the browser.
     """
     if not request.short_link or request.site not in SITE_DOMAINS:
         return request

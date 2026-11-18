@@ -1,9 +1,9 @@
-"""Capture a video file URL from any web page opened in the user's Edge profile.
+"""Capture a video file URL from any web page opened in the automation browser's profile.
 
 Used for Kuaishou (no yt-dlp extractor) and as the fallback for Xiaohongshu. The
 page plays the video itself, so the URL comes from the <video> element or from
 the media responses the page receives. When nothing shows up in time the user is
-asked to sign in or solve a captcha in Edge.
+asked to sign in or solve a captcha in that browser.
 """
 
 import time
@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 
 from .base import DownloadCancelledError, SourceError, normalize_media_url
 
-ATTENTION_NOTICE = "Vui lòng đăng nhập hoặc kéo captcha trên trình duyệt Edge để tiếp tục tải"
+# {browser} is the short name of the automation browser ("Chrome", "Edge"...).
+ATTENTION_NOTICE = "Vui lòng đăng nhập hoặc kéo captcha trên trình duyệt {browser} để tiếp tục tải"
 
 DOM_VIDEO_SCRIPT = """() => {
     const urls = [];
@@ -81,7 +82,7 @@ def capture_media_from_page(
 ):
     """Open url in a new tab and return the video URLs the page uses.
 
-    on_attention(active, page) is called when the user is asked to act in Edge
+    on_attention(active, page) is called when the user is asked to act in the browser
     (sign in or captcha) and again when that is over. With allow_attention_wait=False
     (background prefetch) the capture gives up after load_timeout instead.
     """
@@ -129,7 +130,7 @@ def capture_media_from_page(
         if not candidates:
             raise SourceError(
                 "Không tìm thấy video trên trang. Bài đăng có thể là ảnh, ở chế độ riêng tư, "
-                "hoặc cần đăng nhập/xác minh trong Edge."
+                "hoặc cần đăng nhập/xác minh trong trình duyệt của app."
             )
         result = BrowserCapture(media_urls=candidates)
         try:

@@ -293,8 +293,117 @@ class AwemeDetailTests(unittest.TestCase):
         self.assertFalse(douyin.is_captcha_probe(None))
 
 
-class WebSourceTests(unittest.TestCase):
-    def test_youtube_links_are_reduced_to_one_video(self):
+def router_page(page_data):
+    """A share page from www.iesdouyin.com with its window._ROUTER_DATA."""
+    data = {"loaderData": {"video_layout": None, "video_(id)/page": page_data}}
+    return f"<html><body><script>window._ROUTER_DATA = {json.dumps(data, ensure_ascii=False)}</script></body></html>"
+
+
+def share_item(**overrides):
+    item = {
+        "aweme_id": AWEME_ID,
+        "desc": "Video chia sẻ",
+        "author": {"nickname": "Tác giả"},
+        "video": {
+            "duration": 15_000,
+            "play_addr": {"uri": "v0200fg", "url_list": [
+                "https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v0200fg&ratio=720p&line=0"]},
+            "cover": {"url_list": ["https://p3-sign.douyinpic.com/cover.jpeg"]},
+            "bit_rate": None,
+        },
+    }
+    item.update(overrides)
+    return item
+
+
+class FakeHtmlOpener:
+    def __init__(self, html, final_url=None):
+        self.html = html
+        self.final_url = final_url
+        self.requests = []
+
+    def open(self, request, timeout=None):
+        self.requests.append((request.full_url, request.get_header("User-agent")))
+        body = self.html.encode("utf-8")
+        final_url = self.final_url or request.full_url
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return final_url
+
+            def read(self, _size=-1):
+                return body
+
+        return Response()
+
+
+class SharePageTests(unittest.TestCase):
+    def test_router_data_gives_the_watermark_free_play_address(self):
+        html = router_page({"itemId": AWEME_ID, "videoInfoRes": {"item_list": [share_item()], "filter_list": []}})
+        video = douyin.parse_share_page(html, AWEME_ID)
+        self.assertEqual(
+            video.play_urls[0],
+            "https://www.iesdouyin.com/aweme/v1/play/?video_id=v0200fg&ratio=720p&line=0",
+        )
+        self.assertEqual((video.title, video.author, video.duration_seconds), ("Video chia sẻ", "Tác giả", 15.0))
+        self.assertEqual(video.cover_urls, ["https://p3-sign.douyinpic.com/cover.jpeg"])
+
+    def test_h264_renditions_come_first_when_the_page_lists_bitrates(self):
+        item = share_item()
+        item["video"]["bit_rate"] = [
+            {"is_h265": 1, "bit_rate": 900, "play_addr": {"url_list": ["https://v3-dy.douyinvod.com/hevc.mp4"]}},
+            {"is_h265": 0, "bit_rate": 500, "play_addr": {"url_list": ["https://v3-dy.douyinvod.com/avc.mp4"]}},
+        ]
+        video = douyin.parse_share_page(router_page({"videoInfoRes": {"item_list": [item]}}), AWEME_ID)
+        self.assertEqual(video.play_urls[0], "https://v3-dy.douyinvod.com/avc.mp4")
+
+    def test_render_data_pages_are_understood_too(self):
+        payload = quote(json.dumps({"app": {"videoInfoRes": {"item_list": [share_item()]}}}))
+        html = f'<script id="RENDER_DATA" type="application/json">{payload}</script>'
+        self.assertEqual(douyin.parse_share_page(html, AWEME_ID).title, "Video chia sẻ")
+
+    def test_a_page_without_this_videos_data_raises_a_source_error(self):
+        # The current client-rendered page only carries the item ID.
+        shell = router_page({"itemId": AWEME_ID, "isVideoOptimize": True})
+        with self.assertRaisesRegex(base.SourceError, "không có dữ liệu"):
+            douyin.parse_share_page(shell, AWEME_ID)
+        other = router_page({"videoInfoRes": {"item_list": [share_item(aweme_id="999")]}})
+        with self.assertRaises(base.SourceError):
+            douyin.parse_share_page(other, AWEME_ID)
+        removed = router_page({"videoInfoRes": {"item_list": [], "filter_list": [
+            {"aweme_id": AWEME_ID, "filter_reason": "status_deleted"}]}})
+        with self.assertRaisesRegex(base.SourceError, "status_deleted"):
+            douyin.parse_share_page(removed, AWEME_ID)
+        with self.assertRaises(base.SourceError):
+            douyin.parse_share_page("<html>验证码</html>", AWEME_ID)
+
+    def test_image_posts_are_reported_as_having_no_video(self):
+        item = share_item(images=[{"url_list": ["https://p3.douyinpic.com/1.jpeg"]}])
+        item["video"]["play_addr"] = {"url_list": []}
+        with self.assertRaises(douyin.ImagePostError):
+            douyin.parse_share_page(router_page({"videoInfoRes": {"item_list": [item]}}), AWEME_ID)
+
+    def test_the_share_page_is_fetched_with_an_iphone_user_agent(self):
+        opener = FakeHtmlOpener(router_page({"videoInfoRes": {"item_list": [share_item()]}}))
+        video = douyin.video_from_share_page(AWEME_ID, opener=opener)
+        self.assertTrue(video.play_urls)
+        url, user_agent = opener.requests[0]
+        self.assertEqual(url, f"https://www.iesdouyin.com/share/video/{AWEME_ID}/")
+        self.assertIn("iPhone", user_agent)
+        self.assertEqual(douyin.SHARE_REFERER, "https://www.iesdouyin.com/")
+
+    def test_a_share_page_that_leaves_douyin_is_rejected(self):
+        opener = FakeHtmlOpener(router_page({"videoInfoRes": {"item_list": [share_item()]}}),
+                                final_url="https://evil.example/share")
+        with self.assertRaisesRegex(base.SourceError, "ngoài Douyin"):
+            douyin.video_from_share_page(AWEME_ID, opener=opener)
+
         for url, video_id in (
             ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123&t=42", "dQw4w9WgXcQ"),
             ("https://youtu.be/dQw4w9WgXcQ?si=abc", "dQw4w9WgXcQ"),

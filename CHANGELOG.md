@@ -4,6 +4,40 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-18
+
+### Changed
+
+- Google Chrome is now the automation browser by default, with its own profile in the config folder (`chrome_debug_profile`, passed as `--user-data-dir`). It runs next to the Chrome or Edge you work in and never touches your profile. Chrome is found through the `App Paths` registry entry, `Program Files`, `Program Files (x86)`, `%LOCALAPPDATA%\Google\Chrome\Application` and then `PATH`. Settings can switch to Microsoft Edge (`edge_debug_profile`) or another Chromium `.exe` (`custom_browser_profile`).
+- The browser only starts when it is needed: Gemini Notebook translation, a download that needs a page, or a login button in Settings. Opening the app with an API provider, the status pill, the health check and the login list never start it, and the pill shows "not open" as a normal state instead of an error.
+- Douyin tries three methods in order. (1) The public share page `www.iesdouyin.com/share/video/<id>/` over HTTP with an iPhone User-Agent: the `_ROUTER_DATA` or `RENDER_DATA` data gives the play address (`playwm` becomes `play`, H.264 preferred) without opening a browser. (2) The video in the browser at `www.douyin.com/jingxuan?modal_id=<id>`: the `aweme/detail` JSON, the page's `RENDER_DATA` or the modal's `<video>`. (3) yt-dlp with cookies exported from the browser profile (`context.cookies()`), a pasted Cookie header or `cookies.txt`, always through a temporary Netscape file that is deleted afterwards. `--cookies-from-browser` is never used.
+- The Edge profile of 1.6.0 (`%LOCALAPPDATA%\Microsoft\Edge\User Data Debug`) is no longer used. Sign in once more to the platforms, and to Google for Gemini Notebook, in the new browser profile.
+
+### Fixed
+
+- Opening the app while Edge was running could fail with "debug port 9222 does not respond", and two requests at once could open two tabs. The cold-start wait ran the PowerShell/WMI owner check (about 1 s, sometimes blocked) on every 0.25 s poll. It now polls `http://127.0.0.1:9222/json/version` every 0.3 s for at most 15 s of wall time, reads the Windows TCP table first (a refused connection to 127.0.0.1 takes about 2 s on Windows), never sends that request through a system or VPN proxy, and checks the port owner once through the Windows API (about 2 ms; PowerShell is only the fallback). A lock lets only one request start the browser, which opens on `about:blank`; Notebook and the login pages reuse that tab.
+- A start error now says why: the browser is not installed, port 9222 is used by another program (named in the message, never closed), or the app's profile is open without the debug port. An older automation browser of this app on the port, including the 1.6.0 Edge profile, is closed first.
+- A Douyin video that is only shown to signed-in users no longer leaves the preview on "reading the video page" until the timeout. When Douyin leaves the video (for example a redirect to `/jingxuan` or to another video's modal) or shows its login popup without the video data, the download stops at once and asks you to open Douyin in Chrome from Settings, sign in once and try again. yt-dlp is then skipped, because it would get the same guest cookies, unless a Douyin Cookie header or a `cookies.txt` is set.
+- A feed video that plays behind the modal is never taken for the requested one, and a share link that the browser resolves to Douyin's "video unavailable" feed page is rejected instead of downloading another video.
+- "Could not open Microsoft Edge to download the Douyin video" followed by yt-dlp's "Fresh cookies (not necessarily logged in) are needed": downloads now use the browser chosen in Settings, and yt-dlp gets fresh cookies exported from its profile.
+- The "Choose video", "Load preview" and "Add to queue" buttons no longer squeeze into one row, where "Add to queue" wrapped over four lines. The first two share a row, the main button has its own full-width row, labels never wrap, and below 480 px the buttons stack.
+- A Douyin share page without data is logged as information instead of an error, and `/api/edge/show` returns a JSON error instead of a server error when Playwright fails.
+
+### Added
+
+- Settings: "Automation browser" (Google Chrome, Microsoft Edge or a custom `.exe` with a file picker), the profile path, and the hidden-browser toggle for every translation provider. The login buttons, header pill, captcha notice, health check and login list name the selected browser.
+
+### Landing page
+
+- Version 1.6.1, the six supported platforms, local MP4/MKV files used in place, and Chrome with its own profile; Douzy is gone.
+- `npm run lint` (ESLint 9 with `eslint-config-next`) and `npm run typecheck` (TypeScript 7). typescript-eslint cannot use TypeScript 7 yet, so `@typescript/typescript6` is installed under the `typescript` name and `next build` type-checks with it, as the TypeScript 7 release notes recommend.
+- Next.js 16.3.0 -> 16.4.6, which fixes the advisories reported for 16.3.0. `npm audit` still lists high-severity advisories in ESLint's dependencies (development only, nothing in the built site).
+
+### Known issues
+
+- Douyin's share page currently has no video data for most videos (the page loads it with signed JavaScript requests), so the HTTP method falls through in under a second and the browser is used.
+- Videos that Douyin only shows to signed-in users need a one-time login in the app's browser profile.
+
 ## [1.6.0] - 2026-11-17
 
 This release also contains every fix listed under 1.5.4.

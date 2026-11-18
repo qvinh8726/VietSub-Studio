@@ -22,7 +22,8 @@ const monoFont = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "VietSub Studio — OCR và dịch phụ đề video",
-  description: "Công cụ Windows mã nguồn mở để OCR phụ đề cháy trên video, dịch sang tiếng Việt và giữ nguyên timestamp SRT.",
+  description:
+    "Công cụ Windows mã nguồn mở: tải video Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube hoặc dùng file trên máy, OCR phụ đề cháy, dịch sang tiếng Việt và giữ nguyên timestamp SRT.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

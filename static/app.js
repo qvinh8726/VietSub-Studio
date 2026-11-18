@@ -32,6 +32,8 @@
         let connectionOk = true;
         let cancellingJobId = '';
         let translationProviderName = 'Gemini';
+        // Short name of the automation browser chosen in Settings (Chrome by default).
+        let browserName = 'Chrome';
 
         function showToast(message, type = 'success') {
             clearTimeout(toastTimer);
@@ -196,7 +198,7 @@
             const box = byId(`${prefix}-download`);
             if (!download || !download.active) { box.hidden = true; return; }
             box.hidden = false;
-            const phases = {start: 'Đang chuẩn bị tải', capture: 'Đang đọc trang video', captcha: 'Đang chờ bạn thao tác trên Edge', download: 'Đang tải'};
+            const phases = {start: 'Đang chuẩn bị tải', capture: 'Đang đọc trang video', captcha: `Đang chờ bạn thao tác trên ${browserName}`, download: 'Đang tải'};
             byId(`${prefix}-download-label`).textContent = `${phases[download.phase] || 'Đang tải'} · ${sourceLabels[download.source] || 'video'}`;
             const parts = [];
             if (download.percent != null) parts.push(`${download.percent}%`);
@@ -478,7 +480,7 @@
                 const actions = document.createElement('div'); actions.className = 'queue-item-actions';
                 if (job.status !== 'running') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = job.status === 'queued' ? 'Xoá khỏi hàng đợi' : 'Xoá job'; remove.onclick = () => removeQueueJob(job.id, job.status); actions.appendChild(remove); }
                 if (job.status === 'error' || job.status === 'cancelled') { const retry = document.createElement('button'); retry.className = 'btn-secondary'; retry.textContent = job.retry_step === 'translate' ? 'Chạy lại bước dịch' : job.retry_step === 'ocr' ? 'Chạy lại từ OCR' : 'Chạy lại từ video'; retry.onclick = () => retryQueueJob(job.id); actions.appendChild(retry); }
-                if (job.needs_edge_login) { const login = document.createElement('button'); login.className = 'btn-ghost'; login.textContent = 'Mở Edge đăng nhập'; login.onclick = showEdgeLogin; actions.appendChild(login); }
+                if (job.needs_edge_login) { const login = document.createElement('button'); login.className = 'btn-ghost'; login.textContent = `Mở ${browserName} đăng nhập`; login.onclick = showEdgeLogin; actions.appendChild(login); }
                 if (job.status === 'success' && job.result_ready) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true); actions.appendChild(open); }
                 else if ((job.status === 'error' || job.status === 'cancelled') && job.result?.project_dir) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở thư mục làm dở'; open.onclick = () => openResultPath(job.result.project_dir); actions.appendChild(open); }
                 if (actions.children.length) row.appendChild(actions);
@@ -545,7 +547,7 @@
         }
 
         async function showEdgeLogin() {
-            try { await fetchJson('/api/edge/show', {method:'POST'}); showToast('Đã mở Edge. Đăng nhập xong rồi bấm chạy lại job.'); }
+            try { await fetchJson('/api/edge/show', {method:'POST', timeoutMs: 90000}); showToast(`Đã mở ${browserName}. Đăng nhập xong rồi bấm chạy lại job.`); }
             catch (error) { showToast(error.message, 'error'); }
         }
 
@@ -626,9 +628,58 @@
             catch (error) { showToast(error.message, 'error'); }
         }
 
+        // The browser opens on demand (Notebook, a download that needs it, a login button),
+        // so "not open yet" is the normal idle state, not an error.
         async function checkEdge() {
-            try { const data = await fetchJson('/api/check-edge'); byId('edge-pill').className = `status-pill ${data.connected ? 'ready' : 'error'}`; byId('edge-pill').querySelector('span').textContent = data.connected ? 'Edge sẵn sàng' : 'Edge chưa kết nối'; }
+            try {
+                const data = await fetchJson('/api/check-edge');
+                if (data.browser && data.browser !== browserName) applyBrowserName(data.browser);
+                byId('edge-pill').className = data.connected ? 'status-pill ready' : 'status-pill';
+                byId('edge-pill-text').textContent = data.connected ? `${browserName} sẵn sàng` : `${browserName} chưa mở`;
+            }
             catch (_) {}
+        }
+
+        // Every label that names the automation browser follows the choice in Settings.
+        function applyBrowserName(name) {
+            browserName = String(name || '').trim() || 'Chrome';
+            byId('source-sessions-intro').textContent = `Mỗi nền tảng chỉ cần đăng nhập một lần trong profile ${browserName} riêng của app; cookie ở lại trong profile đó. Đăng nhập giúp ít gặp captcha và tải được video cần tài khoản.`;
+            byId('show-edge-btn').textContent = `Mở Gemini trên ${browserName} để đăng nhập`;
+        }
+
+        function updateBrowserSettingsUI(data = null) {
+            const kind = byId('setting-browser-kind').value || 'chrome';
+            byId('browser-path-field').hidden = kind !== 'custom';
+            if (!data) return;
+            const where = data.browser_profile_dir ? ` Profile riêng: ${data.browser_profile_dir}.` : '';
+            const missing = data.browser_executable ? '' : (kind === 'custom'
+                ? ' Hãy chọn file .exe của trình duyệt.'
+                : ` Chưa tìm thấy ${data.browser_label || 'trình duyệt này'} trên máy.`);
+            byId('browser-help').textContent = `App mở trình duyệt này với profile riêng, chạy song song và không đụng tới trình duyệt bạn đang dùng. Trình duyệt chỉ mở khi cần: dịch bằng Gemini Notebook, tải video cần trình duyệt, hoặc khi bạn bấm đăng nhập.${where}${missing}`;
+        }
+
+        function applyBrowserSettings(data) {
+            if (!data || !data.browser_kind) return;
+            byId('setting-browser-kind').value = data.browser_kind;
+            byId('setting-browser-path').value = data.browser_path || '';
+            applyBrowserName(data.browser_short_label);
+            updateBrowserSettingsUI(data);
+        }
+
+        async function chooseBrowserExecutable() {
+            const api = window.pywebview && window.pywebview.api;
+            if (!api || typeof api.choose_browser_executable !== 'function') {
+                showToast('Hãy dán đường dẫn đầy đủ tới file .exe của trình duyệt vào ô bên cạnh.', 'error');
+                byId('setting-browser-path').focus();
+                return;
+            }
+            try {
+                const path = await api.choose_browser_executable();
+                if (!path) return;
+                byId('setting-browser-path').value = path;
+                clearTimeout(saveSettingsTimer);
+                await saveSettingsNow();
+            } catch (error) { showToast(error.message || String(error), 'error'); }
         }
 
         function updateApiKeyHelp() {
@@ -644,8 +695,8 @@
             const provider = byId('setting-translation-provider').value;
             const usesNotebook = provider === 'notebook';
             translationProviderName = {notebook: 'Gemini', deepseek: 'DeepSeek API', openrouter: 'OpenRouter'}[provider] || 'API dịch';
+            // The browser settings stay visible for every provider: downloads use the browser too.
             byId('notebook-settings').hidden = !usesNotebook;
-            byId('edge-settings').hidden = !usesNotebook;
             byId('api-translation-settings').hidden = usesNotebook;
             if (applyPreset && !usesNotebook) {
                 const previousPreset = translationProviderPresets[lastTranslationProvider] || {};
@@ -691,6 +742,7 @@
                 byId('setting-ocr-speed').value = data.ocr_model_mode || 'auto';
                 byId('setting-frames-skip').value = data.ocr_frames_to_skip == null ? '' : String(data.ocr_frames_to_skip);
                 byId('setting-edge-background').checked = data.edge_background !== false;
+                applyBrowserSettings(data);
                 const shortcutButton = byId('create-shortcut-btn');
                 shortcutButton.disabled = !data.desktop_shortcut_supported;
                 shortcutButton.textContent = data.desktop_shortcut_exists ? 'Tạo lại shortcut ngoài Desktop' : 'Tạo shortcut ngoài Desktop';
@@ -720,7 +772,17 @@
                     if (apiKey) payload.translation_api_key = apiKey;
                 }
                 if (options.clearApiKey) payload.translation_api_key = null;
+                const browserKind = byId('setting-browser-kind').value || 'chrome';
+                const browserPath = byId('setting-browser-path').value.trim();
+                // A custom browser is saved once its .exe is set; until then the previous browser stays in use.
+                if (browserKind !== 'custom') payload.browser_kind = browserKind;
+                else if (browserPath) { payload.browser_kind = 'custom'; payload.browser_path = browserPath; }
                 const saved = await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+                if (payload.browser_kind) {
+                    const previousBrowser = browserName;
+                    applyBrowserSettings(saved);
+                    if (browserName !== previousBrowser) { checkEdge(); loadSourceSessions(); }
+                }
                 if (payload.translation_api_key) byId('setting-api-key').value = '';
                 // Keys are stored per provider and API host, so the server says whether
                 // the provider selected now has one.
@@ -815,13 +877,14 @@
                 const data = await fetchJson('/api/health'); list.replaceChildren();
                 healthReadiness = {local: Boolean(data.ready_local), douyin: Boolean(data.ready_douyin), sources: data.ready_sources || {}};
                 renderQueue();
-                const labels = {videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',edge:'Microsoft Edge',douyin_source:'Tải Douyin/Kuaishou (Edge)',ytdlp:'yt-dlp',js_runtime:'JavaScript cho YouTube'};
-                Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; const strong=document.createElement('strong'); strong.textContent=`${labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
+                const labels = {videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',browser:'Trình duyệt tự động hoá',douyin_source:'Tải Douyin/Kuaishou',ytdlp:'yt-dlp',js_runtime:'JavaScript cho YouTube'};
+                // The browser check carries the name of the browser chosen in Settings.
+                Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; const strong=document.createElement('strong'); strong.textContent=`${item.label||labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
             } catch (error) { healthReadiness = {local: false, douyin: false, sources: {}}; renderQueue(); list.textContent = error.message; }
         }
 
-        function sessionState(site, edgeConnected) {
-            if (!edgeConnected) return {text: 'Edge chưa mở', css: ''};
+        function sessionState(site, browserConnected) {
+            if (!browserConnected) return {text: `${browserName} chưa mở`, css: ''};
             if (site.logged_in === true) return {text: 'Đã đăng nhập', css: 'ok'};
             if (site.logged_in === false) return {text: 'Chưa đăng nhập', css: 'warn'};
             return site.has_cookies ? {text: 'Có cookie, chưa rõ đăng nhập', css: ''} : {text: 'Chưa có cookie', css: 'warn'};
@@ -840,17 +903,18 @@
                 const detail = document.createElement('small');
                 detail.textContent = site.manual_cookie || sourceCookiesSet[key] ? 'Đang dùng cookie thủ công' : '';
                 info.append(name, detail);
-                const state = sessionState(site, Boolean(data && data.edge_connected));
+                const connected = Boolean(data && data.browser_connected);
+                const state = sessionState(site, connected);
                 const pill = document.createElement('span'); pill.className = `session-pill ${state.css}`; pill.textContent = state.text;
                 const button = document.createElement('button'); button.type = 'button'; button.className = 'btn-ghost';
-                button.textContent = `Mở ${label || key} trên Edge`;
+                button.textContent = `Mở ${label || key} trên ${browserName}`;
                 button.onclick = () => openSourceLogin(key, label || key);
                 row.append(info, pill, button);
                 list.appendChild(row);
             });
-            byId('source-sessions-help').textContent = (data && data.error) || (data && data.edge_connected
-                ? 'Trạng thái đọc từ cookie của profile Edge riêng. Xiaohongshu cho khách cookie giống người đã đăng nhập nên app không phân biệt được.'
-                : 'Edge chưa mở. Bấm "Mở … trên Edge" để đăng nhập; app tự mở profile Edge riêng.');
+            byId('source-sessions-help').textContent = (data && data.error) || (data && data.browser_connected
+                ? `Trạng thái đọc từ cookie của profile ${browserName} riêng. Xiaohongshu cho khách cookie giống người đã đăng nhập nên app không phân biệt được.`
+                : `${browserName} chưa mở. Bấm "Mở … trên ${browserName}" để đăng nhập; app tự mở ${browserName} với profile riêng, không đụng ${browserName} bạn đang dùng.`);
         }
 
         async function loadSourceSessions() {
@@ -865,7 +929,8 @@
             await runOnce(`open-source-${key}`, async () => {
                 try {
                     await fetchJson(`/api/sources/${encodeURIComponent(key)}/open`, {method: 'POST', timeoutMs: 90000});
-                    showToast(`Đã mở ${label} trên Edge. Đăng nhập xong, bấm "Kiểm tra lại đăng nhập".`);
+                    showToast(`Đã mở ${label} trên ${browserName}. Đăng nhập xong, bấm "Kiểm tra lại đăng nhập".`);
+                    checkEdge();
                 } catch (error) { showToast(error.message, 'error'); }
             });
         }
@@ -994,6 +1059,16 @@
             byId('setting-ocr-speed').addEventListener('change', saveSettings); byId('setting-frames-skip').addEventListener('change', saveSettings);
             byId('choose-output-btn').onclick=chooseOutputDirectory;
             byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;
+            byId('setting-browser-kind').addEventListener('change', () => {
+                updateBrowserSettingsUI();
+                if (byId('setting-browser-kind').value === 'custom' && !byId('setting-browser-path').value.trim()) {
+                    byId('browser-help').textContent = 'Chọn hoặc dán đường dẫn file .exe của một trình duyệt Chromium (Chrome, Edge, Brave, Cốc Cốc…). App giữ trình duyệt cũ cho tới khi có file .exe.';
+                    return;
+                }
+                saveSettings();
+            });
+            byId('setting-browser-path').addEventListener('change', saveSettings);
+            byId('choose-browser-path-btn').onclick=chooseBrowserExecutable;
             byId('create-shortcut-btn').onclick=createDesktopShortcut;
             byId('health-btn').onclick=loadHealth;
             byId('refresh-sessions-btn').onclick=loadSourceSessions;

@@ -33,11 +33,9 @@ import {
   PackageCheck,
   Play,
   Plus,
-  RotateCcw,
   ScanText,
   Settings2,
   ShieldCheck,
-  Sparkles,
   Upload,
   X,
   Zap,
@@ -119,7 +117,7 @@ const featureItems: Array<{
   {
     number: "03",
     title: "Dịch qua Notebook hoặc API",
-    text: "Chọn Gemini Notebook qua Edge, DeepSeek, OpenRouter hoặc gateway OpenAI-compatible do bạn tự cấu hình.",
+    text: "Chọn Gemini Notebook qua Google Chrome với profile riêng của app, DeepSeek, OpenRouter hoặc gateway OpenAI-compatible do bạn tự cấu hình.",
     icon: Languages,
     href: "#providers",
     tone: "blue",
@@ -142,8 +140,8 @@ const workflowSteps = [
   {
     number: "01",
     title: "Nhận nguồn",
-    short: "Douyin hoặc MP4 local",
-    text: "Dán link Douyin đầy đủ, link ngắn hoặc chọn MP4 trên máy. Studio xác thực nguồn và chuẩn bị video preview.",
+    short: "6 nền tảng hoặc file trên máy",
+    text: "Dán link hoặc đoạn chia sẻ Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube, hoặc chọn thẳng MP4/MKV trên máy. Studio xác thực nguồn, tải đúng một video và chuẩn bị preview.",
     icon: Upload,
   },
   {
@@ -183,8 +181,16 @@ const faqs = [
     a: "Không. Đây là lớp điều phối cho workflow OCR -> dịch -> validation -> lưu project. Bạn vẫn dùng editor riêng để dựng video hoặc burn subtitle.",
   },
   {
-    q: "Có cần Douzy cho mọi video không?",
-    a: "Không. Douzy chỉ cần khi nguồn là Douyin. Nếu chọn MP4 local, Studio đưa file vào cache do app quản lý và chạy thẳng preview, OCR, dịch.",
+    q: "Studio tải được video từ những nền tảng nào?",
+    a: "Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok và YouTube, từ link hoặc nguyên đoạn chia sẻ của app điện thoại. Douyin thử trang chia sẻ qua HTTP trước rồi mở video trong Chrome của app; Kuaishou tải qua Chrome; các nền tảng còn lại dùng yt-dlp có sẵn trong app. Video chỉ hiện cho người đã đăng nhập sẽ dừng ngay kèm hướng dẫn đăng nhập một lần.",
+  },
+  {
+    q: "Có dùng được video đã có sẵn trên máy không?",
+    a: "Có. Trong cửa sổ app, bấm Chọn video để mở thẳng file MP4 hoặc MKV. File được dùng tại chỗ: không upload, không sao chép qua thư mục tạm, và được hard-link vào project nếu cùng ổ đĩa.",
+  },
+  {
+    q: "App có đụng tới Chrome hoặc Edge tôi đang dùng không?",
+    a: "Không. App mở Google Chrome với profile riêng trong thư mục cấu hình, chạy song song với trình duyệt của bạn và chỉ mở khi cần: dịch bằng Gemini Notebook, tải video cần trình duyệt hoặc khi bạn bấm đăng nhập. Trong Thiết lập có thể đổi sang Microsoft Edge hoặc một file .exe khác.",
   },
   {
     q: "Timestamp có bị model dịch sửa không?",
@@ -196,7 +202,7 @@ const faqs = [
   },
   {
     q: "Bản portable đã kèm VideOCR và FFmpeg chưa?",
-    a: "Chưa. Bản portable chỉ đóng gói VietSub Studio. VideOCR, Douzy, FFmpeg, Edge và tài khoản AI là phụ thuộc bên ngoài do bạn tự cài và quản lý.",
+    a: "Chưa. Bản portable gồm VietSub Studio và bộ tải yt-dlp. VideOCR, FFmpeg, Google Chrome (hoặc Edge) và tài khoản AI là phụ thuộc bên ngoài do bạn tự cài và quản lý.",
   },
 ];
 
@@ -384,7 +390,7 @@ function HeroPreview() {
             <span className="text-xs font-extrabold">VietSub Studio</span>
           </div>
           <div className="flex items-center gap-3 text-[10px] text-white/45">
-            <span>v1.5.3</span>
+            <span>v1.6.1</span>
             <Settings2 size={14} aria-hidden="true" />
           </div>
         </div>
@@ -564,7 +570,15 @@ function HeroPreview() {
 }
 
 function ToolRail() {
-  const tools = ["Douyin / MP4", "VideOCR", "Gemini Notebook", "DeepSeek / OpenRouter", "SRT validation"];
+  const tools = [
+    "Douyin / Kuaishou / Xiaohongshu",
+    "Bilibili / TikTok / YouTube",
+    "MP4 / MKV trên máy",
+    "VideOCR",
+    "Gemini Notebook",
+    "DeepSeek / OpenRouter",
+    "SRT validation",
+  ];
 
   return (
     <div className="tool-rail" aria-label="Các công cụ trong pipeline">
@@ -628,7 +642,7 @@ function WorkflowVisual({ active }: { active: number }) {
   return (
     <div className="workflow-visual">
       <div className="workflow-visual-head">
-        <span>// live workflow state</span>
+        <span>{"// live workflow state"}</span>
         <span><StatusDot /> worker ready</span>
       </div>
       <AnimatePresence mode="wait" initial={false}>
@@ -647,8 +661,8 @@ function WorkflowVisual({ active }: { active: number }) {
 
           {active === 0 ? (
             <div className="workflow-source-grid">
-              <div><Upload size={17} /><strong>Douyin URL</strong><span>đã xác thực</span></div>
-              <div><FolderOpen size={17} /><strong>MP4 local</strong><span>tối đa 8 GiB</span></div>
+              <div><Upload size={17} /><strong>6 nền tảng</strong><span>link hoặc đoạn chia sẻ</span></div>
+              <div><FolderOpen size={17} /><strong>MP4 / MKV</strong><span>dùng tại chỗ</span></div>
             </div>
           ) : null}
 
@@ -742,8 +756,8 @@ function RequirementCard() {
     <Reveal className="requirement-card">
       <div className="requirement-card-head">
         <div>
-          <p>// bản portable</p>
-          <h3>VietSub Studio v1.5.3</h3>
+          <p>{"// bản portable"}</p>
+          <h3>VietSub Studio v1.6.1</h3>
           <span>Windows-first. Mã nguồn mở. Cài từ GitHub Releases.</span>
         </div>
         <Image src="/avatar.jpg" width={62} height={62} alt="Biểu tượng VietSub Studio" className="requirement-logo" />
@@ -761,8 +775,8 @@ function RequirementCard() {
           <p>Khuyến nghị</p>
           <ul>
             <li><Check size={14} /> FFmpeg + FFprobe</li>
-            <li><Check size={14} /> Douzy cho Douyin</li>
-            <li><Check size={14} /> Edge cho Notebook</li>
+            <li><Check size={14} /> Google Chrome (hoặc Edge)</li>
+            <li><Check size={14} /> Deno hoặc Node cho YouTube</li>
           </ul>
         </div>
       </div>
@@ -889,14 +903,15 @@ export default function VietSubSite() {
                 transition={{ ...springSoft, delay: 0.08 }}
                 className="hero-copy-block"
               >
-                <p className="hero-label">// OCR PHỤ ĐỀ CHÁY TRÊN VIDEO</p>
+                <p className="hero-label">{"// OCR PHỤ ĐỀ CHÁY TRÊN VIDEO"}</p>
                 <h1>
                   TỪ VIDEO
                   <span>ĐẾN SRT.</span>
                 </h1>
                 <p className="hero-description">
-                  VietSub Studio điều phối trọn workflow: nhận Douyin hoặc MP4, crop đúng vùng chữ,
-                  chạy VideOCR, dịch sang tiếng Việt và giữ nguyên timestamp trước khi lưu project.
+                  VietSub Studio điều phối trọn workflow: tải video Douyin, Kuaishou, Xiaohongshu, Bilibili,
+                  TikTok, YouTube hoặc chọn thẳng file trên máy, crop đúng vùng chữ, chạy VideOCR, dịch sang
+                  tiếng Việt và giữ nguyên timestamp trước khi lưu project.
                 </p>
                 <div className="hero-actions">
                   <MagneticLink href={releaseUrl} external variant="primary">Tải bản portable</MagneticLink>
@@ -1014,8 +1029,8 @@ export default function VietSubSite() {
                 <DocsSection id="quickstart" label="01 / BẮT ĐẦU NHANH" title="Cài bản portable rồi mở Studio">
                   <p>
                     Tải asset <code>VietSub-Studio-Portable-v*.zip</code> từ GitHub Releases, giải nén vào thư mục
-                    có quyền ghi và mở <code>VietSub Studio.exe</code>. Bản portable chỉ đóng gói ứng dụng điều phối;
-                    VideOCR, Douzy, FFmpeg, Edge và tài khoản AI vẫn là phụ thuộc bên ngoài.
+                    có quyền ghi và mở <code>VietSub Studio.exe</code>. Bản portable gồm ứng dụng điều phối và yt-dlp;
+                    VideOCR, FFmpeg, Google Chrome (hoặc Edge) và tài khoản AI vẫn là phụ thuộc bên ngoài.
                   </p>
                   <div className="mini-doc-grid three">
                     <MiniDocCard icon={Download} title="1. Tải app" body="Windows 10/11 x64" />
@@ -1026,8 +1041,11 @@ export default function VietSubSite() {
 
                 <DocsSection id="input" label="02 / NGUỒN VÀ OCR" title="Preview trước khi để OCR chạy">
                   <p>
-                    Dán URL Douyin đầy đủ, link ngắn <code>v.douyin.com</code> hoặc chọn MP4 local. Studio hiển thị
-                    preview, cho phép kéo crop theo phần trăm và lưu crop mặc định. OCR hỗ trợ <code>ch</code>,
+                    Dán link hoặc đoạn chia sẻ Douyin (kể cả link ngắn <code>v.douyin.com</code>), Kuaishou, Xiaohongshu,
+                    Bilibili, TikTok, YouTube, hoặc chọn thẳng MP4/MKV trên máy để dùng tại chỗ. Douyin thử trang chia sẻ
+                    qua HTTP trước, rồi mở video trong Chrome với profile riêng của app; video cần đăng nhập sẽ dừng ngay
+                    kèm hướng dẫn. Studio hiển thị preview, cho phép kéo crop theo phần trăm và lưu crop mặc định.
+                    OCR hỗ trợ <code>ch</code>,
                     <code>en</code>, <code>ja</code>, <code>ko</code>, <code>vi</code> cùng các mode <code>auto</code>,
                     <code>fast</code>, <code>accurate</code>.
                   </p>
@@ -1039,12 +1057,13 @@ export default function VietSubSite() {
 
                 <DocsSection id="providers" label="03 / PROVIDER DỊCH" title="Chọn cách dịch phù hợp với setup">
                   <p>
-                    Gemini Notebook chạy qua Microsoft Edge với profile debug riêng. Nếu muốn API, chọn DeepSeek,
+                    Gemini Notebook chạy qua Google Chrome với profile riêng của app (đổi được sang Edge hoặc file .exe
+                    khác trong Thiết lập). Nếu muốn API, chọn DeepSeek,
                     OpenRouter hoặc Custom rồi nhập Base URL, model và API key. API ưu tiên streaming SSE, tự fallback
                     JSON và retry tối đa ba lần cho lỗi tạm thời.
                   </p>
                   <div className="mini-doc-grid two">
-                    <MiniDocCard icon={Languages} title="Gemini Notebook" body="Qua Edge / Playwright" />
+                    <MiniDocCard icon={Languages} title="Gemini Notebook" body="Qua Chrome / Playwright" />
                     <MiniDocCard icon={Code2} title="API compatible" body="DeepSeek, OpenRouter, custom" />
                   </div>
                 </DocsSection>
@@ -1065,7 +1084,7 @@ export default function VietSubSite() {
                 <DocsSection id="output" label="05 / OUTPUT VÀ PRIVACY" title="Một folder cho mỗi project">
                   <p>
                     Sau validation, Studio lưu video, thumbnail nếu có, <code>.raw.srt</code>, <code>.vi.srt</code>,
-                    asset Douzy và <code>project.json</code> vào một folder riêng. App bind Flask trên
+                    metadata nguồn và <code>project.json</code> vào một folder riêng. App bind Flask trên
                     <code>127.0.0.1</code>, lưu config local và cảnh báo nếu output nằm trong OneDrive.
                   </p>
                   <CodeBlock />
@@ -1156,7 +1175,7 @@ export default function VietSubSite() {
               <div className="final-cta-grid" aria-hidden="true" />
               <div className="final-cta-ring" aria-hidden="true" />
               <div className="relative z-10">
-                <p>// BẮT ĐẦU TỪ VIDEO KẾ TIẾP</p>
+                <p>{"// BẮT ĐẦU TỪ VIDEO KẾ TIẾP"}</p>
                 <h2>OCR đúng vùng.<br />Dịch đúng block.<br /><span>Lưu đúng project.</span></h2>
               </div>
               <div className="relative z-10 final-cta-action">
@@ -1183,7 +1202,7 @@ export default function VietSubSite() {
             </div>
             <div className="footer-bottom">
               <span>(c) 2026 VietSub Studio. Open-source workflow, Windows-first.</span>
-              <span>v1.5.3 / motion tuned with spring physics</span>
+              <span>v1.6.1 / motion tuned with spring physics</span>
             </div>
           </div>
         </footer>

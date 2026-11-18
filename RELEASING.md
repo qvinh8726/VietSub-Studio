@@ -54,7 +54,7 @@ Remove-Item Env:RELEASE_DIR
 1. The release page lists both files with exactly the names above.
 2. On a test machine, start an older portable build (for example v1.5.3) from a writable folder. The update banner should offer **Tải & cài ngay**. Install it and confirm that the app restarts and shows the new version.
 3. If the old build opens GitHub instead of installing, compare the asset names and the ZIP layout with the contract below. Fix the files on the same release; publish a new version only when the EXE itself is wrong.
-4. Optional: update the version shown on the landing page (`landing-page/components/vietsub-site.tsx` and `relay-site.tsx`).
+4. Optional: update the version shown on the landing page (`landing-page/components/vietsub-site.tsx` and `relay-site.tsx`), then run `npm run lint`, `npm run typecheck`, and `npm run build` in `landing-page`.
 
 ### Updater contract
 
@@ -118,7 +118,7 @@ Remove-Item Env:RELEASE_DIR
 1. Trang release có đúng hai file với đúng tên ở trên.
 2. Trên máy thử, mở một bản portable cũ (ví dụ v1.5.3) từ thư mục có quyền ghi. Banner cập nhật phải có nút **Tải & cài ngay**. Cài thử và xác nhận app tự mở lại với phiên bản mới.
 3. Nếu bản cũ mở GitHub thay vì tự cài, hãy so tên file và cấu trúc ZIP với hợp đồng bên dưới. Sửa file ngay trên release đó; chỉ phát hành phiên bản mới khi chính EXE bị sai.
-4. Tuỳ chọn: cập nhật số phiên bản trên landing page (`landing-page/components/vietsub-site.tsx` và `relay-site.tsx`).
+4. Tuỳ chọn: cập nhật số phiên bản trên landing page (`landing-page/components/vietsub-site.tsx` và `relay-site.tsx`), rồi chạy `npm run lint`, `npm run typecheck` và `npm run build` trong `landing-page`.
 
 ### Hợp đồng với trình cập nhật
 

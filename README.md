@@ -24,9 +24,9 @@
 </p>
 
 > [!IMPORTANT]
-> The portable EXE contains VietSub Studio and its video downloader (yt-dlp), but it does **not** bundle VideOCR, Microsoft Edge, a Google account, a Gemini Notebook, an external API account, or the JavaScript runtime YouTube needs. Those are external prerequisites depending on the selected source and translation provider. Since v1.6.0, Douzy is no longer needed.
+> The portable EXE contains VietSub Studio and its video downloader (yt-dlp), but it does **not** bundle VideOCR, Google Chrome (or Microsoft Edge), a Google account, a Gemini Notebook, an external API account, or the JavaScript runtime YouTube needs. Those are external prerequisites depending on the selected source and translation provider. Since v1.6.0, Douzy is no longer needed.
 >
-> File EXE portable chứa VietSub Studio và bộ tải video (yt-dlp) nhưng **không** đóng gói VideOCR, Microsoft Edge, tài khoản Google, Gemini Notebook, tài khoản API ngoài hoặc JavaScript runtime mà YouTube cần. Thành phần cần có tuỳ nguồn video và provider dịch đã chọn. Từ v1.6.0, app không cần Douzy nữa.
+> File EXE portable chứa VietSub Studio và bộ tải video (yt-dlp) nhưng **không** đóng gói VideOCR, Google Chrome (hoặc Microsoft Edge), tài khoản Google, Gemini Notebook, tài khoản API ngoài hoặc JavaScript runtime mà YouTube cần. Thành phần cần có tuỳ nguồn video và provider dịch đã chọn. Từ v1.6.0, app không cần Douzy nữa.
 >
 > Downloaded videos wait in `.vietsub-downloads` inside the output folder, then move into their project folder after the Vietnamese SRT passes validation, so one full-size copy exists and every completed project is self-contained. In the desktop window, a local MP4/MKV is used where it is and hard-linked into the project on the same drive (copied otherwise); nothing is uploaded or copied to `%TEMP%`.
 >
@@ -59,13 +59,13 @@
 
 ## What is VietSub Studio?
 
-VietSub Studio is a Windows desktop orchestration tool for creators who need to turn burned-in subtitles inside long videos into editable Vietnamese SRT files. It is not a replacement for VideOCR, Edge, Gemini, yt-dlp, or a full video editor. Instead, it connects those tools into one repeatable workflow with preview, queueing, retry, validation, local project files, and update management.
+VietSub Studio is a Windows desktop orchestration tool for creators who need to turn burned-in subtitles inside long videos into editable Vietnamese SRT files. It is not a replacement for VideOCR, Chrome, Gemini, yt-dlp, or a full video editor. Instead, it connects those tools into one repeatable workflow with preview, queueing, retry, validation, local project files, and update management.
 
 The complete workflow is:
 
 1. Accept a video link or a share message pasted from a phone app (Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube), or an MP4/MKV picked on the user's machine.
 2. Resolve share links over HTTP while every redirect stays on the platform, reject profile/playlist/collection/livestream URLs, and identify the exact source video.
-3. Download the video: Douyin through the dedicated Edge profile (the page's own `aweme/detail` data and a watermark-free H.264 MP4, with yt-dlp as the second method), Kuaishou through the same Edge profile, and Xiaohongshu, Bilibili, TikTok, and YouTube through yt-dlp. A local file is used in place.
+3. Download the video: Douyin from its public share page over HTTP, then in the app's own browser profile (Google Chrome by default; the page's own `aweme/detail` data and a watermark-free H.264 MP4), then with yt-dlp; Kuaishou through the same browser profile; and Xiaohongshu, Bilibili, TikTok, and YouTube through yt-dlp. A local file is used in place.
 4. Stream the prepared video into the in-app preview and let the user drag or resize the OCR rectangle over the exact subtitle region.
 5. Save the crop, OCR language, speed options, project name, source metadata, and video resolution as an independent queue job.
 6. Run OCR and the selected translator sequentially for one active video. While that video is in OCR or translation, prefetch the next queued download without ever running two downloads together.
@@ -85,7 +85,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Burned-in subtitles require a carefully selected OCR region; scanning the entire frame wastes time and increases recognition noise.
 - Downloading or copying the same large source video more than once consumes unnecessary disk space. A 6 GB Douyin video should remain one 6 GB file, not become 12 GB before OCR even begins.
 - Running multiple OCR or browser-automation jobs in parallel creates resource contention and makes failures harder to diagnose. VietSub Studio accepts multiple jobs but deliberately processes them one at a time.
-- Gemini can return partial SRT, alter timestamps, or require a renewed Google session. The app validates the final structure and exposes a visible Edge fallback instead of silently reporting success.
+- Gemini can return partial SRT, alter timestamps, or require a renewed Google session. The app validates the final structure and exposes a visible browser fallback instead of silently reporting success.
 - A failed translation should not force another download or OCR pass. Queue persistence and stage-aware retry reuse the prepared video and raw SRT whenever they are still valid.
 - Open-source users need a clear installation and update path. The portable build includes an update banner, verified ZIP installation, automatic restart, and a manual GitHub fallback.
 
@@ -96,9 +96,10 @@ The project is designed around the parts of long-form subtitle work that become 
 - Accepts Douyin (`douyin.com/video/…`, `?modal_id=` feed links, `v.douyin.com` share links), Kuaishou (`kuaishou.com/short-video/…`, `v.kuaishou.com`), Xiaohongshu (`xiaohongshu.com/explore/…` with its `xsec_token`, `xhslink.com`), Bilibili (`BV…`, `b23.tv`), TikTok, and YouTube links, as well as complete share messages copied from the phone apps.
 - Extracts URLs automatically and validates the real hostname to reject lookalike or malicious domains.
 - Rejects profile, playlist, collection, mix, and livestream links because every queue item must represent one exact video.
-- Downloads Douyin videos in the dedicated Edge profile: the app opens the video page, reads the `aweme/detail` JSON that the page itself requests (the SSR data and the `<video>` element are fallbacks), and streams the watermark-free MP4 with the profile's cookies, User-Agent, and `Referer`. H.264 renditions are preferred over H.265 so VideOCR, FFmpeg, and the preview can decode them. yt-dlp with the same cookies is the second method.
-- Captures Kuaishou videos the same way from the post page, and downloads Xiaohongshu, Bilibili, TikTok, and YouTube with the bundled yt-dlp (Xiaohongshu falls back to the Edge page).
-- Brings Edge to the front when Douyin shows a captcha or a page needs a login, shows the request in the app, and waits up to 3 minutes for the user.
+- Downloads Douyin videos in three steps. The public share page `www.iesdouyin.com/share/video/<id>/` is read over HTTP first, without a browser. When it has no data, the app opens the video in its own browser profile (`www.douyin.com/jingxuan?modal_id=<id>`), reads the `aweme/detail` JSON that the page itself requests (the SSR data and the modal's `<video>` element are fallbacks), and streams the watermark-free MP4 with the profile's cookies, User-Agent, and `Referer`. yt-dlp with cookies exported from that profile into a temporary file is the last method. H.264 renditions are preferred over H.265 so VideOCR, FFmpeg, and the preview can decode them.
+- Stops at once with instructions when Douyin only shows the video to signed-in users (the page leaves the video or shows its login popup), instead of waiting for a timeout.
+- Captures Kuaishou videos the same way from the post page, and downloads Xiaohongshu, Bilibili, TikTok, and YouTube with the bundled yt-dlp (Xiaohongshu falls back to the page in the browser).
+- Brings the browser to the front when Douyin shows a captcha or a Kuaishou/Xiaohongshu page needs a login, shows the request in the app, and waits up to 3 minutes for the user.
 - Shows live download progress (percent, MB, speed) and stops a download within about a second on **Cancel job**.
 - Reuses a finished download and a video still present in an old Douzy library instead of downloading again.
 - Moves the downloaded video, its metadata, and its cover into the completed project folder without leaving a second full-size copy.
@@ -128,18 +129,19 @@ The project is designed around the parts of long-form subtitle work that become 
 - Keeps incomplete project folders accessible without presenting them as successful results.
 - Restores progress and incremental logs after a UI reload.
 
-### Translation providers and Edge automation
+### Translation providers and browser automation
 
-- Supports Gemini Notebook through Edge, direct DeepSeek API, OpenRouter, and other OpenAI-compatible chat APIs.
+- Supports Gemini Notebook through the automation browser, direct DeepSeek API, OpenRouter, and other OpenAI-compatible chat APIs.
 - Uses the user's own Gemini Notebook URL and Google session when Notebook mode is selected.
 - Encrypts API keys with Windows DPAPI and saves a separate key for each provider and Base URL host, so switching providers never sends one service's key to another.
 - Ships neutral default translation instructions for any kind of video. The **Game Delta Force** preset adds that game's proper-noun glossary and pronoun rules. Instructions you saved in an earlier version are kept.
 - Tells the model the job's real OCR language; Vietnamese OCR text is proofread instead of translated.
-- Connects through Playwright to a dedicated Edge profile exposed only on `127.0.0.1:9222`.
-- Starts Edge minimized by default while disabling background throttling that could stall automation.
+- Uses Google Chrome by default, or Microsoft Edge or another Chromium `.exe` chosen in Settings, always with the app's own profile (`--user-data-dir` in the config folder), so it runs next to the browser you work in and never uses your profile. Playwright connects to it over CDP on `127.0.0.1:9222` only.
+- Starts the browser only when it is needed (Gemini Notebook, a download that needs a page, or a login button), never when the app opens with an API provider. Only one request starts it at a time, and the start tab is reused, so no duplicate tabs open.
+- Starts the browser minimized by default while disabling background throttling that could stall automation.
 - Waits for the actual Notebook chat interface before deciding that login is required.
-- Shows Edge only when Google authentication expires or the Notebook needs manual inspection.
-- Provides an explicit **Open Edge login** action for failed jobs.
+- Shows the browser only when Google authentication expires or the Notebook needs manual inspection.
+- Provides an explicit sign-in action (**Mở Chrome đăng nhập**, named after the selected browser) for failed jobs.
 - Splits any subtitle file with more than 400 blocks or 24,000 characters into timestamp-preserving chunks, whatever the video length. Videos longer than 45 minutes are also split every 30 minutes. With an API provider, each validated chunk is saved so a retry continues from the first unfinished chunk.
 - Cancels active Gemini generation when the workflow is stopped.
 - Interrupts an API request at once on **Cancel job** or app shutdown and gives each attempt a 30-minute deadline. A request is tried up to 3 times when the connection drops or the provider returns HTTP 429 or 5xx. Redirects are refused, so the API key never goes to another host.
@@ -159,14 +161,14 @@ The project is designed around the parts of long-form subtitle work that become 
 ### Desktop experience and diagnostics
 
 - Provides a responsive pywebview desktop interface backed by a local Flask API.
-- Includes a dependency health panel for VideOCR, FFmpeg/FFprobe, the translator, Edge, yt-dlp, and the JavaScript runtime YouTube needs.
-- Shows, per platform (Douyin, Bilibili, Xiaohongshu, Kuaishou), whether the dedicated Edge profile is signed in, opens the platform in Edge for a one-time login, and stores an optional Cookie header per platform encrypted with Windows DPAPI.
+- Includes a dependency health panel for VideOCR, FFmpeg/FFprobe, the translator, the automation browser, yt-dlp, and the JavaScript runtime YouTube needs.
+- Shows, per platform (Douyin, Bilibili, Xiaohongshu, Kuaishou), whether the browser profile is signed in, opens the platform in that browser for a one-time login, and stores an optional Cookie header per platform encrypted with Windows DPAPI.
 - Accepts an optional Netscape `cookies.txt` for the yt-dlp sources.
 - Lists videos from an old Douzy library, when one exists, so they can be reloaded without downloading.
 - Supports a native Windows folder picker and a configurable output directory.
 - Warns when the effective project output directory is inside OneDrive, where large exports may be slowed by cloud synchronization.
 - Creates or recreates a Desktop shortcut for the packaged EXE.
-- Keeps the Edge window minimized during normal translation while retaining a reliable visible fallback.
+- Keeps the browser window minimized during normal translation and downloads while retaining a reliable visible fallback.
 - Ships as a portable one-file Windows EXE with a custom icon.
 
 ### Updates, openness, and safety
@@ -206,13 +208,13 @@ When a project folder already exists, the next project becomes `Product Review (
 | Component | Required | Expected location or behavior | Why it is needed |
 |---|---:|---|---|
 | Windows 10/11 x64 | Yes | Desktop Windows session | The current integrations and packaged build are Windows-specific. |
-| Microsoft Edge | Notebook mode, Douyin, Kuaishou | Normal Edge installation | Gemini automation and the Douyin/Kuaishou downloads, in a dedicated profile. |
-| yt-dlp | Bundled | Included in the EXE; `requirements.txt` for source | Downloads Xiaohongshu, Bilibili, TikTok, and YouTube, and is the second Douyin method. |
+| Google Chrome (default) or Microsoft Edge | Notebook mode, Douyin, Kuaishou | Normal installation; another Chromium `.exe` can be chosen in Settings | Gemini automation and the Douyin/Kuaishou downloads, in the app's own profile. |
+| yt-dlp | Bundled | Included in the EXE; `requirements.txt` for source | Downloads Xiaohongshu, Bilibili, TikTok, and YouTube, and is the last Douyin method. |
 | Deno 2.3+ or Node 22+ | YouTube only | `deno` or `node` available in `PATH` | yt-dlp needs a JavaScript runtime to solve YouTube's challenges. |
 | VideOCR | Yes | `C:\Program Files\VideOCR\videocr-cli.exe` | Extracts subtitles from the video. |
 | Gemini Notebook | Notebook mode | `https://gemini.google.com/notebook/<id>` | Translates the SRT text into Vietnamese through the browser. |
-| Translation API account | API mode | DeepSeek, OpenRouter, or another OpenAI-compatible provider | Translates SRT text without Notebook/Edge automation. |
-| Google login | Notebook mode | Dedicated Edge debug profile | Grants access to the selected Gemini Notebook. |
+| Translation API account | API mode | DeepSeek, OpenRouter, or another OpenAI-compatible provider | Translates SRT text without Notebook/browser automation. |
+| Google login | Notebook mode | The app's browser profile | Grants access to the selected Gemini Notebook. |
 | FFmpeg / FFprobe | No | `ffmpeg` and `ffprobe` available in `PATH` | Enables long-video chunking metadata and automatic recovery from mixed-resolution VideOCR crashes. |
 | Python 3.11+ | Source only | `python` available in `PATH` | Required only when running or building from source. |
 
@@ -236,11 +238,12 @@ Each release publishes `VietSub-Studio-Portable-v<version>.zip.sha256.txt` with 
 ### 1. Sign in to the video platforms (optional, recommended)
 
 - Open **Settings** and find **Nguồn tải video & đăng nhập** (video sources and login).
-- For Douyin, Bilibili, Xiaohongshu, and Kuaishou, click **Mở … trên Edge** (open in Edge). VietSub Studio starts its dedicated Edge profile; sign in once there. The cookies stay in that profile.
+- Under **Trình duyệt tự động hoá** (automation browser), keep **Google Chrome (mặc định)** or pick Microsoft Edge or another `.exe`. The app opens that browser with its own profile in the config folder, next to the browser you work in.
+- For Douyin, Bilibili, Xiaohongshu, and Kuaishou, click **Mở … trên Chrome** (open in Chrome; the label follows the selected browser). VietSub Studio starts its own browser profile; sign in once there. The cookies stay in that profile. Users of 1.6.0 sign in once more, because the old Edge profile is no longer used.
 - Click **Kiểm tra lại đăng nhập** (check again) to see each state: signed in, not signed in, or unknown. Xiaohongshu gives guests the same cookies as signed-in users, so its state stays unknown.
 - Without a login, public Douyin videos usually still download, but captchas appear more often.
-- Optional: paste a Cookie header for one platform under **Cookie thủ công**. It is encrypted with Windows DPAPI and replaces the profile cookies with the same name. A Netscape `cookies.txt` under **File cookies.txt** is used by the yt-dlp sources instead of the Edge cookies; yt-dlp gets a temporary copy, so the file itself is never modified.
-- For YouTube, install [Deno](https://deno.com) 2.3+ (or Node.js 22+) and make sure `deno` or `node` is in `PATH`. YouTube never receives the Edge profile cookies, because yt-dlp warns that account cookies can get a Google account flagged.
+- Optional: paste a Cookie header for one platform under **Cookie thủ công**. It is encrypted with Windows DPAPI and replaces the profile cookies with the same name. A Netscape `cookies.txt` under **File cookies.txt** is used by the yt-dlp sources instead of the browser cookies; yt-dlp gets a temporary copy, so the file itself is never modified.
+- For YouTube, install [Deno](https://deno.com) 2.3+ (or Node.js 22+) and make sure `deno` or `node` is in `PATH`. YouTube never receives the browser profile cookies, because yt-dlp warns that account cookies can get a Google account flagged.
 
 Douzy is no longer needed. If you used Douzy before, its videos are reused without downloading and its history appears under **Video cũ trong thư viện Douzy**.
 
@@ -260,13 +263,13 @@ Douzy is no longer needed. If you used Douzy before, its videos are reused witho
   ```
 
 - Paste it into **Settings → Gemini Notebook used for translation**.
-- Keep **Run Edge in background** enabled if desired. The full browser still renders while minimized.
-- If the Google session expires or the Notebook needs inspection, VietSub Studio restores Edge and shows a retry action after login.
+- Keep **Chạy trình duyệt ẩn** (run the browser hidden) enabled if desired. The full browser still renders while minimized.
+- If the Google session expires or the Notebook needs inspection, VietSub Studio restores the browser and shows a retry action after login.
 - For API mode, select **DeepSeek API**, **OpenRouter**, or **API OpenAI-compatible khác**, then enter the Base URL, model, and API key. Use **Test API connection** before starting a queue.
 - Each provider and Base URL host keeps its own key. After switching provider, enter the key for the new provider; the previous key stays saved for its own provider.
 - The translation instructions box (**Cách dịch mong muốn**) starts with neutral instructions that suit any video. For Delta Force videos, pick **Game Delta Force** under **Mẫu có sẵn** and click **Nạp mẫu**. **Khôi phục mặc định** brings the neutral instructions back.
 
-VietSub Studio does not ask for your Google password and does not store it. Authentication remains inside the Edge profile managed by Edge.
+VietSub Studio does not ask for your Google password and does not store it. Authentication remains inside the app's browser profile, managed by the browser.
 
 ### 4. Choose an output directory
 
@@ -279,7 +282,7 @@ Use **Choose folder** in Settings to select any destination on the machine. When
    - a Kuaishou, Xiaohongshu, Bilibili, TikTok, or YouTube video link
    - the complete share message copied from the phone app, for example `4.89 复制打开抖音… https://v.douyin.com/<code>/`
 2. Enter an optional shared project name. Leave it empty to use the source title or file name.
-3. Click **Load preview** for a link. The panel under the buttons shows the download progress, and asks you to solve a captcha in Edge when Douyin requires one.
+3. Click **Load preview** for a link. The panel under the buttons shows the download progress, and asks you to solve a captcha in the browser when Douyin requires one.
 4. Drag and resize the yellow OCR box over the subtitle region.
 5. Select the source OCR language and click **Add to queue**.
 6. Repeat for every video, then click **Run queue**.
@@ -338,7 +341,7 @@ Arguments:
 
 The CLI uses the same VideOCR setup, video sources, and translator as the desktop app.
 
-The CLI takes the same single-instance lock as `python app.py` started from the same folder, so close that app first. The packaged EXE keeps its lock under `%APPDATA%\VietSub Studio`, so the CLI cannot detect it; do not run both at the same time, because they would control the same VideOCR and Edge profile. The CLI does not read or change the desktop queue. Output is UTF-8, so it can be redirected to a file. Exit code `0` means success and `1` means an error or another running instance.
+The CLI takes the same single-instance lock as `python app.py` started from the same folder, so close that app first. The packaged EXE keeps its lock under `%APPDATA%\VietSub Studio`, so the CLI cannot detect it; do not run both at the same time, because they would control the same VideOCR and browser profile. The CLI does not read or change the desktop queue. Output is UTF-8, so it can be redirected to a file. Exit code `0` means success and `1` means an error or another running instance.
 
 ## Building the Windows app
 
@@ -367,7 +370,7 @@ release\VietSub-Studio-Portable-v<version>.zip.sha256.txt
 
 `tools/make_release.py` packages the EXE in the layout the in-app updater expects. `build_portable.bat` also runs `tests/test_release_contract.py` against the `release` folder. Read [RELEASING.md](RELEASING.md) before publishing a release.
 
-`build_app.bat` and `VietSub Studio.spec` provide an alternative onedir build. The portable spec bundles templates, the avatar assets, pywebview resources, and yt-dlp with its YouTube challenge scripts (yt-dlp-ejs). External applications such as VideOCR, Edge, Deno, and Node, and user credentials are never bundled.
+`build_app.bat` and `VietSub Studio.spec` provide an alternative onedir build. The portable spec bundles templates, the avatar assets, pywebview resources, and yt-dlp with its YouTube challenge scripts (yt-dlp-ejs). External applications such as VideOCR, Chrome, Edge, Deno, and Node, and user credentials are never bundled.
 
 ## How it works
 
@@ -375,11 +378,13 @@ release\VietSub-Studio-Portable-v<version>.zip.sha256.txt
 flowchart TD
     A[Video link, share text, or local MP4/MKV] --> B{Source}
     B -->|Douyin| C[Resolve the video ID over HTTP]
-    C --> D[Edge profile opens the page and reads aweme/detail]
-    D -->|fails| D2[yt-dlp with the profile cookies]
-    B -->|Kuaishou| K1[Edge profile captures the page video]
+    C --> S[Share page over HTTP]
+    S -->|no data| D[Browser profile opens the page and reads aweme/detail]
+    D -->|fails| D2[yt-dlp with cookies exported from the profile]
+    B -->|Kuaishou| K1[Browser profile captures the page video]
     B -->|Xiaohongshu, Bilibili, TikTok, YouTube| Y[yt-dlp]
     D --> E[MP4 in the download folder]
+    S --> E
     D2 --> E
     K1 --> E
     Y --> E
@@ -397,9 +402,9 @@ flowchart TD
     M --> N[Expose result only after final validation]
 ```
 
-The queue is intentionally sequential. A later job does not start until the current job finishes, fails, or is cancelled. This protects the shared VideOCR installation, Edge debug profile, and Notebook conversation from concurrent control.
+The queue is intentionally sequential. A later job does not start until the current job finishes, fails, or is cancelled. This protects the shared VideOCR installation, browser profile, and Notebook conversation from concurrent control.
 
-Douyin signs its web API calls (`a_bogus`, `X-Bogus`) in page JavaScript and changes that code often. VietSub Studio does not re-implement the signature: the real page runs in the user's Edge profile and the app reads the response the page receives. For a downloaded video, the MP4 stays in the download folder while OCR and translation run, then the app moves it with its metadata and cover into the self-contained project after final validation. A local file picked in the desktop window is used in place and hard-linked or copied into the project.
+Douyin signs its web API calls (`a_bogus`, `X-Bogus`) in page JavaScript and changes that code often. VietSub Studio does not re-implement the signature: it tries the public share page first; otherwise the real page runs in the app's browser profile and the app reads the response the page receives. For a downloaded video, the MP4 stays in the download folder while OCR and translation run, then the app moves it with its metadata and cover into the self-contained project after final validation. A local file picked in the desktop window is used in place and hard-linked or copied into the project.
 
 Main implementation areas:
 
@@ -419,18 +424,18 @@ Local API endpoints (an internal contract between the bundled UI and the local s
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/health` | GET | Check VideOCR, FFmpeg/FFprobe, the translator, Edge, yt-dlp, and the JavaScript runtime; `ready_sources` says which sources can run. |
+| `/api/health` | GET | Check VideOCR, FFmpeg/FFprobe, the translator, the automation browser, yt-dlp, and the JavaScript runtime; `ready_sources` says which sources can run. |
 | `/api/translation/test` | POST | Send a minimal probe to the configured API provider. |
 | `/api/settings` | GET/POST | Read and save local settings, including per-platform cookies and `cookies.txt`. |
-| `/api/sources/sessions` | GET | Login state of Douyin, Bilibili, Xiaohongshu, and Kuaishou in the Edge profile (never the cookie values). |
-| `/api/sources/<site>/open` | POST | Open the platform in the Edge profile for login. |
+| `/api/sources/sessions` | GET | Login state of Douyin, Bilibili, Xiaohongshu, and Kuaishou in the browser profile (never the cookie values). |
+| `/api/sources/<site>/open` | POST | Open the platform in the browser profile for login. |
 | `/api/history` | GET | Read recent items from an old Douzy library, when one exists. |
 | `/api/previews` | POST | Download the video of a link and return its protected preview URL. |
 | `/api/previews/local` | POST | Browser mode only: upload an MP4 into the managed cache and create a preview. |
 | `/api/queue` | GET/POST | List jobs or add a prepared video to the queue. |
 | `/api/queue/start` | POST | Start the single sequential worker. |
 | `/api/queue/<job_id>/retry` | POST | Retry from video preparation, OCR, or translation. |
-| `/api/edge/show` | POST | Restore the dedicated Edge window for login or inspection. |
+| `/api/edge/show` | POST | Show Gemini Notebook in the automation browser for login or inspection. |
 | `/api/update/install` | POST | Download, verify, install, and restart into the latest packaged release. |
 | `/api/progress` | GET | Retrieve state, incremental logs, and the live download progress. |
 | `/api/cancel` | POST | Cancel the active workflow and child processes. |
@@ -445,7 +450,7 @@ The Flask server binds to `127.0.0.1`, not to the public network. Every control-
 | VietSub Studio settings | `app_config.json` beside `app.py` | `%APPDATA%\VietSub Studio\app_config.json` |
 | Persistent queue | `workflow_queue.json` beside `app.py` | `%APPDATA%\VietSub Studio\workflow_queue.json` |
 | Browser-mode MP4 uploads | `local_videos` beside `app.py` | `%APPDATA%\VietSub Studio\local_videos` |
-| Dedicated Edge profile (platform logins) | `%LOCALAPPDATA%\Microsoft\Edge\User Data Debug` | Same |
+| Automation browser profile (platform and Google logins) | `chrome_debug_profile` beside `app.py` (`edge_debug_profile` or `custom_browser_profile` for the other choices) | `%APPDATA%\VietSub Studio\chrome_debug_profile` (or `edge_debug_profile`, `custom_browser_profile`) |
 | Downloads waiting for their project | `.vietsub-downloads` in the output directory | Same |
 | Old Douzy library (read only, if present) | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Same |
 | Project output | Selected output directory or `Documents\VietSub Studio` | Same |
@@ -463,17 +468,18 @@ If `app_config.json` or `workflow_queue.json` contains invalid JSON, the app ren
 - Video download and OCR run on the user's computer.
 - The video itself is not uploaded to this repository or to a VietSub Studio server.
 - In the desktop window, a local MP4/MKV is read where it is and never uploaded or copied to `%TEMP%`. In browser mode, an MP4 upload (8 GiB at most, `ftyp` header checked) passes through a temporary file in `%TEMP%` and is kept in the app's cache so queued jobs survive a restart.
-- Subtitle text is submitted either to the user's Gemini Notebook through the local Edge session or to the configured DeepSeek/OpenRouter/OpenAI-compatible API. Review the selected provider's terms and privacy policy before processing sensitive content.
-- Network connections, apart from the `127.0.0.1` connections to the app itself and to the Edge debug port:
+- Subtitle text is submitted either to the user's Gemini Notebook through the local browser session or to the configured DeepSeek/OpenRouter/OpenAI-compatible API. Review the selected provider's terms and privacy policy before processing sensitive content.
+- Network connections, apart from the `127.0.0.1` connections to the app itself and to the browser's debug port:
   - GitHub: `api.github.com` is asked for the latest release when the app starts, with a `VietSub-Studio/<version>` User-Agent. Release files are downloaded from GitHub only when you choose to install an update.
-  - Translation: Gemini through the dedicated Edge profile, or the API Base URL you entered, with your key. OpenRouter also receives this repository's URL as `HTTP-Referer` and `VietSub Studio` as `X-Title`.
-  - Video platforms: share links are resolved over HTTP on the platform's own hosts. Douyin and Kuaishou pages are opened in the dedicated Edge profile, and the video file is downloaded from the platform's CDN with that profile's cookies, User-Agent, and `Referer`. yt-dlp contacts the platform of the link (and YouTube's challenge scripts run locally in Deno or Node). Covers come only from `douyinpic.com` or `douyincdn.com` for Douyin, or from yt-dlp for the other sites.
-- Cookies are kept in a cookie jar per domain, so a platform's session cookie is only sent to that platform's hosts. The Edge profile cookies are handed to yt-dlp through a temporary file that is deleted after the download; YouTube never receives them.
+  - Translation: Gemini through the app's browser profile, or the API Base URL you entered, with your key. OpenRouter also receives this repository's URL as `HTTP-Referer` and `VietSub Studio` as `X-Title`.
+  - Video platforms: share links are resolved over HTTP on the platform's own hosts. Douyin's public share page is read over HTTP (`www.iesdouyin.com`). Douyin and Kuaishou pages are opened in the app's browser profile, and the video file is downloaded from the platform's CDN with that profile's cookies, User-Agent, and `Referer`. yt-dlp contacts the platform of the link (and YouTube's challenge scripts run locally in Deno or Node). Covers come only from `douyinpic.com` or `douyincdn.com` for Douyin, or from yt-dlp for the other sites.
+- Cookies are kept in a cookie jar per domain, so a platform's session cookie is only sent to that platform's hosts. The browser profile cookies are handed to yt-dlp through a temporary Netscape file that is deleted after the download; YouTube never receives them. `--cookies-from-browser` is never used.
+- The browser's debug port listens on `127.0.0.1` only. It is started with `--remote-allow-origins=*` so Playwright can connect; before each use the app checks that the process on the port is the selected browser started with the app's own profile.
 - API keys and per-platform Cookie headers are encrypted with Windows DPAPI and never returned by the local settings endpoint. API keys are saved separately for each provider and Base URL host.
-- Google and platform passwords remain managed by Edge; VietSub Studio does not read or store them.
+- Google and platform passwords remain managed by the browser; VietSub Studio does not read or store them.
 - Settings and output files are written atomically to reduce corruption risk.
 - The local API uses a fresh per-launch capability token and validates Host, Origin, Fetch Metadata, paths, languages, filenames, upload type/size, and result-folder access.
-- Never share `app_config.json`, Edge profile data, cookies, private Notebook URLs, or logs containing private video links.
+- Never share `app_config.json`, the browser profile folder, cookies, private Notebook URLs, or logs containing private video links.
 
 See [SECURITY.md](SECURITY.md) before reporting a security issue.
 
@@ -482,10 +488,10 @@ See [SECURITY.md](SECURITY.md) before reporting a security issue.
 - Windows only in the current release.
 - Queue items run sequentially; parallel OCR/translation is intentionally not supported.
 - Playlist, profile, collection, and mix URLs are not expanded automatically.
-- Requires VideOCR. Douyin and Kuaishou also need Microsoft Edge; YouTube needs Deno 2.3+ or Node 22+.
-- Douyin and Kuaishou change their web pages often, which can break downloads until VietSub Studio is updated. For Douyin the error lists the reason of each method (Edge, then yt-dlp); Kuaishou only has the Edge method. Signing in to the platform in Settings can help.
+- Requires VideOCR. Douyin and Kuaishou also need Google Chrome (or Microsoft Edge, or another Chromium browser); YouTube needs Deno 2.3+ or Node 22+.
+- Douyin and Kuaishou change their web pages often, which can break downloads until VietSub Studio is updated. For Douyin the error lists the reason of each method (share page, browser, yt-dlp); Kuaishou only has the browser method. Douyin's share page currently has no data for most videos, so the browser is usually needed. Signing in to the platform in Settings can help.
 - Xiaohongshu image posts have no video, and Xiaohongshu's login state cannot be read from cookies.
-- Requires either an authenticated Gemini Notebook session in Edge or a working translation API configuration.
+- Requires either an authenticated Gemini Notebook session in the app's browser profile or a working translation API configuration.
 - Gemini UI changes may occasionally break Notebook browser selectors until the project is updated.
 - OCR quality depends on the video, subtitle contrast, language model, and saved crop region.
 - FFmpeg/FFprobe are optional for short constant-resolution videos, but long-video crash recovery is unavailable without them.
@@ -500,15 +506,19 @@ See [SECURITY.md](SECURITY.md) before reporting a security issue.
 
 ### Douyin asks for a captcha
 
-The Edge window comes to the front and the app shows “Vui lòng kéo captcha trên trình duyệt Edge để tiếp tục tải”. Drag the slider in Edge; the download continues by itself, and the app waits up to 3 minutes. Signing in to Douyin once (**Settings → Mở Douyin trên Edge**) makes captchas rarer. A background prefetch never waits for a captcha; the job downloads the video itself when its turn comes.
+The browser window comes to the front and the app shows “Vui lòng kéo captcha trên trình duyệt Chrome để tiếp tục tải” (with the name of the selected browser). Drag the slider there; the download continues by itself, and the app waits up to 3 minutes. Signing in to Douyin once (**Settings → Mở Douyin trên Chrome**) makes captchas rarer. A background prefetch never waits for a captcha; the job downloads the video itself when its turn comes.
+
+### Douyin says the video needs a login
+
+“Douyin yêu cầu đăng nhập để tải video này. Hãy bấm 'Mở Douyin trên Chrome' trong Thiết lập, đăng nhập 1 lần rồi thử lại.” means Douyin only shows this video to signed-in users: the page left the video (for example to `/jingxuan` or to another video) or showed its login popup without the video data. The app stops at once instead of waiting. Click **Mở Douyin trên Chrome** in Settings, sign in once in that window, then load the preview again. A Douyin Cookie header under **Cookie thủ công** or a `cookies.txt` also lets yt-dlp try.
 
 ### The Douyin or Kuaishou download fails
 
-For Douyin, the error lists the reason of each method (Edge, then yt-dlp); Kuaishou is only downloaded through Edge. Check that the video is public and opens in Edge, sign in to the platform in Settings, then retry. If the platform changed its web page, downloads can fail until VietSub Studio is updated; a Cookie header pasted under **Cookie thủ công** can help when the profile session is broken.
+For Douyin, the error lists the reason of each method (share page, browser, then yt-dlp); Kuaishou is only downloaded through the browser. Check that the video is public and opens in the browser, sign in to the platform in Settings, then retry. If the platform changed its web page, downloads can fail until VietSub Studio is updated; a Cookie header pasted under **Cookie thủ công** can help when the profile session is broken.
 
-### A Kuaishou or Xiaohongshu download waits for me in Edge
+### A Kuaishou or Xiaohongshu download waits for me in the browser
 
-When the page shows no video within 30 seconds, the app brings Edge to the front and asks you to sign in or solve a captcha there, then waits up to 3 minutes. A Xiaohongshu image post has no video; the app reports that instead of opening Edge.
+When the page shows no video within 30 seconds, the app brings the browser to the front and asks you to sign in or solve a captcha there, then waits up to 3 minutes. A Xiaohongshu image post has no video; the app reports that instead of opening the browser.
 
 ### YouTube says a JavaScript runtime is missing
 
@@ -532,13 +542,13 @@ Reinstall VideOCR to its default location if necessary.
 
 Paste a valid HTTPS URL matching `https://gemini.google.com/notebook/<id>` into Settings. A normal Gemini chat URL is not accepted.
 
-### Edge opens but translation does not start
+### The browser opens but translation does not start
 
-Use **Open Edge to sign in**, authenticate with Google, confirm the Notebook opens, then retry the failed job. Background mode minimizes Edge without using headless mode, so Gemini still receives a normally rendered page.
+Use **Mở Gemini trên Chrome để đăng nhập** in Settings (or the sign-in button of the failed job), authenticate with Google, confirm the Notebook opens, then retry the failed job. Background mode minimizes the browser without using headless mode, so Gemini still receives a normally rendered page.
 
-### Port 9222 is busy or Edge debug cannot connect
+### Port 9222 is busy or the browser cannot be reached
 
-Close stale Edge debug sessions, then reopen VietSub Studio. Advanced users can inspect processes using port `9222`. Avoid terminating normal Edge sessions unless you know which process owns the debug profile.
+The error names the program that holds port `9222`; VietSub Studio never closes a program it did not start. Close that program (or turn off its remote debugging), then retry. An older automation browser of this app, including the 1.6.0 Edge profile, is closed automatically. If the message says the app's browser is open without the debug port, close that browser window and retry. Your everyday Chrome or Edge can stay open, because the app uses its own profile.
 
 ### OCR subtitle is empty or inaccurate
 
@@ -582,11 +592,15 @@ Open Settings to see or choose the output directory. When empty, the default is 
 
 ### Is the EXE completely standalone?
 
-No. It bundles the Python application, the UI, and yt-dlp, but VideOCR and a translator remain external requirements, Douyin and Kuaishou downloads use Microsoft Edge, and YouTube needs Deno or Node. The translator is either Edge with a Google login and a Gemini Notebook, or an account with an OpenAI-compatible API provider.
+No. It bundles the Python application, the UI, and yt-dlp, but VideOCR and a translator remain external requirements, Douyin and Kuaishou downloads use Google Chrome (or Edge), and YouTube needs Deno or Node. The translator is either the browser with a Google login and a Gemini Notebook, or an account with an OpenAI-compatible API provider.
 
 ### Do I still need Douzy?
 
 No. Since v1.6.0 VietSub Studio downloads videos itself. If Douzy is still installed, videos already in its library are reused and the app lists them under **Video cũ trong thư viện Douzy**; nothing else from Douzy is used.
+
+### Does the app touch the Chrome or Edge I work in?
+
+No. The app starts Google Chrome (or the browser chosen in Settings) with its own profile in the config folder, so it runs next to your everyday browser and never reads or changes your profile. It only starts that browser when it is needed: Gemini Notebook translation, a download that needs a page, or a login button in Settings.
 
 ### Is VietSub Studio free and open source?
 
@@ -594,7 +608,7 @@ Yes, the code in this repository is released under the MIT License. Third-party 
 
 ### Does the app upload my video?
 
-VietSub Studio does not upload the video to its own server. Videos are downloaded and processed on your computer. Only the SRT text is sent for translation, either to your Gemini Notebook through your Edge session or to the API provider you configured.
+VietSub Studio does not upload the video to its own server. Videos are downloaded and processed on your computer. Only the SRT text is sent for translation, either to your Gemini Notebook through the app's browser session or to the API provider you configured.
 
 ### Does the maintainer receive my Notebook URL or Google account?
 
@@ -614,7 +628,7 @@ Single videos from Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, and YouTube,
 
 ### Can it process multiple videos automatically?
 
-Yes. Prepare each video preview, add it to the queue, then start the worker. The app processes one item at a time to avoid VideOCR and Edge/Gemini conflicts, and downloads the next video while the current one is in OCR or translation.
+Yes. Prepare each video preview, add it to the queue, then start the worker. The app processes one item at a time to avoid VideOCR and browser/Gemini conflicts, and downloads the next video while the current one is in OCR or translation.
 
 ### Can I move the portable EXE after configuring it?
 
@@ -678,19 +692,19 @@ The Node commands need Node.js 20 or newer. The repository includes a Windows Gi
 
 ## VietSub Studio là gì?
 
-VietSub Studio là công cụ điều phối quy trình làm phụ đề trên Windows dành cho người cần biến chữ đã dính sẵn trong video dài thành file SRT tiếng Việt có thể chỉnh sửa. App không thay thế VideOCR, Edge, Gemini, yt-dlp hay phần mềm dựng video. Nó nối các công cụ đó thành một luồng thống nhất có preview, hàng đợi, chạy lại theo từng bước, kiểm tra kết quả, lưu file dự án và cập nhật ứng dụng.
+VietSub Studio là công cụ điều phối quy trình làm phụ đề trên Windows dành cho người cần biến chữ đã dính sẵn trong video dài thành file SRT tiếng Việt có thể chỉnh sửa. App không thay thế VideOCR, Chrome, Gemini, yt-dlp hay phần mềm dựng video. Nó nối các công cụ đó thành một luồng thống nhất có preview, hàng đợi, chạy lại theo từng bước, kiểm tra kết quả, lưu file dự án và cập nhật ứng dụng.
 
 Toàn bộ quy trình gồm:
 
 1. Nhận link video hoặc nguyên đoạn chia sẻ dán từ app điện thoại (Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube), hoặc file MP4/MKV chọn trên máy.
 2. Giải mã link share qua HTTP, mọi lần chuyển hướng phải ở lại trên nền tảng đó; từ chối link hồ sơ/playlist/collection/livestream và xác định đúng một video nguồn.
-3. Tải video: Douyin qua profile Edge riêng (đọc dữ liệu `aweme/detail` của chính trang và tải MP4 H.264 không watermark, yt-dlp là cách thứ hai), Kuaishou qua cùng profile Edge, còn Xiaohongshu, Bilibili, TikTok và YouTube qua yt-dlp. File trên máy được dùng tại chỗ.
+3. Tải video: Douyin đọc trang chia sẻ công khai qua HTTP trước, rồi tới profile riêng của trình duyệt tự động hoá (mặc định Google Chrome; đọc dữ liệu `aweme/detail` của chính trang và tải MP4 H.264 không watermark), cuối cùng là yt-dlp; Kuaishou qua cùng profile trình duyệt đó; còn Xiaohongshu, Bilibili, TikTok và YouTube qua yt-dlp. File trên máy được dùng tại chỗ.
 4. Phát video đã chuẩn bị trong khung preview của app để người dùng kéo/đổi kích thước vùng OCR đúng vị trí phụ đề.
 5. Lưu crop, ngôn ngữ OCR, tuỳ chọn tốc độ, tên dự án, metadata nguồn và độ phân giải thành một job độc lập trong hàng đợi.
 6. Chỉ cho một video chạy OCR và dịch tại một thời điểm. Khi video đó đã sang bước OCR hoặc dịch, app tải trước video kế tiếp nhưng không bao giờ chạy hai lượt tải cùng lúc.
 7. Giữ video vừa tải trong thư mục tải tạm khi đang xử lý, rồi chỉ chuyển video cùng metadata và ảnh bìa vào folder project sau khi dịch thành công.
 8. Gọi VideOCR CLI quét đúng vùng đã chọn và ghi phụ đề ngôn ngữ gốc vào file `.raw.srt`.
-9. Kết nối với provider dịch đã chọn: Playwright điều khiển Gemini Notebook qua profile Edge debug riêng, hoặc API `/chat/completions` OpenAI-compatible cho DeepSeek, OpenRouter và endpoint tuỳ chỉnh.
+9. Kết nối với provider dịch đã chọn: Playwright điều khiển Gemini Notebook qua profile riêng của trình duyệt tự động hoá, hoặc API `/chat/completions` OpenAI-compatible cho DeepSeek, OpenRouter và endpoint tuỳ chỉnh.
 10. Đặt từng block dịch về đúng số thứ tự và timestamp nguồn khi model đánh số lại hoặc viết lại mốc thời gian; từ chối bản dịch thiếu block, block dính nhau, sai timestamp hoặc vẫn còn tiếng Trung.
 11. Ghi `.vi.srt`, thumbnail nếu nguồn có và manifest `project.json`. Job chỉ được báo thành công khi đường dẫn video cùng hai file phụ đề đều tồn tại và vượt qua kiểm tra.
 
@@ -704,7 +718,7 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Phụ đề dính trong hình cần vùng OCR chính xác; quét cả khung hình vừa chậm vừa tăng nhiễu nhận dạng.
 - Tải hoặc sao chép cùng một video lớn nhiều lần làm tốn ổ đĩa vô ích. Video Douyin 6 GB nên chỉ chiếm 6 GB, không nên thành 12 GB trước khi OCR bắt đầu.
 - Chạy nhiều OCR hoặc phiên tự động trình duyệt song song dễ tranh CPU/RAM/GPU và khiến lỗi khó chẩn đoán. VietSub Studio nhận nhiều job nhưng cố ý xử lý từng video một.
-- Gemini có thể trả SRT thiếu, tự đổi timestamp hoặc yêu cầu đăng nhập Google lại. App kiểm tra cấu trúc cuối và hiện Edge khi thật sự cần thay vì âm thầm báo hoàn thành.
+- Gemini có thể trả SRT thiếu, tự đổi timestamp hoặc yêu cầu đăng nhập Google lại. App kiểm tra cấu trúc cuối và hiện trình duyệt khi thật sự cần thay vì âm thầm báo hoàn thành.
 - Dịch lỗi không nên buộc người dùng tải và OCR lại từ đầu. Hàng đợi được lưu và cơ chế retry theo bước sẽ dùng lại video hoặc sub OCR còn hợp lệ.
 - Người dùng mã nguồn mở cần đường cập nhật rõ ràng. Bản portable có banner phiên bản mới, cài ZIP đã xác minh, tự mở lại và fallback sang GitHub khi không thể tự thay EXE.
 
@@ -715,9 +729,10 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Nhận link Douyin (`douyin.com/video/…`, link feed có `?modal_id=`, link share `v.douyin.com`), Kuaishou (`kuaishou.com/short-video/…`, `v.kuaishou.com`), Xiaohongshu (`xiaohongshu.com/explore/…` kèm `xsec_token`, `xhslink.com`), Bilibili (`BV…`, `b23.tv`), TikTok và YouTube, cùng nguyên đoạn chia sẻ copy từ app điện thoại.
 - Tự tách URL và kiểm tra hostname thật để từ chối tên miền giả hoặc link đánh lừa.
 - Từ chối link hồ sơ, playlist, collection, mix và livestream vì mỗi job phải tương ứng chính xác với một video.
-- Tải video Douyin bằng profile Edge riêng: app mở trang video, đọc JSON `aweme/detail` mà chính trang đó gọi (dữ liệu SSR và thẻ `<video>` là phương án dự phòng), rồi tải MP4 không watermark kèm cookie, User-Agent và `Referer` của profile. Bản H.264 được ưu tiên hơn H.265 để VideOCR, FFmpeg và preview đều đọc được. yt-dlp với cùng cookie là cách thứ hai.
-- Bắt video Kuaishou theo cách tương tự từ trang bài đăng; tải Xiaohongshu, Bilibili, TikTok và YouTube bằng yt-dlp đi kèm app (Xiaohongshu dự phòng bằng trang trong Edge).
-- Đưa Edge lên trước khi Douyin hiện captcha hoặc trang cần đăng nhập, báo trên giao diện và chờ người dùng tối đa 3 phút.
+- Tải video Douyin theo ba bước. Đầu tiên app đọc trang chia sẻ công khai `www.iesdouyin.com/share/video/<id>/` qua HTTP, không cần trình duyệt. Khi trang đó không có dữ liệu, app mở video trong profile riêng của trình duyệt (`www.douyin.com/jingxuan?modal_id=<id>`), đọc JSON `aweme/detail` mà chính trang đó gọi (dữ liệu SSR và thẻ `<video>` của khung video là phương án dự phòng), rồi tải MP4 không watermark kèm cookie, User-Agent và `Referer` của profile. Cách cuối là yt-dlp với cookie xuất từ profile đó ra một file tạm. Bản H.264 được ưu tiên hơn H.265 để VideOCR, FFmpeg và preview đều đọc được.
+- Dừng ngay và hướng dẫn đăng nhập khi Douyin chỉ cho người đã đăng nhập xem video (trang chuyển khỏi video hoặc hiện bảng đăng nhập), thay vì chờ tới hết thời gian.
+- Bắt video Kuaishou theo cách tương tự từ trang bài đăng; tải Xiaohongshu, Bilibili, TikTok và YouTube bằng yt-dlp đi kèm app (Xiaohongshu dự phòng bằng trang trong trình duyệt).
+- Đưa trình duyệt lên trước khi Douyin hiện captcha hoặc trang Kuaishou/Xiaohongshu cần đăng nhập, báo trên giao diện và chờ người dùng tối đa 3 phút.
 - Hiện tiến độ tải trực tiếp (phần trăm, MB, tốc độ) và dừng lượt tải trong khoảng một giây khi bấm **Huỷ job**.
 - Dùng lại video đã tải xong và video còn trong thư viện Douzy cũ thay vì tải lại.
 - Chuyển video đã tải cùng metadata và ảnh bìa vào folder project hoàn tất mà không tạo bản sao video dung lượng lớn thứ hai.
@@ -747,18 +762,19 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 - Cho phép mở thư mục làm dở nhưng không gắn nhãn kết quả thành công cho job lỗi.
 - Khôi phục trạng thái và log tăng dần nếu giao diện bị reload.
 
-### Provider dịch và tự động Gemini Notebook/Edge
+### Provider dịch và trình duyệt tự động hoá
 
-- Hỗ trợ Gemini Notebook qua Edge, DeepSeek API, OpenRouter và các API chat OpenAI-compatible khác.
+- Hỗ trợ Gemini Notebook qua trình duyệt tự động hoá, DeepSeek API, OpenRouter và các API chat OpenAI-compatible khác.
 - Khi chọn Notebook, app dùng link Notebook và phiên Google của người dùng.
 - API key được mã hoá bằng Windows DPAPI và lưu riêng cho từng provider và host của Base URL, nên đổi provider không bao giờ gửi key của dịch vụ này sang dịch vụ khác.
 - Hướng dẫn dịch mặc định là prompt trung tính, dùng được cho mọi loại video. Mẫu **Game Delta Force** bổ sung từ điển tên riêng và quy tắc xưng hô của game này. Hướng dẫn dịch đã lưu từ bản cũ được giữ nguyên.
 - Prompt nêu đúng ngôn ngữ OCR của job; sub OCR tiếng Việt được biên tập, sửa lỗi nhận dạng thay vì dịch.
-- Kết nối Playwright tới profile Edge riêng qua cổng debug chỉ bind ở `127.0.0.1:9222`.
-- Mặc định khởi chạy Edge thu nhỏ và tắt các cơ chế throttling nền có thể làm automation đứng.
+- Mặc định dùng Google Chrome, hoặc Microsoft Edge hay một file `.exe` Chromium khác chọn trong Thiết lập, luôn với profile riêng của app (`--user-data-dir` trong thư mục cấu hình), nên chạy song song với trình duyệt bạn đang dùng và không đụng tới profile của bạn. Playwright kết nối qua CDP, chỉ ở `127.0.0.1:9222`.
+- Chỉ mở trình duyệt khi cần (Gemini Notebook, tải video cần trang web, hoặc khi bấm nút đăng nhập), không bao giờ mở lúc khởi động app với provider API. Mỗi lần chỉ một yêu cầu được mở trình duyệt và tab khởi đầu được dùng lại, nên không bị mở trùng tab.
+- Mặc định khởi chạy trình duyệt thu nhỏ và tắt các cơ chế throttling nền có thể làm automation đứng.
 - Chờ đúng giao diện chat Notebook tải xong rồi mới kết luận có cần đăng nhập hay không.
-- Chỉ hiện Edge khi phiên Google hết hạn hoặc Notebook cần người dùng kiểm tra thủ công.
-- Có nút **Mở Edge đăng nhập** rõ ràng trên job lỗi.
+- Chỉ hiện trình duyệt khi phiên Google hết hạn hoặc Notebook cần người dùng kiểm tra thủ công.
+- Có nút **Mở Chrome đăng nhập** (theo tên trình duyệt đã chọn) rõ ràng trên job lỗi.
 - SRT có hơn 400 block hoặc hơn 24.000 ký tự được chia thành các đoạn giữ nguyên timestamp, bất kể video dài bao nhiêu; video dài hơn 45 phút còn được chia theo mốc 30 phút. Khi dùng provider API, mỗi đoạn đã kiểm tra được lưu lại để lần chạy lại tiếp tục từ đoạn chưa xong.
 - Huỷ quá trình Gemini đang sinh nội dung khi người dùng dừng workflow.
 - Ngắt ngay request API khi bấm **Huỷ job** hoặc đóng app; mỗi lượt gửi có hạn chót 30 phút. Request được thử tối đa 3 lần khi mất kết nối hoặc provider trả HTTP 429, 5xx. App không đi theo chuyển hướng, nên API key không bị gửi sang host khác.
@@ -778,14 +794,14 @@ Dự án tập trung vào những phần chậm, lặp lại hoặc dễ lỗi k
 ### Trải nghiệm desktop và chẩn đoán
 
 - Giao diện desktop responsive bằng pywebview, phía sau là Flask API cục bộ.
-- Bảng kiểm tra VideOCR, FFmpeg/FFprobe, bộ máy dịch, Edge, yt-dlp và JavaScript runtime cho YouTube, kèm hướng dẫn sửa từng mục.
-- Hiện trạng thái đăng nhập của profile Edge riêng cho từng nền tảng (Douyin, Bilibili, Xiaohongshu, Kuaishou), mở nền tảng đó trên Edge để đăng nhập một lần, và lưu Cookie header tuỳ chọn cho từng nền tảng, mã hoá bằng Windows DPAPI.
+- Bảng kiểm tra VideOCR, FFmpeg/FFprobe, bộ máy dịch, trình duyệt tự động hoá, yt-dlp và JavaScript runtime cho YouTube, kèm hướng dẫn sửa từng mục.
+- Hiện trạng thái đăng nhập của profile trình duyệt riêng cho từng nền tảng (Douyin, Bilibili, Xiaohongshu, Kuaishou), mở nền tảng đó trên trình duyệt này để đăng nhập một lần, và lưu Cookie header tuỳ chọn cho từng nền tảng, mã hoá bằng Windows DPAPI.
 - Nhận file `cookies.txt` định dạng Netscape (tuỳ chọn) cho các nguồn tải bằng yt-dlp.
 - Liệt kê video trong thư viện Douzy cũ (nếu còn) để nạp lại mà không cần tải.
 - Có hộp thoại Windows để chọn thư mục lưu riêng.
 - Cảnh báo nếu thư mục project thực tế nằm trong OneDrive vì đồng bộ cloud có thể làm chậm video dung lượng lớn.
 - Tự tạo hoặc tạo lại shortcut ngoài Desktop cho bản EXE.
-- Giữ Edge thu nhỏ trong luồng dịch bình thường nhưng vẫn có fallback hiện cửa sổ đáng tin cậy.
+- Giữ trình duyệt thu nhỏ trong luồng dịch và tải bình thường nhưng vẫn có fallback hiện cửa sổ đáng tin cậy.
 - Đóng gói thành một file EXE Windows portable với icon riêng.
 
 ### Cập nhật, mã nguồn mở và an toàn
@@ -825,13 +841,13 @@ Nếu thư mục đã tồn tại, dự án tiếp theo sẽ là `Review sản p
 | Thành phần | Bắt buộc | Vị trí/hành vi mong đợi | Mục đích |
 |---|---:|---|---|
 | Windows 10/11 x64 | Có | Phiên desktop Windows | Các tích hợp và bản đóng gói hiện tại dành riêng cho Windows. |
-| Microsoft Edge | Chế độ Notebook, Douyin, Kuaishou | Bản Edge thông thường | Tự động hoá Gemini và tải video Douyin/Kuaishou bằng profile riêng. |
-| yt-dlp | Đi kèm app | Có sẵn trong EXE; `requirements.txt` khi chạy source | Tải Xiaohongshu, Bilibili, TikTok, YouTube và là cách thứ hai cho Douyin. |
+| Google Chrome (mặc định) hoặc Microsoft Edge | Chế độ Notebook, Douyin, Kuaishou | Bản cài thông thường; có thể chọn file `.exe` Chromium khác trong Thiết lập | Tự động hoá Gemini và tải video Douyin/Kuaishou bằng profile riêng của app. |
+| yt-dlp | Đi kèm app | Có sẵn trong EXE; `requirements.txt` khi chạy source | Tải Xiaohongshu, Bilibili, TikTok, YouTube và là cách cuối cho Douyin. |
 | Deno 2.3+ hoặc Node 22+ | Chỉ YouTube | Lệnh `deno` hoặc `node` có trong `PATH` | yt-dlp cần JavaScript runtime để giải thử thách của YouTube. |
 | VideOCR | Có | `C:\Program Files\VideOCR\videocr-cli.exe` | Trích xuất phụ đề từ video. |
 | Gemini Notebook | Chế độ Notebook | `https://gemini.google.com/notebook/<id>` | Dịch nội dung SRT qua trình duyệt. |
-| Tài khoản API dịch | Chế độ API | DeepSeek, OpenRouter hoặc provider OpenAI-compatible khác | Dịch SRT không cần Notebook/Edge automation. |
-| Tài khoản Google | Chế độ Notebook | Profile Edge debug riêng | Cấp quyền truy cập Notebook đã chọn. |
+| Tài khoản API dịch | Chế độ API | DeepSeek, OpenRouter hoặc provider OpenAI-compatible khác | Dịch SRT không cần tự động hoá Notebook/trình duyệt. |
+| Tài khoản Google | Chế độ Notebook | Profile trình duyệt riêng của app | Cấp quyền truy cập Notebook đã chọn. |
 | FFmpeg / FFprobe | Không | Có cả lệnh `ffmpeg` và `ffprobe` trong `PATH` | Lấy metadata video dài và tự phục hồi khi VideOCR crash do video đổi độ phân giải. |
 | Python 3.11+ | Chỉ mã nguồn | Lệnh `python` có trong `PATH` | Chỉ cần khi chạy/build từ source. |
 
@@ -855,11 +871,12 @@ Mỗi release có file `VietSub-Studio-Portable-v<phiên bản>.zip.sha256.txt` 
 ### 1. Đăng nhập các nền tảng video (tuỳ chọn, nên làm)
 
 - Mở **Thiết lập**, tìm mục **Nguồn tải video & đăng nhập**.
-- Với Douyin, Bilibili, Xiaohongshu và Kuaishou, bấm **Mở … trên Edge**. VietSub Studio mở profile Edge riêng của app; hãy đăng nhập một lần ở đó. Cookie được giữ lại trong profile này.
+- Ở mục **Trình duyệt tự động hoá**, giữ **Google Chrome (mặc định)** hoặc chọn Microsoft Edge hay một file `.exe` khác. App mở trình duyệt này với profile riêng trong thư mục cấu hình, chạy song song với trình duyệt bạn đang dùng.
+- Với Douyin, Bilibili, Xiaohongshu và Kuaishou, bấm **Mở … trên Chrome** (tên nút theo trình duyệt đã chọn). VietSub Studio mở profile riêng của app; hãy đăng nhập một lần ở đó. Cookie được giữ lại trong profile này. Người dùng bản 1.6.0 cần đăng nhập lại một lần vì profile Edge cũ không còn được dùng.
 - Bấm **Kiểm tra lại đăng nhập** để xem trạng thái từng nền tảng: đã đăng nhập, chưa đăng nhập hoặc chưa rõ. Xiaohongshu cho khách cookie giống người đã đăng nhập nên trạng thái luôn là chưa rõ.
 - Không đăng nhập thì video Douyin công khai thường vẫn tải được, nhưng captcha xuất hiện nhiều hơn.
-- Tuỳ chọn: dán Cookie header cho một nền tảng ở **Cookie thủ công**. Cookie được mã hoá bằng Windows DPAPI và thay cookie cùng tên của profile. File `cookies.txt` định dạng Netscape ở **File cookies.txt** được các nguồn tải bằng yt-dlp dùng thay cho cookie của Edge; yt-dlp chỉ nhận một bản sao tạm nên file gốc không bao giờ bị sửa.
-- Với YouTube, cài [Deno](https://deno.com) 2.3+ (hoặc Node.js 22+) và bảo đảm lệnh `deno` hoặc `node` có trong `PATH`. YouTube không bao giờ nhận cookie của profile Edge, vì yt-dlp cảnh báo cookie tài khoản có thể khiến tài khoản Google bị gắn cờ.
+- Tuỳ chọn: dán Cookie header cho một nền tảng ở **Cookie thủ công**. Cookie được mã hoá bằng Windows DPAPI và thay cookie cùng tên của profile. File `cookies.txt` định dạng Netscape ở **File cookies.txt** được các nguồn tải bằng yt-dlp dùng thay cho cookie của trình duyệt; yt-dlp chỉ nhận một bản sao tạm nên file gốc không bao giờ bị sửa.
+- Với YouTube, cài [Deno](https://deno.com) 2.3+ (hoặc Node.js 22+) và bảo đảm lệnh `deno` hoặc `node` có trong `PATH`. YouTube không bao giờ nhận cookie của profile trình duyệt, vì yt-dlp cảnh báo cookie tài khoản có thể khiến tài khoản Google bị gắn cờ.
 
 App không cần Douzy nữa. Nếu bạn từng dùng Douzy, video trong thư viện của nó được dùng lại mà không tải lại, và lịch sử hiện ở mục **Video cũ trong thư viện Douzy**.
 
@@ -879,13 +896,13 @@ App không cần Douzy nữa. Nếu bạn từng dùng Douzy, video trong thư v
   ```
 
 - Dán vào **Thiết lập → Notebook Gemini dùng để dịch**.
-- Có thể giữ bật **Chạy Edge ẩn**; trang vẫn render đầy đủ dù cửa sổ được thu nhỏ.
-- Khi phiên Google hết hạn hoặc cần kiểm tra Notebook, app sẽ hiện Edge và cho chạy lại job sau khi đăng nhập.
+- Có thể giữ bật **Chạy trình duyệt ẩn**; trang vẫn render đầy đủ dù cửa sổ được thu nhỏ.
+- Khi phiên Google hết hạn hoặc cần kiểm tra Notebook, app sẽ hiện trình duyệt và cho chạy lại job sau khi đăng nhập.
 - Với chế độ API, chọn **DeepSeek API**, **OpenRouter** hoặc **API OpenAI-compatible khác**, nhập Base URL, model và API key rồi bấm **Kiểm tra kết nối API** trước khi chạy hàng đợi.
 - Mỗi provider và host của Base URL giữ key riêng. Sau khi đổi provider, hãy nhập key của provider mới; key cũ vẫn được giữ cho provider cũ.
 - Ô **Cách dịch mong muốn** chứa hướng dẫn dịch. Mặc định là prompt trung tính dùng cho mọi video. Với video Delta Force, chọn **Game Delta Force** ở **Mẫu có sẵn** rồi bấm **Nạp mẫu**. Nút **Khôi phục mặc định** đưa prompt trung tính trở lại.
 
-VietSub Studio không hỏi và không lưu mật khẩu Google. Việc đăng nhập nằm hoàn toàn trong profile do Edge quản lý.
+VietSub Studio không hỏi và không lưu mật khẩu Google. Việc đăng nhập nằm hoàn toàn trong profile riêng của trình duyệt tự động hoá, do trình duyệt quản lý.
 
 ### 4. Chọn thư mục xuất
 
@@ -898,7 +915,7 @@ Bấm **Chọn thư mục…** trong Thiết lập để chọn bất kỳ nơi 
    - link video Kuaishou, Xiaohongshu, Bilibili, TikTok hoặc YouTube
    - nguyên đoạn chia sẻ copy từ app điện thoại, ví dụ `4.89 复制打开抖音… https://v.douyin.com/<mã>/`
 2. Nhập tên dùng chung nếu muốn; để trống để lấy tiêu đề nguồn hoặc tên file.
-3. Với link, bấm **Tải preview**. Khung dưới các nút hiện tiến độ tải, và nhắc bạn kéo captcha trên Edge khi Douyin yêu cầu.
+3. Với link, bấm **Tải preview**. Khung dưới các nút hiện tiến độ tải, và nhắc bạn kéo captcha trên trình duyệt khi Douyin yêu cầu.
 4. Kéo/đổi kích thước khung vàng cho khớp vùng phụ đề.
 5. Chọn ngôn ngữ OCR rồi bấm **Thêm vào hàng đợi**.
 6. Lặp lại cho các video khác, sau đó bấm **Chạy hàng đợi**.
@@ -955,7 +972,7 @@ python automate.py --url "https://www.douyin.com/video/123" --lang ch --name "Re
 
 CLI dùng chung cấu hình VideOCR, nguồn tải video và công cụ dịch với bản desktop.
 
-CLI dùng chung khoá một instance với `python app.py` chạy từ cùng thư mục, nên hãy đóng app đó trước. Bản EXE giữ khoá ở `%APPDATA%\VietSub Studio` nên CLI không nhận ra; đừng chạy cả hai cùng lúc vì chúng sẽ cùng điều khiển VideOCR và profile Edge. CLI không đọc và không sửa hàng đợi của bản desktop. Output là UTF-8 nên có thể chuyển hướng ra file. Mã thoát `0` là thành công, `1` là lỗi hoặc đang có instance khác chạy.
+CLI dùng chung khoá một instance với `python app.py` chạy từ cùng thư mục, nên hãy đóng app đó trước. Bản EXE giữ khoá ở `%APPDATA%\VietSub Studio` nên CLI không nhận ra; đừng chạy cả hai cùng lúc vì chúng sẽ cùng điều khiển VideOCR và profile trình duyệt. CLI không đọc và không sửa hàng đợi của bản desktop. Output là UTF-8 nên có thể chuyển hướng ra file. Mã thoát `0` là thành công, `1` là lỗi hoặc đang có instance khác chạy.
 
 ## Tự build ứng dụng Windows
 
@@ -984,7 +1001,7 @@ release\VietSub-Studio-Portable-v<phiên bản>.zip.sha256.txt
 
 `tools/make_release.py` đóng gói EXE theo đúng cấu trúc mà trình tự cập nhật trong app cần. `build_portable.bat` còn chạy `tests/test_release_contract.py` trên thư mục `release`. Đọc [RELEASING.md](RELEASING.md) trước khi phát hành.
 
-`build_app.bat` và `VietSub Studio.spec` cung cấp bản onedir thay thế. Spec portable đóng gói template, avatar, tài nguyên pywebview và yt-dlp cùng các script giải thử thách YouTube (yt-dlp-ejs). Ứng dụng bên ngoài như VideOCR, Edge, Deno, Node và thông tin đăng nhập không bao giờ được đóng gói.
+`build_app.bat` và `VietSub Studio.spec` cung cấp bản onedir thay thế. Spec portable đóng gói template, avatar, tài nguyên pywebview và yt-dlp cùng các script giải thử thách YouTube (yt-dlp-ejs). Ứng dụng bên ngoài như VideOCR, Chrome, Edge, Deno, Node và thông tin đăng nhập không bao giờ được đóng gói.
 
 ## Cách hệ thống hoạt động
 
@@ -992,11 +1009,13 @@ release\VietSub-Studio-Portable-v<phiên bản>.zip.sha256.txt
 flowchart TD
     A[Link video, đoạn share hoặc MP4/MKV trên máy] --> B{Loại nguồn}
     B -->|Douyin| C[Giải mã ID video qua HTTP]
-    C --> D[Profile Edge mở trang và đọc aweme/detail]
-    D -->|lỗi| D2[yt-dlp với cookie của profile]
-    B -->|Kuaishou| K1[Profile Edge bắt video của trang]
+    C --> S[Trang chia sẻ qua HTTP]
+    S -->|không có dữ liệu| D[Profile trình duyệt mở trang và đọc aweme/detail]
+    D -->|lỗi| D2[yt-dlp với cookie xuất từ profile]
+    B -->|Kuaishou| K1[Profile trình duyệt bắt video của trang]
     B -->|Xiaohongshu, Bilibili, TikTok, YouTube| Y[yt-dlp]
     D --> E[MP4 trong thư mục tải tạm]
+    S --> E
     D2 --> E
     K1 --> E
     Y --> E
@@ -1014,9 +1033,9 @@ flowchart TD
     M --> N[Chỉ hiện kết quả sau kiểm tra cuối]
 ```
 
-Hàng đợi cố ý chạy tuần tự. Job sau chỉ bắt đầu khi job hiện tại thành công, lỗi hoặc bị huỷ. Cách này bảo vệ bản cài VideOCR, profile Edge debug và cuộc hội thoại Notebook dùng chung khỏi bị nhiều luồng điều khiển cùng lúc.
+Hàng đợi cố ý chạy tuần tự. Job sau chỉ bắt đầu khi job hiện tại thành công, lỗi hoặc bị huỷ. Cách này bảo vệ bản cài VideOCR, profile trình duyệt và cuộc hội thoại Notebook dùng chung khỏi bị nhiều luồng điều khiển cùng lúc.
 
-Douyin ký các lệnh gọi web API (`a_bogus`, `X-Bogus`) bằng JavaScript của trang và thay đổi đoạn mã này thường xuyên. VietSub Studio không tự viết lại thuật toán ký: trang thật chạy trong profile Edge của người dùng, còn app đọc dữ liệu mà chính trang đó nhận được. Với video tải về, MP4 nằm trong thư mục tải tạm trong lúc OCR và dịch; sau khi kiểm tra kết quả cuối, app chuyển video cùng metadata và ảnh bìa vào project tự chứa. File chọn trên máy trong cửa sổ desktop được dùng tại chỗ, rồi hard-link hoặc sao chép vào project.
+Douyin ký các lệnh gọi web API (`a_bogus`, `X-Bogus`) bằng JavaScript của trang và thay đổi đoạn mã này thường xuyên. VietSub Studio không tự viết lại thuật toán ký: app thử trang chia sẻ công khai trước; nếu không được, trang thật chạy trong profile trình duyệt của app, còn app đọc dữ liệu mà chính trang đó nhận được. Với video tải về, MP4 nằm trong thư mục tải tạm trong lúc OCR và dịch; sau khi kiểm tra kết quả cuối, app chuyển video cùng metadata và ảnh bìa vào project tự chứa. File chọn trên máy trong cửa sổ desktop được dùng tại chỗ, rồi hard-link hoặc sao chép vào project.
 
 Các phần chính:
 
@@ -1036,18 +1055,18 @@ Các API cục bộ (đây là giao tiếp nội bộ giữa giao diện đi kè
 
 | Endpoint | Method | Mục đích |
 |---|---|---|
-| `/api/health` | GET | Kiểm tra VideOCR, FFmpeg/FFprobe, bộ máy dịch, Edge, yt-dlp và JavaScript runtime; `ready_sources` cho biết nguồn nào chạy được. |
+| `/api/health` | GET | Kiểm tra VideOCR, FFmpeg/FFprobe, bộ máy dịch, trình duyệt tự động hoá, yt-dlp và JavaScript runtime; `ready_sources` cho biết nguồn nào chạy được. |
 | `/api/translation/test` | POST | Gửi một yêu cầu thử tối thiểu tới provider API đã cấu hình. |
 | `/api/settings` | GET/POST | Đọc và lưu thiết lập cục bộ, gồm cookie từng nền tảng và `cookies.txt`. |
-| `/api/sources/sessions` | GET | Trạng thái đăng nhập Douyin, Bilibili, Xiaohongshu và Kuaishou trong profile Edge (không bao giờ trả giá trị cookie). |
-| `/api/sources/<site>/open` | POST | Mở nền tảng trong profile Edge để đăng nhập. |
+| `/api/sources/sessions` | GET | Trạng thái đăng nhập Douyin, Bilibili, Xiaohongshu và Kuaishou trong profile trình duyệt (không bao giờ trả giá trị cookie). |
+| `/api/sources/<site>/open` | POST | Mở nền tảng trong profile trình duyệt để đăng nhập. |
 | `/api/history` | GET | Đọc video gần đây từ thư viện Douzy cũ, nếu có. |
 | `/api/previews` | POST | Tải video của link và trả URL preview được bảo vệ. |
 | `/api/previews/local` | POST | Chỉ chế độ trình duyệt: upload MP4 vào cache quản lý và tạo preview. |
 | `/api/queue` | GET/POST | Xem hàng đợi hoặc thêm video đã chuẩn bị. |
 | `/api/queue/start` | POST | Chạy worker tuần tự duy nhất. |
 | `/api/queue/<job_id>/retry` | POST | Chạy lại từ bước video, OCR hoặc dịch. |
-| `/api/edge/show` | POST | Hiện cửa sổ Edge riêng để đăng nhập hoặc kiểm tra. |
+| `/api/edge/show` | POST | Mở Gemini Notebook trong trình duyệt tự động hoá để đăng nhập hoặc kiểm tra. |
 | `/api/update/install` | POST | Tải, xác minh, cài và khởi động lại vào bản packaged mới nhất. |
 | `/api/progress` | GET | Lấy trạng thái, log tăng dần và tiến độ tải trực tiếp. |
 | `/api/cancel` | POST | Huỷ quy trình cùng tiến trình con đang hoạt động. |
@@ -1062,7 +1081,7 @@ Flask chỉ bind vào `127.0.0.1`, không mở service ra mạng công cộng. M
 | Thiết lập VietSub Studio | `app_config.json` cạnh `app.py` | `%APPDATA%\VietSub Studio\app_config.json` |
 | Hàng đợi đã lưu | `workflow_queue.json` cạnh `app.py` | `%APPDATA%\VietSub Studio\workflow_queue.json` |
 | MP4 upload ở chế độ trình duyệt | `local_videos` cạnh `app.py` | `%APPDATA%\VietSub Studio\local_videos` |
-| Profile Edge riêng (đăng nhập các nền tảng) | `%LOCALAPPDATA%\Microsoft\Edge\User Data Debug` | Giống nhau |
+| Profile trình duyệt tự động hoá (đăng nhập nền tảng và Google) | `chrome_debug_profile` cạnh `app.py` (`edge_debug_profile` hoặc `custom_browser_profile` cho lựa chọn khác) | `%APPDATA%\VietSub Studio\chrome_debug_profile` (hoặc `edge_debug_profile`, `custom_browser_profile`) |
 | Video tải về đang chờ vào project | `.vietsub-downloads` trong thư mục xuất | Giống nhau |
 | Thư viện Douzy cũ (chỉ đọc, nếu có) | `%APPDATA%\douyin-downloader-desktop\dy_downloader.db` | Giống nhau |
 | Kết quả dự án | Thư mục đã chọn hoặc `Documents\VietSub Studio` | Giống nhau |
@@ -1080,17 +1099,18 @@ Nếu `app_config.json` hoặc `workflow_queue.json` chứa JSON sai, app đổi
 - Video được tải và OCR ngay trên máy người dùng.
 - Video không bị upload lên repository hay server riêng của VietSub Studio.
 - Trong cửa sổ desktop, MP4/MKV trên máy được đọc tại chỗ, không upload và không sao chép qua `%TEMP%`. Ở chế độ trình duyệt, MP4 upload (tối đa 8 GiB, kiểm tra header `ftyp`) đi qua một file tạm trong `%TEMP%` và được giữ trong cache của app để hàng đợi sống qua lần khởi động lại.
-- Nội dung SRT được gửi đến Gemini Notebook qua phiên Edge hoặc tới API DeepSeek/OpenRouter/OpenAI-compatible mà người dùng cấu hình. Hãy đọc điều khoản/quyền riêng tư của provider trước khi xử lý nội dung nhạy cảm.
-- Các kết nối mạng, ngoài kết nối `127.0.0.1` tới chính app và cổng debug Edge:
+- Nội dung SRT được gửi đến Gemini Notebook qua phiên trình duyệt của app hoặc tới API DeepSeek/OpenRouter/OpenAI-compatible mà người dùng cấu hình. Hãy đọc điều khoản/quyền riêng tư của provider trước khi xử lý nội dung nhạy cảm.
+- Các kết nối mạng, ngoài kết nối `127.0.0.1` tới chính app và cổng debug của trình duyệt:
   - GitHub: app hỏi `api.github.com` về release mới nhất mỗi lần khởi động, kèm User-Agent `VietSub-Studio/<phiên bản>`. File release chỉ được tải từ GitHub khi bạn chọn cài bản cập nhật.
-  - Dịch: Gemini qua profile Edge riêng, hoặc Base URL API bạn đã nhập, kèm key của bạn. OpenRouter còn nhận URL repository này trong `HTTP-Referer` và `VietSub Studio` trong `X-Title`.
-  - Nền tảng video: link share được giải mã qua HTTP trên chính host của nền tảng. Trang Douyin và Kuaishou được mở trong profile Edge riêng, còn file video được tải từ CDN của nền tảng kèm cookie, User-Agent và `Referer` của profile đó. yt-dlp kết nối tới nền tảng của link (script thử thách của YouTube chạy cục bộ trong Deno hoặc Node). Ảnh bìa chỉ lấy từ `douyinpic.com` hoặc `douyincdn.com` với Douyin, hoặc qua yt-dlp với các trang khác.
-- Cookie được giữ trong cookie jar theo tên miền, nên cookie phiên của nền tảng nào chỉ được gửi tới host của nền tảng đó. Cookie của profile Edge được chuyển cho yt-dlp qua một file tạm, bị xoá sau khi tải xong; YouTube không bao giờ nhận cookie này.
+  - Dịch: Gemini qua profile trình duyệt riêng của app, hoặc Base URL API bạn đã nhập, kèm key của bạn. OpenRouter còn nhận URL repository này trong `HTTP-Referer` và `VietSub Studio` trong `X-Title`.
+  - Nền tảng video: link share được giải mã qua HTTP trên chính host của nền tảng. Trang chia sẻ công khai của Douyin được đọc qua HTTP (`www.iesdouyin.com`). Trang Douyin và Kuaishou được mở trong profile trình duyệt riêng, còn file video được tải từ CDN của nền tảng kèm cookie, User-Agent và `Referer` của profile đó. yt-dlp kết nối tới nền tảng của link (script thử thách của YouTube chạy cục bộ trong Deno hoặc Node). Ảnh bìa chỉ lấy từ `douyinpic.com` hoặc `douyincdn.com` với Douyin, hoặc qua yt-dlp với các trang khác.
+- Cookie được giữ trong cookie jar theo tên miền, nên cookie phiên của nền tảng nào chỉ được gửi tới host của nền tảng đó. Cookie của profile trình duyệt được chuyển cho yt-dlp qua một file Netscape tạm, bị xoá sau khi tải xong; YouTube không bao giờ nhận cookie này. App không bao giờ dùng `--cookies-from-browser`.
+- Cổng debug của trình duyệt chỉ nghe ở `127.0.0.1`. Trình duyệt được mở với `--remote-allow-origins=*` để Playwright kết nối được; trước mỗi lần dùng, app kiểm tra tiến trình giữ cổng đúng là trình duyệt đã chọn, chạy với profile riêng của app.
 - API key và Cookie header của từng nền tảng được mã hoá bằng Windows DPAPI và không bao giờ trả ngược qua API settings. API key được lưu riêng cho từng provider và host của Base URL.
-- Mật khẩu Google và mật khẩu các nền tảng video do Edge quản lý; VietSub Studio không đọc hoặc lưu chúng.
+- Mật khẩu Google và mật khẩu các nền tảng video do trình duyệt quản lý; VietSub Studio không đọc hoặc lưu chúng.
 - Thiết lập và file kết quả được ghi atomic để giảm nguy cơ hỏng.
 - API cục bộ dùng token capability ngẫu nhiên theo mỗi lần mở app và kiểm tra Host, Origin, Fetch Metadata, đường dẫn, ngôn ngữ, tên file, loại/kích thước upload và quyền mở thư mục kết quả.
-- Không chia sẻ `app_config.json`, profile Edge, cookie, link Notebook riêng hoặc log chứa link video riêng tư.
+- Không chia sẻ `app_config.json`, thư mục profile trình duyệt, cookie, link Notebook riêng hoặc log chứa link video riêng tư.
 
 Đọc [SECURITY.md](SECURITY.md) trước khi báo cáo vấn đề bảo mật.
 
@@ -1099,10 +1119,10 @@ Nếu `app_config.json` hoặc `workflow_queue.json` chứa JSON sai, app đổi
 - Chỉ hỗ trợ Windows.
 - Hàng đợi chạy tuần tự; không chạy OCR/dịch song song.
 - Không tự bung link playlist, profile, collection hoặc mix thành nhiều video.
-- Bắt buộc có VideOCR. Douyin và Kuaishou cần thêm Microsoft Edge; YouTube cần Deno 2.3+ hoặc Node 22+.
-- Douyin và Kuaishou thay đổi trang web thường xuyên, có thể làm việc tải lỗi cho tới khi VietSub Studio được cập nhật. Với Douyin, thông báo lỗi liệt kê lý do của từng cách (Edge, rồi yt-dlp); Kuaishou chỉ có cách tải qua Edge. Đăng nhập nền tảng trong Thiết lập có thể giúp ích.
+- Bắt buộc có VideOCR. Douyin và Kuaishou cần thêm Google Chrome (hoặc Microsoft Edge, hay một trình duyệt Chromium khác); YouTube cần Deno 2.3+ hoặc Node 22+.
+- Douyin và Kuaishou thay đổi trang web thường xuyên, có thể làm việc tải lỗi cho tới khi VietSub Studio được cập nhật. Với Douyin, thông báo lỗi liệt kê lý do của từng cách (trang chia sẻ, trình duyệt, yt-dlp); Kuaishou chỉ có cách tải qua trình duyệt. Hiện trang chia sẻ của Douyin không có dữ liệu với phần lớn video nên thường vẫn cần trình duyệt. Đăng nhập nền tảng trong Thiết lập có thể giúp ích.
 - Bài đăng ảnh của Xiaohongshu không có video, và không đọc được trạng thái đăng nhập Xiaohongshu từ cookie.
-- Cần phiên Gemini Notebook đã đăng nhập trong Edge hoặc cấu hình API dịch hoạt động.
+- Cần phiên Gemini Notebook đã đăng nhập trong profile trình duyệt của app hoặc cấu hình API dịch hoạt động.
 - Gemini thay đổi giao diện có thể làm selector lỗi cho tới khi dự án được cập nhật.
 - Chất lượng OCR phụ thuộc video, độ tương phản, ngôn ngữ và vùng crop.
 - FFmpeg/FFprobe không bắt buộc với video ngắn có độ phân giải cố định, nhưng thiếu chúng thì không thể tự phục hồi crash ở video dài.
@@ -1117,15 +1137,19 @@ Nếu `app_config.json` hoặc `workflow_queue.json` chứa JSON sai, app đổi
 
 ### Douyin yêu cầu captcha
 
-Cửa sổ Edge được đưa lên trước và app hiện “Vui lòng kéo captcha trên trình duyệt Edge để tiếp tục tải”. Kéo thanh trượt trong Edge; lượt tải tự chạy tiếp, app chờ tối đa 3 phút. Đăng nhập Douyin một lần (**Thiết lập → Mở Douyin trên Edge**) giúp ít gặp captcha hơn. Lượt tải trước chạy nền không bao giờ chờ captcha; job sẽ tự tải video khi tới lượt.
+Cửa sổ trình duyệt được đưa lên trước và app hiện “Vui lòng kéo captcha trên trình duyệt Chrome để tiếp tục tải” (theo tên trình duyệt đã chọn). Kéo thanh trượt ở đó; lượt tải tự chạy tiếp, app chờ tối đa 3 phút. Đăng nhập Douyin một lần (**Thiết lập → Mở Douyin trên Chrome**) giúp ít gặp captcha hơn. Lượt tải trước chạy nền không bao giờ chờ captcha; job sẽ tự tải video khi tới lượt.
+
+### Douyin báo cần đăng nhập để tải video
+
+Thông báo “Douyin yêu cầu đăng nhập để tải video này. Hãy bấm 'Mở Douyin trên Chrome' trong Thiết lập, đăng nhập 1 lần rồi thử lại.” nghĩa là Douyin chỉ cho người đã đăng nhập xem video này: trang đã chuyển khỏi video (ví dụ sang `/jingxuan` hoặc sang video khác) hoặc hiện bảng đăng nhập mà không có dữ liệu video. App dừng ngay thay vì chờ. Bấm **Mở Douyin trên Chrome** trong Thiết lập, đăng nhập một lần trong cửa sổ đó rồi tải preview lại. Cookie header của Douyin ở **Cookie thủ công** hoặc file `cookies.txt` cũng giúp yt-dlp thử tải.
 
 ### Tải video Douyin hoặc Kuaishou bị lỗi
 
-Với Douyin, thông báo lỗi liệt kê lý do của từng cách (Edge, rồi yt-dlp); Kuaishou chỉ tải qua Edge. Kiểm tra video còn công khai và mở được trong Edge, đăng nhập nền tảng trong Thiết lập rồi chạy lại. Nếu nền tảng vừa đổi trang web, việc tải có thể lỗi cho tới khi VietSub Studio được cập nhật; Cookie header dán ở **Cookie thủ công** có thể giúp khi phiên trong profile bị hỏng.
+Với Douyin, thông báo lỗi liệt kê lý do của từng cách (trang chia sẻ, trình duyệt, rồi yt-dlp); Kuaishou chỉ tải qua trình duyệt. Kiểm tra video còn công khai và mở được trong trình duyệt, đăng nhập nền tảng trong Thiết lập rồi chạy lại. Nếu nền tảng vừa đổi trang web, việc tải có thể lỗi cho tới khi VietSub Studio được cập nhật; Cookie header dán ở **Cookie thủ công** có thể giúp khi phiên trong profile bị hỏng.
 
-### Tải Kuaishou hoặc Xiaohongshu dừng lại chờ tôi trên Edge
+### Tải Kuaishou hoặc Xiaohongshu dừng lại chờ tôi trên trình duyệt
 
-Khi trang chưa hiện video sau 30 giây, app đưa Edge lên trước, nhờ bạn đăng nhập hoặc kéo captcha ở đó, rồi chờ tối đa 3 phút. Bài đăng ảnh của Xiaohongshu không có video; app báo điều đó thay vì mở Edge.
+Khi trang chưa hiện video sau 30 giây, app đưa trình duyệt lên trước, nhờ bạn đăng nhập hoặc kéo captcha ở đó, rồi chờ tối đa 3 phút. Bài đăng ảnh của Xiaohongshu không có video; app báo điều đó thay vì mở trình duyệt.
 
 ### YouTube báo thiếu JavaScript runtime
 
@@ -1149,13 +1173,13 @@ Nếu không, cài lại VideOCR vào đường dẫn mặc định.
 
 Dán URL HTTPS đúng dạng `https://gemini.google.com/notebook/<id>` vào Thiết lập. Link chat Gemini thông thường không được chấp nhận.
 
-### Edge mở nhưng không bắt đầu dịch
+### Trình duyệt mở nhưng không bắt đầu dịch
 
-Dùng nút **Mở Edge để đăng nhập**, đăng nhập Google, xác nhận Notebook truy cập được rồi chạy lại job lỗi. Chế độ nền chỉ thu nhỏ Edge chứ không chạy headless, nên trang Gemini vẫn render bình thường.
+Dùng nút **Mở Gemini trên Chrome để đăng nhập** trong Thiết lập (hoặc nút đăng nhập trên job lỗi), đăng nhập Google, xác nhận Notebook truy cập được rồi chạy lại job lỗi. Chế độ nền chỉ thu nhỏ trình duyệt chứ không chạy headless, nên trang Gemini vẫn render bình thường.
 
-### Cổng 9222 bận hoặc không kết nối được Edge debug
+### Cổng 9222 bận hoặc không kết nối được trình duyệt
 
-Đóng các phiên Edge debug cũ rồi mở lại VietSub Studio. Người dùng nâng cao có thể kiểm tra tiến trình đang giữ cổng `9222`; không nên tắt Edge bình thường nếu chưa xác định đúng tiến trình.
+Thông báo lỗi nêu tên chương trình đang giữ cổng `9222`; VietSub Studio không bao giờ tắt chương trình mà nó không tự mở. Hãy đóng chương trình đó (hoặc tắt chế độ remote debugging của nó) rồi thử lại. Trình duyệt tự động hoá cũ của app, kể cả profile Edge của bản 1.6.0, được tự đóng. Nếu thông báo nói trình duyệt của app đang mở mà chưa bật cổng điều khiển, hãy đóng cửa sổ đó rồi thử lại. Chrome hoặc Edge bạn đang dùng có thể để mở, vì app dùng profile riêng.
 
 ### Sub OCR trống hoặc sai nhiều
 
@@ -1199,11 +1223,15 @@ Mở Thiết lập để xem hoặc chọn thư mục lưu. Nếu để trống,
 
 ### EXE có hoàn toàn độc lập không?
 
-Không. Nó chứa ứng dụng Python, UI và yt-dlp, nhưng VideOCR và công cụ dịch vẫn là phụ thuộc bên ngoài; tải Douyin và Kuaishou cần Microsoft Edge, còn YouTube cần Deno hoặc Node. Công cụ dịch là Edge cùng tài khoản Google và Gemini Notebook, hoặc tài khoản của một provider API OpenAI-compatible.
+Không. Nó chứa ứng dụng Python, UI và yt-dlp, nhưng VideOCR và công cụ dịch vẫn là phụ thuộc bên ngoài; tải Douyin và Kuaishou cần Google Chrome (hoặc Edge), còn YouTube cần Deno hoặc Node. Công cụ dịch là trình duyệt cùng tài khoản Google và Gemini Notebook, hoặc tài khoản của một provider API OpenAI-compatible.
 
 ### Còn cần Douzy không?
 
 Không. Từ v1.6.0, VietSub Studio tự tải video. Nếu máy vẫn còn Douzy, video đã có trong thư viện của nó được dùng lại và hiện ở mục **Video cũ trong thư viện Douzy**; app không dùng gì khác của Douzy.
+
+### App có đụng tới Chrome hoặc Edge tôi đang dùng không?
+
+Không. App mở Google Chrome (hoặc trình duyệt chọn trong Thiết lập) với profile riêng trong thư mục cấu hình, nên chạy song song với trình duyệt hằng ngày của bạn và không đọc hay sửa profile của bạn. App chỉ mở trình duyệt đó khi cần: dịch bằng Gemini Notebook, tải video cần trang web, hoặc khi bạn bấm nút đăng nhập trong Thiết lập.
 
 ### VietSub Studio có miễn phí và mã nguồn mở không?
 
@@ -1211,7 +1239,7 @@ Có. Mã trong repository dùng giấy phép MIT. Công cụ, nền tảng, mô 
 
 ### Tool có upload video của tôi không?
 
-VietSub Studio không upload video lên server riêng. Video được tải và xử lý trên máy của bạn. Chỉ nội dung SRT được gửi đi để dịch: tới Gemini Notebook qua phiên Edge của bạn, hoặc tới provider API bạn đã cấu hình.
+VietSub Studio không upload video lên server riêng. Video được tải và xử lý trên máy của bạn. Chỉ nội dung SRT được gửi đi để dịch: tới Gemini Notebook qua phiên trình duyệt của app, hoặc tới provider API bạn đã cấu hình.
 
 ### Maintainer có nhận được link Notebook hoặc tài khoản Google không?
 
@@ -1231,7 +1259,7 @@ Từng video riêng lẻ từ Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok v�
 
 ### Có thể xử lý nhiều video tự động không?
 
-Có. Tạo preview cho từng video, thêm vào hàng đợi rồi bấm chạy. App chỉ xử lý một job tại một thời điểm để VideOCR và Edge/Gemini không xung đột, và tải trước video kế tiếp trong lúc video hiện tại đang OCR hoặc dịch.
+Có. Tạo preview cho từng video, thêm vào hàng đợi rồi bấm chạy. App chỉ xử lý một job tại một thời điểm để VideOCR và trình duyệt/Gemini không xung đột, và tải trước video kế tiếp trong lúc video hiện tại đang OCR hoặc dịch.
 
 ### Có thể di chuyển EXE sau khi cấu hình không?
 

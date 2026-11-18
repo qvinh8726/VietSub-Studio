@@ -1,8 +1,9 @@
-"""Video sources: Douyin through the user's Edge session, other sites through yt-dlp.
+"""Video sources: Douyin and Kuaishou through the automation browser, other sites through yt-dlp.
 
 Modules:
     base           shared types, errors and URL helpers
-    douyin         Douyin links, aweme metadata and the Edge page capture
+    browser        the automation browser (Chrome by default) and its own profile
+    douyin         Douyin links, share page, aweme metadata and the browser page capture
     web            TikTok, YouTube and Bilibili links
     registry       picks the source for pasted text
     http_download  streaming download with progress, resume and cancel

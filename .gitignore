@@ -5,6 +5,12 @@ workflow_queue.json
 local_videos/
 *.lnk
 
+# Profiles of the automation browser (created in the config folder, which is the
+# project folder when the app runs from source)
+/chrome_debug_profile/
+/edge_debug_profile/
+/custom_browser_profile/
+
 # Release artifacts are uploaded to GitHub Releases, not committed to Git
 *.zip
 *.zip.sha256.txt

@@ -11,5 +11,7 @@
   "output_dir": "",
   "crop_coords": null,
   "edge_background": true,
+  "browser_kind": "chrome",
+  "browser_path": "",
   "desktop_shortcut_initialized": false
 }

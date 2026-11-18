@@ -46,6 +46,12 @@ class SandboxedCacheTestCase(unittest.TestCase):
             patch.object(app, "DOWNLOAD_DIR_OVERRIDE", str(self.cache)),
             patch.object(app, "CONFIG_PATH", str(self.config_path)),
             patch.object(app, "DOUZY_DB", str(self.root / "missing-douzy.db")),
+            # Never reach the network: the share page answers like today's client-rendered page,
+            # and yt-dlp fails unless a test replaces it.
+            patch.object(app.douyin_source, "fetch_share_page",
+                         return_value='<script>window._ROUTER_DATA = {"loaderData": {}}</script>'),
+            patch.object(app.ytdlp_source, "download_with_ytdlp",
+                         side_effect=base.SourceError("yt-dlp is not run in tests")),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -73,10 +79,10 @@ class HealthTests(unittest.TestCase):
 
     def test_health_has_no_douzy_items_and_reports_the_download_tools(self):
         with (
-            patch.object(app, "resolve_edge_executable", return_value=r"C:\Edge\msedge.exe"),
+            patch.object(app, "resolve_browser_executable", return_value=r"C:\Chrome\chrome.exe"),
             patch.object(app.ytdlp_source, "ytdlp_version", return_value="2026.10.26"),
             patch.object(app, "get_js_runtime", return_value={"deno": {"path": r"C:\deno.exe"}}),
-            patch.object(app, "check_edge_status", return_value=False),
+            patch.object(app, "check_browser_status", return_value=False),
         ):
             data = self.client.get("/api/health").get_json()
         self.assertFalse([key for key in data["checks"] if key.startswith("douzy")])
@@ -92,12 +98,12 @@ class HealthTests(unittest.TestCase):
         )
         self.assertTrue(all(value == data["ready_local"] for value in data["ready_sources"].values()))
 
-    def test_douyin_and_kuaishou_need_edge_and_other_links_need_ytdlp(self):
+    def test_douyin_and_kuaishou_need_the_browser_and_other_links_need_ytdlp(self):
         with (
-            patch.object(app, "resolve_edge_executable", return_value=""),
+            patch.object(app, "resolve_browser_executable", return_value=""),
             patch.object(app.ytdlp_source, "ytdlp_version", return_value=""),
             patch.object(app, "get_js_runtime", return_value=None),
-            patch.object(app, "check_edge_status", return_value=False),
+            patch.object(app, "check_browser_status", return_value=False),
         ):
             data = self.client.get("/api/health").get_json()
         self.assertFalse(data["ready_douyin"])
@@ -114,7 +120,7 @@ class HealthTests(unittest.TestCase):
             with (
                 patch.object(app, "VIDEOCR_CLI", videocr_path),
                 patch.object(app, "get_translation_runtime_config", return_value={"provider": "deepseek"}),
-                patch.object(app, "resolve_edge_executable", return_value=""),
+                patch.object(app, "resolve_browser_executable", return_value=""),
                 patch.object(app.ytdlp_source, "ytdlp_version", return_value=""),
             ):
                 missing = app.missing_runtime_dependencies({"douyin", "youtube", "local"})
@@ -122,8 +128,8 @@ class HealthTests(unittest.TestCase):
                 xiaohongshu = app.missing_runtime_dependencies({"xiaohongshu"})
         finally:
             os.remove(videocr_path)
-        self.assertEqual(missing, ["Microsoft Edge", "yt-dlp"])
-        self.assertEqual(kuaishou, ["Microsoft Edge"])
+        self.assertEqual(missing, ["Google Chrome", "yt-dlp"])
+        self.assertEqual(kuaishou, ["Google Chrome"])
         self.assertEqual(xiaohongshu, ["yt-dlp"])
 
 
@@ -140,8 +146,8 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
         captured = {}
         with (
             patch.object(app.douyin_source, "resolve_short_link", return_value=AWEME_ID) as resolve,
-            patch.object(app, "resolve_url_via_edge") as edge_resolve,
-            patch.object(app, "download_douyin_via_edge", side_effect=self.fake_edge(captured)),
+            patch.object(app, "resolve_url_via_browser") as edge_resolve,
+            patch.object(app, "download_douyin_via_browser", side_effect=self.fake_edge(captured)),
         ):
             result = app.download_video_source(
                 "4.89 复制打开抖音，看看【作品】 https://v.douyin.com/iRNBho6u/ i@P.Kj 08/05", ""
@@ -158,34 +164,97 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
     def test_short_links_fall_back_to_edge_when_http_resolution_fails(self):
         with (
             patch.object(app.douyin_source, "resolve_short_link", side_effect=base.SourceError("blocked")),
-            patch.object(app, "resolve_url_via_edge", return_value=CANONICAL) as edge_resolve,
-            patch.object(app, "download_douyin_via_edge", side_effect=self.fake_edge({})),
+            patch.object(app, "resolve_url_via_browser", return_value=CANONICAL) as edge_resolve,
+            patch.object(app, "download_douyin_via_browser", side_effect=self.fake_edge({})),
         ):
             result = app.download_video_source("https://v.douyin.com/abc123/", "")
         edge_resolve.assert_called_once()
         self.assertEqual(result["video_id"], AWEME_ID)
 
-    def test_ytdlp_is_the_fallback_when_the_edge_capture_fails(self):
+    def test_the_feed_page_douyin_shows_for_an_unavailable_video_is_not_taken_as_the_link(self):
+        # Douyin sends guests from a video it will not show to the feed, with another video in the modal.
+        feed = "https://www.douyin.com/jingxuan?previous_page=web_video_404_link&modal_id=7693052223881891122"
+        with (
+            patch.object(app.douyin_source, "resolve_short_link", side_effect=base.SourceError("blocked")),
+            patch.object(app, "resolve_url_via_browser", return_value=feed),
+            patch.object(app, "download_douyin_via_browser", side_effect=AssertionError("must not download")),
+        ):
+            with self.assertRaisesRegex(ValueError, "không mở được video"):
+                app.download_video_source("https://v.douyin.com/abc123/", "")
+
+    def test_ytdlp_is_the_fallback_when_the_browser_capture_fails(self):
         target = self.cache / "douyin-fallback.mp4"
         with (
-            patch.object(app, "download_douyin_via_edge", side_effect=RuntimeError("Douyin đổi giao diện")),
+            patch.object(app, "download_douyin_via_browser", side_effect=RuntimeError("Douyin đổi giao diện")),
             patch.object(app, "download_douyin_via_ytdlp", return_value=douyin_result(target, "Từ yt-dlp")) as ytdlp,
         ):
             result = app.download_video_source(CANONICAL, "")
         ytdlp.assert_called_once()
         self.assertEqual(result["video_title"], "Từ yt-dlp")
 
-    def test_both_tiers_failing_reports_each_reason(self):
+    def test_every_tier_failing_reports_each_reason(self):
         with (
-            patch.object(app, "download_douyin_via_edge", side_effect=RuntimeError("Douyin đổi giao diện")),
+            patch.object(app, "download_douyin_via_browser", side_effect=RuntimeError("Douyin đổi giao diện")),
             patch.object(app, "download_douyin_via_ytdlp", side_effect=RuntimeError("Fresh cookies are needed")),
         ):
-            with self.assertRaisesRegex(app.VideoDownloadError, "Edge.*đổi giao diện.*yt-dlp.*Fresh cookies"):
+            with self.assertRaisesRegex(
+                app.VideoDownloadError, "HTTP.*không có dữ liệu.*Chrome.*đổi giao diện.*yt-dlp.*Fresh cookies"
+            ):
                 app.download_video_source(CANONICAL, "")
+
+    def test_the_share_page_tier_downloads_without_starting_a_browser(self):
+        video = douyin.DouyinVideo(aweme_id=AWEME_ID, title="Qua HTTP", author="A",
+                                   play_urls=["https://www.iesdouyin.com/aweme/v1/play/?video_id=v1"])
+        streamed = {}
+
+        def fake_stream(urls, destination, **kwargs):
+            streamed.update(kwargs, urls=list(urls))
+            Path(destination).parent.mkdir(parents=True, exist_ok=True)
+            Path(destination).write_bytes(MP4_BYTES)
+            return {"path": str(destination), "url": urls[0], "bytes": len(MP4_BYTES)}
+
+        with (
+            patch.object(app.douyin_source, "video_from_share_page", return_value=video),
+            patch.object(app.http_download, "stream_download", side_effect=fake_stream),
+            patch.object(app, "ensure_browser_running", side_effect=AssertionError("no browser needed")),
+            patch.object(app, "download_douyin_via_ytdlp") as ytdlp,
+        ):
+            result = app.download_video_source(CANONICAL, "")
+        self.assertEqual((result["video_title"], result["source_type"]), ("Qua HTTP", "douyin"))
+        self.assertEqual(streamed["urls"], video.play_urls)
+        self.assertIn("iPhone", streamed["headers"]["User-Agent"])
+        self.assertEqual(streamed["headers"]["Referer"], "https://www.iesdouyin.com/")
+        ytdlp.assert_not_called()
+
+    def test_a_douyin_login_wall_stops_with_a_clear_message_and_skips_ytdlp(self):
+        with (
+            patch.object(app, "download_douyin_via_browser",
+                         side_effect=app.SourceLoginRequired(app.douyin_login_notice())),
+            patch.object(app, "download_douyin_via_ytdlp") as ytdlp,
+        ):
+            with self.assertRaises(app.SourceLoginRequired) as raised:
+                app.download_video_source(CANONICAL, "")
+        message = str(raised.exception)
+        self.assertIn("Douyin yêu cầu đăng nhập để tải video này", message)
+        self.assertIn("'Mở Douyin trên Chrome'", message)
+        ytdlp.assert_not_called()
+
+    def test_a_saved_douyin_cookie_still_gets_a_ytdlp_attempt_after_a_login_wall(self):
+        self.config_path.write_text(json.dumps({
+            "source_cookies_protected": {"douyin": app.protect_text_secret("sessionid=s")},
+        }), encoding="utf-8")
+        target = self.cache / "douyin-cookie.mp4"
+        with (
+            patch.object(app, "download_douyin_via_browser",
+                         side_effect=app.SourceLoginRequired(app.douyin_login_notice())),
+            patch.object(app, "download_douyin_via_ytdlp", return_value=douyin_result(target, "Từ yt-dlp")),
+        ):
+            result = app.download_video_source(CANONICAL, "")
+        self.assertEqual(result["video_title"], "Từ yt-dlp")
 
     def test_a_cancel_is_never_turned_into_a_fallback(self):
         with (
-            patch.object(app, "download_douyin_via_edge", side_effect=app.WorkflowCancelled("Đã huỷ")),
+            patch.object(app, "download_douyin_via_browser", side_effect=app.WorkflowCancelled("Đã huỷ")),
             patch.object(app, "download_douyin_via_ytdlp") as ytdlp,
         ):
             with self.assertRaises(app.WorkflowCancelled):
@@ -197,7 +266,7 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
         folder.mkdir(parents=True)
         (folder / f"douyin-{AWEME_ID}.mp4").write_bytes(MP4_BYTES)
         (folder / f"douyin-{AWEME_ID}_data.json").write_text(json.dumps({"title": "Đã có sẵn"}), encoding="utf-8")
-        with patch.object(app, "download_douyin_via_edge") as edge:
+        with patch.object(app, "download_douyin_via_browser") as edge:
             result = app.download_video_source(CANONICAL, "")
         edge.assert_not_called()
         self.assertEqual(result["video_title"], "Đã có sẵn")
@@ -223,7 +292,7 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
             connection.close()
         with (
             patch.object(app, "DOUZY_DB", str(database)),
-            patch.object(app, "download_douyin_via_edge") as edge,
+            patch.object(app, "download_douyin_via_browser") as edge,
         ):
             result = app.download_video_source(CANONICAL, "")
         edge.assert_not_called()
@@ -247,8 +316,8 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
         captured = {}
         with (
             patch.object(app.ytdlp_source, "download_with_ytdlp", side_effect=self.fake_ytdlp(captured)),
-            patch.object(app, "check_edge_status", return_value=True),
-            patch.object(app, "read_edge_cookies") as read_cookies,
+            patch.object(app, "check_browser_status", return_value=True),
+            patch.object(app, "read_browser_cookies") as read_cookies,
             patch.object(app, "resolve_ffmpeg_executable", return_value=r"C:\ffmpeg.exe"),
             patch.object(app, "get_js_runtime", return_value={"deno": {"path": r"C:\deno.exe"}}),
         ):
@@ -269,8 +338,8 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
                          "expires": -1, "httpOnly": True, "secure": True}
         with (
             patch.object(app.ytdlp_source, "download_with_ytdlp", side_effect=self.fake_ytdlp(captured)),
-            patch.object(app, "check_edge_status", return_value=True),
-            patch.object(app, "read_edge_cookies", return_value=[tiktok_cookie]) as read_cookies,
+            patch.object(app, "check_browser_status", return_value=True),
+            patch.object(app, "read_browser_cookies", return_value=[tiktok_cookie]) as read_cookies,
             patch.object(app, "resolve_ffmpeg_executable", return_value=""),
             patch.object(app, "get_js_runtime", return_value=None),
         ):
@@ -296,8 +365,8 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
 
         with (
             patch.object(app.ytdlp_source, "download_with_ytdlp", side_effect=download_then_save_cookies),
-            patch.object(app, "check_edge_status", return_value=True),
-            patch.object(app, "read_edge_cookies") as read_cookies,
+            patch.object(app, "check_browser_status", return_value=True),
+            patch.object(app, "read_browser_cookies") as read_cookies,
             patch.object(app, "resolve_ffmpeg_executable", return_value=""),
             patch.object(app, "get_js_runtime", return_value=None),
         ):
@@ -307,6 +376,31 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
         self.assertFalse(os.path.exists(captured["cookie_file"]))
         self.assertEqual(cookie_file.read_text(encoding="utf-8"), original)
         read_cookies.assert_not_called()
+
+    def test_ytdlp_for_douyin_gets_fresh_browser_cookies_in_a_temporary_netscape_file(self):
+        browser_cookies = [
+            {"name": "s_v_web_id", "value": "verify_abc", "domain": ".douyin.com", "path": "/",
+             "expires": -1, "httpOnly": False, "secure": True},
+            {"name": "ttwid", "value": "1%7Cx", "domain": ".douyin.com", "path": "/",
+             "expires": 2_000_000_000, "httpOnly": True, "secure": True},
+        ]
+        captured = {}
+        with (
+            patch.object(app.ytdlp_source, "download_with_ytdlp", side_effect=self.fake_ytdlp(captured)),
+            patch.object(app, "check_browser_status", return_value=True),
+            patch.object(app, "read_browser_cookies", return_value=browser_cookies) as read_cookies,
+            patch.object(app, "resolve_ffmpeg_executable", return_value=""),
+            patch.object(app, "get_js_runtime", return_value=None),
+        ):
+            result = app.download_douyin_via_ytdlp(AWEME_ID, str(self.cache))
+        read_cookies.assert_called_once_with(["https://www.douyin.com/"])
+        text = captured["cookie_text"]
+        self.assertTrue(text.startswith("# Netscape HTTP Cookie File"))
+        self.assertIn("s_v_web_id\tverify_abc", text)
+        self.assertIn("#HttpOnly_.douyin.com", text)
+        self.assertFalse(os.path.exists(captured["cookie_file"]))
+        self.assertNotIn("cookiesfrombrowser", captured)
+        self.assertEqual(result["source_type"], "douyin")
 
     def test_unsupported_links_are_rejected_before_any_download(self):
         with self.assertRaisesRegex(ValueError, "Douyin, TikTok, YouTube"):
@@ -344,7 +438,7 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
             patch.object(app.ytdlp_source, "download_with_ytdlp",
                          side_effect=base.SourceError("yt-dlp không tải được video: Unable to extract initial state")),
             patch.object(app, "download_via_browser_capture", side_effect=self.fake_browser(captured)),
-            patch.object(app, "check_edge_status", return_value=False),
+            patch.object(app, "check_browser_status", return_value=False),
             patch.object(app, "resolve_ffmpeg_executable", return_value=""),
             patch.object(app, "get_js_runtime", return_value=None),
         ):
@@ -357,7 +451,7 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
             patch.object(app.ytdlp_source, "download_with_ytdlp",
                          side_effect=base.SourceError("yt-dlp không tải được video: No video formats found!")),
             patch.object(app, "download_via_browser_capture") as browser,
-            patch.object(app, "check_edge_status", return_value=False),
+            patch.object(app, "check_browser_status", return_value=False),
             patch.object(app, "resolve_ffmpeg_executable", return_value=""),
             patch.object(app, "get_js_runtime", return_value=None),
         ):
@@ -376,8 +470,8 @@ class DownloadDispatchTests(SandboxedCacheTestCase):
         captured = {}
         with (
             patch.object(app.ytdlp_source, "download_with_ytdlp", side_effect=self.fake_ytdlp(captured)),
-            patch.object(app, "check_edge_status", return_value=True),
-            patch.object(app, "read_edge_cookies", return_value=edge_cookies),
+            patch.object(app, "check_browser_status", return_value=True),
+            patch.object(app, "read_browser_cookies", return_value=edge_cookies),
             patch.object(app, "resolve_ffmpeg_executable", return_value=""),
             patch.object(app, "get_js_runtime", return_value=None),
         ):
@@ -428,7 +522,7 @@ def make_detail():
     }
 
 
-class DouyinEdgeDownloadTests(SandboxedCacheTestCase):
+class DouyinBrowserDownloadTests(SandboxedCacheTestCase):
     def run_download(self, capture):
         context = FakeContext()
         streamed = {}
@@ -447,13 +541,13 @@ class DouyinEdgeDownloadTests(SandboxedCacheTestCase):
         target = self.cache / f"douyin-{AWEME_ID}" / f"douyin-{AWEME_ID}.mp4"
         with (
             patch.object(app, "get_sync_playwright", return_value=lambda: FakePlaywright(context)),
-            patch.object(app, "ensure_edge_running", return_value=True),
+            patch.object(app, "ensure_browser_running", return_value=True),
             patch.object(app.douyin_source, "capture_video_from_page", side_effect=capture),
             patch.object(app.http_download, "stream_download", side_effect=fake_stream),
             patch.object(app, "download_thumbnail", side_effect=fake_thumbnail),
-            patch.object(app, "set_edge_window_visibility", return_value=True) as visibility,
+            patch.object(app, "set_browser_window_visibility", return_value=True) as visibility,
         ):
-            result = app.download_douyin_via_edge(AWEME_ID, str(target), "", quiet=False)
+            result = app.download_douyin_via_browser(AWEME_ID, str(target), "", quiet=False)
         return result, context, streamed, target, visibility
 
     def test_the_capture_is_downloaded_with_edge_headers_and_the_manual_cookie_override(self):
@@ -494,7 +588,7 @@ class DouyinEdgeDownloadTests(SandboxedCacheTestCase):
 
         app.reset_download_progress("douyin")
         _result, _context, _streamed, _target, visibility = self.run_download(capture)
-        self.assertEqual(seen["during"], "Vui lòng kéo captcha trên trình duyệt Edge để tiếp tục tải")
+        self.assertEqual(seen["during"], "Vui lòng kéo captcha trên trình duyệt Chrome để tiếp tục tải")
         self.assertEqual(seen["after"], "")
         self.assertTrue(visibility.call_args_list[0].args[2])
 
@@ -505,6 +599,16 @@ class DouyinEdgeDownloadTests(SandboxedCacheTestCase):
         result, _context, streamed, _target, _visibility = self.run_download(capture)
         self.assertEqual(streamed["urls"], ["https://v5-web.douyinvod.com/dom.mp4"])
         self.assertEqual(result["video_title"], "Tên tab")
+
+    def test_a_login_wall_on_the_page_becomes_the_login_notice(self):
+        def capture(context, aweme_id, **kwargs):
+            raise douyin.LoginRequiredError("redirect")
+
+        with self.assertRaises(app.SourceLoginRequired) as raised:
+            self.run_download(capture)
+        message = str(raised.exception)
+        self.assertIn("Douyin yêu cầu đăng nhập để tải video này", message)
+        self.assertIn("'Mở Douyin trên Chrome' trong Thiết lập", message)
 
 
 class DownloadProgressTests(unittest.TestCase):
@@ -675,9 +779,9 @@ class SettingsAndSessionTests(SandboxedCacheTestCase):
         self.assertEqual(self.client.get("/api/settings").get_json()["cookies_file"], "")
 
     def test_the_sessions_endpoint_reports_each_platform_without_cookie_values(self):
-        with patch.object(app, "check_edge_status", return_value=False):
+        with patch.object(app, "check_browser_status", return_value=False):
             data = self.client.get("/api/sources/sessions").get_json()
-        self.assertFalse(data["edge_connected"])
+        self.assertFalse(data["browser_connected"])
         # JSON objects are sorted by Flask; the UI takes the display order from source_session_sites.
         self.assertEqual(set(data["sites"]), {"douyin", "bilibili", "xiaohongshu", "kuaishou"})
         self.assertTrue(all(site["logged_in"] is None for site in data["sites"].values()))
@@ -688,8 +792,8 @@ class SettingsAndSessionTests(SandboxedCacheTestCase):
             {"name": "web_session", "value": "guest-or-user", "domain": ".xiaohongshu.com"},
         ]
         with (
-            patch.object(app, "check_edge_status", return_value=True),
-            patch.object(app, "read_edge_cookies", return_value=cookies) as read_cookies,
+            patch.object(app, "check_browser_status", return_value=True),
+            patch.object(app, "read_browser_cookies", return_value=cookies) as read_cookies,
         ):
             response = self.client.get("/api/sources/sessions")
         sites = response.get_json()["sites"]
@@ -703,15 +807,15 @@ class SettingsAndSessionTests(SandboxedCacheTestCase):
         self.assertNotIn("very-secret", body)
         self.assertNotIn("guest-or-user", body)
 
-    def test_each_platform_can_be_opened_in_edge_for_login(self):
-        with patch.object(app, "open_source_in_edge", return_value=True) as opener:
+    def test_each_platform_can_be_opened_in_the_browser_for_login(self):
+        with patch.object(app, "open_source_in_browser", return_value=True) as opener:
             self.assertEqual(self.client.post("/api/sources/kuaishou/open").status_code, 200)
             self.assertEqual(self.client.post("/api/sources/youtube/open").status_code, 404)
         opener.assert_called_once_with("kuaishou")
-        with patch.object(app, "open_source_in_edge", side_effect=RuntimeError("Không mở được Edge")):
+        with patch.object(app, "open_source_in_browser", side_effect=RuntimeError("Không mở được Chrome")):
             response = self.client.post("/api/sources/douyin/open")
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Edge", response.get_json()["error"])
+        self.assertIn("Chrome", response.get_json()["error"])
 
 
 class QueueAndProjectTests(SandboxedCacheTestCase):

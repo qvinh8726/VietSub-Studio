@@ -1,7 +1,7 @@
-"""Login sessions of the Chinese platforms in the dedicated Edge profile.
+"""Login sessions of the Chinese platforms in the automation browser's own profile.
 
-The user signs in once per platform in the Edge profile that VietSub Studio
-controls; downloads then reuse those cookies. A Cookie header pasted in Settings
+The user signs in once per platform in the browser profile that VietSub Studio
+controls (Google Chrome by default); downloads then reuse those cookies. A Cookie header pasted in Settings
 can replace the matching cookies for one platform.
 """
 

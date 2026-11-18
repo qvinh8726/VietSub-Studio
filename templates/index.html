@@ -17,7 +17,7 @@
             </div>
             <div class="status-cluster">
                 <div id="version-pill" class="status-pill"><i></i><span>v{{ app_version }}</span></div>
-                <div id="edge-pill" class="status-pill"><i></i><span>Đang kiểm tra Edge</span></div>
+                <div id="edge-pill" class="status-pill" title="Trình duyệt tự động hoá của app (profile riêng)"><i></i><span id="edge-pill-text">Đang kiểm tra trình duyệt</span></div>
             </div>
         </header>
 
@@ -47,7 +47,7 @@
                             <label class="field-label" for="url-input"><span>Link video hoặc đoạn chia sẻ</span><small id="char-count">0 ký tự</small></label>
                             <textarea id="url-input" maxlength="2000" spellcheck="false" aria-describedby="url-error url-help" aria-invalid="false" placeholder="Dán link Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube hoặc nguyên đoạn chia sẻ từ app điện thoại…"></textarea>
                             <div id="url-error" class="field-error" role="alert"></div>
-                            <small id="url-help" class="field-help">Douyin và Kuaishou tải qua profile Edge riêng; Xiaohongshu, Bilibili, TikTok, YouTube tải bằng yt-dlp.</small>
+                            <small id="url-help" class="field-help">Douyin và Kuaishou tải qua trình duyệt riêng của app (profile riêng, không đụng trình duyệt bạn đang dùng); Xiaohongshu, Bilibili, TikTok, YouTube tải bằng yt-dlp.</small>
                         </div>
                         <div class="field">
                             <label class="field-label" for="project-name"><span>Tên bộ file</span><small>Để trống = tên video</small></label>
@@ -159,7 +159,7 @@
                     <div class="setting-field">
                         <label for="setting-translation-provider">Cách dịch phụ đề</label>
                         <select id="setting-translation-provider" class="select-input">
-                            <option value="notebook">Gemini Notebook qua Edge</option>
+                            <option value="notebook">Gemini Notebook qua trình duyệt</option>
                             <option value="deepseek">DeepSeek API</option>
                             <option value="openrouter">OpenRouter</option>
                             <option value="custom">API OpenAI-compatible khác</option>
@@ -181,6 +181,10 @@
                     </div>
                     <div id="notebook-settings" class="provider-settings">
                         <div class="setting-field"><label for="setting-notebook">Notebook Gemini</label><input id="setting-notebook" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/..."><small>Tự lưu khi rời ô.</small></div>
+                        <div class="setting-field">
+                            <button id="show-edge-btn" class="btn-ghost" type="button">Mở Gemini trên Chrome để đăng nhập</button>
+                            <small>Notebook chạy trong trình duyệt tự động hoá của app; chỉ cần đăng nhập Google một lần trong profile riêng đó.</small>
+                        </div>
                     </div>
                     <div id="api-translation-settings" class="provider-settings" hidden>
                         <div class="setting-field">
@@ -204,9 +208,23 @@
                         <div class="path-picker"><input id="setting-output" class="text-input" placeholder="Để trống = Documents\VietSub Studio"><button id="choose-output-btn" class="btn-secondary" type="button">Chọn thư mục…</button></div>
                         <small id="output-help">Mỗi tên project sẽ có một folder riêng chứa video, sub gốc, sub Việt, thumbnail và metadata.</small>
                     </div>
+                    <div id="browser-settings" class="setting-field">
+                        <label for="setting-browser-kind">Trình duyệt tự động hoá</label>
+                        <select id="setting-browser-kind" class="select-input">
+                            <option value="chrome">Google Chrome (mặc định)</option>
+                            <option value="edge">Microsoft Edge</option>
+                            <option value="custom">File .exe khác (trình duyệt Chromium)</option>
+                        </select>
+                        <div id="browser-path-field" class="path-picker browser-path-field" hidden><input id="setting-browser-path" class="text-input" spellcheck="false" autocomplete="off" placeholder="C:\...\chrome.exe" aria-label="Đường dẫn file .exe của trình duyệt"><button id="choose-browser-path-btn" class="btn-secondary" type="button">Chọn file…</button></div>
+                        <small id="browser-help">App mở trình duyệt này với profile riêng, chạy song song và không đụng tới trình duyệt bạn đang dùng. Trình duyệt chỉ mở khi cần: dịch bằng Gemini Notebook, tải video cần trình duyệt, hoặc khi bạn bấm đăng nhập.</small>
+                        <label class="toggle-setting browser-background-toggle" for="setting-edge-background">
+                            <input id="setting-edge-background" type="checkbox" checked>
+                            <span><strong>Chạy trình duyệt ẩn</strong><small>Trình duyệt vẫn chạy đầy đủ nhưng thu nhỏ, không giành focus. Khi cần đăng nhập hoặc kéo captcha, app sẽ hiện nó lên.</small></span>
+                        </label>
+                    </div>
                     <div class="setting-field source-settings">
                         <div class="source-settings-head"><label>Nguồn tải video &amp; đăng nhập</label><button id="refresh-sessions-btn" class="btn-ghost" type="button">Kiểm tra lại đăng nhập</button></div>
-                        <small>Mỗi nền tảng chỉ cần đăng nhập một lần trong profile Edge riêng của app; cookie ở lại trong profile đó. Đăng nhập giúp ít gặp captcha và tải được video cần tài khoản.</small>
+                        <small id="source-sessions-intro">Mỗi nền tảng chỉ cần đăng nhập một lần trong profile Chrome riêng của app; cookie ở lại trong profile đó. Đăng nhập giúp ít gặp captcha và tải được video cần tài khoản.</small>
                         <div id="source-sessions" class="source-sessions" aria-live="polite"></div>
                         <small id="source-sessions-help">Đang đọc trạng thái đăng nhập…</small>
                     </div>
@@ -215,19 +233,12 @@
                         <select id="setting-source-cookie-site" class="select-input"></select>
                         <textarea id="setting-source-cookie" class="cookie-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Dán Cookie header, ví dụ: name=value; name2=value2"></textarea>
                         <div class="cookie-actions"><button id="save-source-cookie-btn" class="btn-secondary" type="button">Lưu cookie</button><button id="clear-source-cookie-btn" class="btn-ghost" type="button" disabled>Xoá cookie đã lưu</button></div>
-                        <small>Cookie được mã hoá bằng tài khoản Windows hiện tại, không hiện lại trên giao diện và thay cookie cùng tên của profile Edge khi tải từ nền tảng đó.</small>
+                        <small>Cookie được mã hoá bằng tài khoản Windows hiện tại, không hiện lại trên giao diện và thay cookie cùng tên của trình duyệt riêng khi tải từ nền tảng đó.</small>
                     </div>
                     <div class="setting-field">
                         <label for="setting-cookies-file">File cookies.txt (tuỳ chọn)</label>
-                        <div class="path-picker"><input id="setting-cookies-file" class="text-input" placeholder="Để trống = dùng cookie của profile Edge"><button id="choose-cookies-file-btn" class="btn-secondary" type="button">Chọn file…</button></div>
-                        <small>Định dạng Netscape, dùng cho các nguồn tải bằng yt-dlp. Khi có file này, yt-dlp không lấy cookie từ Edge.</small>
-                    </div>
-                    <div id="edge-settings" class="setting-field">
-                        <label class="toggle-setting" for="setting-edge-background">
-                            <input id="setting-edge-background" type="checkbox" checked>
-                            <span><strong>Chạy Edge ẩn</strong><small>Edge vẫn render đầy đủ nhưng không giành focus. Khi Google hết phiên, app sẽ hiện Edge để đăng nhập lại.</small></span>
-                        </label>
-                        <button id="show-edge-btn" class="btn-ghost" type="button" style="margin-top:7px">Mở Edge để đăng nhập</button>
+                        <div class="path-picker"><input id="setting-cookies-file" class="text-input" placeholder="Để trống = dùng cookie của trình duyệt riêng"><button id="choose-cookies-file-btn" class="btn-secondary" type="button">Chọn file…</button></div>
+                        <small>Định dạng Netscape, dùng cho các nguồn tải bằng yt-dlp. Khi có file này, yt-dlp dùng nó thay cho cookie xuất tạm từ trình duyệt riêng của app.</small>
                     </div>
                     <div class="setting-field">
                         <label>Shortcut mở nhanh</label>
