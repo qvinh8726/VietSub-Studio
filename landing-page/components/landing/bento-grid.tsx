@@ -1,6 +1,6 @@
 "use client";
 
-import { AppWindow, FolderOpen, Gauge, Languages, RefreshCw, ShieldCheck, Zap } from "lucide-react";
+import { AppWindow, Gauge, HardDrive, Languages, Sparkles, Zap } from "lucide-react";
 import { motion } from "motion/react";
 import type { Variants } from "motion/react";
 import { useEffect, useRef } from "react";
@@ -77,10 +77,10 @@ export function BentoGrid() {
         <span className="bento-kicker">
           <Zap size={15} aria-hidden="true" /> Bản v{VERSION}
         </span>
-        <h3>Dán nguyên đoạn share, nhận video gốc. Tải 6 kết nối song song.</h3>
+        <h3>Nhiều link, nhiều video. Một hàng đợi.</h3>
         <p>
-          App tự tìm link trong đoạn chữ chia sẻ, lấy bản gốc rồi tải theo 6 đoạn HTTP Range cùng lúc. Server không hỗ trợ Range thì
-          tự quay về tải một luồng; đoạn nào đứt thì tải tiếp từ chỗ dừng.
+          Dán mỗi link một dòng hoặc chọn nhiều MP4/MKV để thêm tuần tự. Mỗi video giữ tên riêng, dùng crop mặc định;
+          video nào chưa thêm được sẽ có thông báo riêng. Tải nhiều kết nối và preview từng video vẫn có sẵn.
         </p>
         <ul className="source-list">
           {SOURCES.map((s) => (
@@ -102,7 +102,7 @@ export function BentoGrid() {
         </div>
         <dl className="bento-stats">
           <div>
-            <dt>6 MB, máy chủ giới hạn mỗi kết nối</dt>
+            <dt>Benchmark tải 6 MB của v1.6.2</dt>
             <dd>15,4 s → 2,6 s</dd>
           </div>
           <div>
@@ -118,10 +118,10 @@ export function BentoGrid() {
         <span className="bento-icon">
           <AppWindow size={22} aria-hidden="true" />
         </span>
-        <h3>Chrome riêng, không đụng trình duyệt của bạn</h3>
+        <h3>Chrome chạy nền, hiện lên khi bạn cần</h3>
         <p>
-          App mở Google Chrome với <code>--user-data-dir</code> trong thư mục cấu hình. Chrome hằng ngày của bạn vẫn chạy song song, cookie và
-          extension không bị đọc hay sửa.
+          Mặc định headless, dùng profile riêng và tái sử dụng tab đầu tiên. Chrome của app tự đóng sau 60 giây nhàn rỗi.
+          Gặp captcha, cùng profile mở lại để bạn xác minh; lượt tự động sau trở về chạy nền.
         </p>
         <div className="profiles" aria-hidden="true">
           <div className="profile-win">
@@ -132,37 +132,39 @@ export function BentoGrid() {
           <div className="profile-win is-app">
             <span className="profile-dots" />
             <strong>VietSub profile</strong>
-            <small>--user-data-dir · chỉ mở khi cần</small>
+            <small>Headless · hiện khi xác minh</small>
           </div>
         </div>
       </Card>
 
       <Card className="bento-c">
         <span className="bento-icon">
-          <FolderOpen size={22} aria-hidden="true" />
+          <HardDrive size={22} aria-hidden="true" />
         </span>
-        <h3>File MP4/MKV dùng tại chỗ</h3>
+        <h3>Dọn hàng đợi, giữ lại phụ đề</h3>
         <p>
-          Không upload, không sao chép qua <code>%TEMP%</code>. Cùng ổ đĩa thì app hard-link file vào project, nên video vài GB cũng mở ngay.
+          Chọn job đã kết thúc hoặc quá 3 ngày, xem dung lượng có thể dọn rồi chọn xóa bản ghi hay video/file tạm.
+          SRT được giữ mặc định. Có thể bật tự dọn nguồn sau khi xuất sub thành công.
         </p>
       </Card>
 
       <Card className="bento-d">
         <span className="bento-icon">
-          <Languages size={22} aria-hidden="true" />
+          <Sparkles size={22} aria-hidden="true" />
         </span>
-        <h3>DeepSeek API hoặc Gemini Notebook</h3>
-        <p>Dịch theo đoạn, đối chiếu index và timestamp với SRT gốc. Block thiếu hoặc dính nhau bị chặn trước khi lưu.</p>
+        <h3>Thêm tiêu đề, mô tả và hashtag</h3>
+        <p>Bật publish pack để AI tạo thêm <code>.publish.json</code> cạnh phụ đề với nội dung tiếng Việt.
+          Bạn duyệt trước khi đăng; tính năng mặc định tắt và không tự đăng video.</p>
       </Card>
 
       <Card className="bento-e">
         <span className="bento-icon">
-          <RefreshCw size={22} aria-hidden="true" />
+          <Languages size={22} aria-hidden="true" />
         </span>
-        <h3>Tự cập nhật qua GitHub Releases</h3>
+        <h3>Giữ đúng từng timestamp</h3>
         <p>
-          App kiểm tra bản mới, tải bản portable và so <ShieldCheck size={14} aria-hidden="true" className="inline-icon" /> SHA256 trước khi
-          thay file.
+          Dịch bằng DeepSeek, OpenRouter hoặc Gemini Notebook. Index, số block và timecode được đối chiếu với SRT gốc
+          trước khi lưu. Workbench vẫn giữ preview, crop và nhật ký trong cùng cửa sổ.
         </p>
       </Card>
     </motion.div>

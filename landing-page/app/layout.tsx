@@ -29,7 +29,7 @@ const monoFont = JetBrains_Mono({
 export const metadata: Metadata = {
   title: `VietSub Studio v${VERSION} — OCR và dịch phụ đề video Trung sang tiếng Việt`,
   description:
-    `Công cụ Windows mã nguồn mở: dán link share Douyin, Bilibili, Xiaohongshu, Kuaishou, TikTok, YouTube hoặc mở file trên máy, OCR phụ đề cứng bằng VideOCR, dịch sang tiếng Việt và giữ nguyên timestamp SRT. v${VERSION} tải 6 kết nối song song.`,
+    `VietSub Studio v${VERSION}: nhập nhiều link hoặc MP4/MKV, OCR và dịch phụ đề sang tiếng Việt. Chrome headless, dọn video giữ SRT và publish pack AI tùy chọn.`,
 };
 
 export const viewport: Viewport = {

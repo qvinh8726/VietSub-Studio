@@ -394,7 +394,8 @@ vs-sakuga-link {
 .release-pill {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  max-width: 100%;
+  flex-wrap: nowrap;
   gap: 10px;
   min-height: 44px;
   margin-bottom: 24px;
@@ -406,6 +407,14 @@ vs-sakuga-link {
   font-size: 14px;
   font-weight: 600;
   transition: border-color 0.2s, color 0.2s;
+}
+.release-summary {
+  min-width: 0;
+  text-wrap: balance;
+}
+.release-pill > svg,
+.release-tag {
+  flex-shrink: 0;
 }
 .release-pill:hover {
   border-color: var(--sun);
@@ -443,6 +452,21 @@ vs-sakuga-link {
   align-items: center;
   gap: 16px 20px;
   margin-top: 28px;
+}
+.download-note {
+  margin: 16px 0 0;
+  max-width: 42ch;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.download-note a {
+  color: var(--mint);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.download-note a:hover {
+  color: var(--sun);
 }
 .trust {
   display: flex;

@@ -1,7 +1,7 @@
 import { ArrowRight, ArrowUpRight, Check, Download, GitBranch, Play, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { BentoGrid } from "./landing/bento-grid";
-import { CHANGELOG_URL, FAQS, METRICS, PLATFORM_ITEMS, RELEASE_URL, REPO_URL, REQUIREMENTS, TECH_ITEMS, VERSION } from "./landing/data";
+import { BUILD_URL, CHANGELOG_URL, CHECKSUM_URL, FAQS, METRICS, PLATFORM_ITEMS, RELEASE_URL, REPO_URL, REQUIREMENTS, TECH_ITEMS, VERSION } from "./landing/data";
 import { Marquee } from "./landing/marquee";
 import { MotionRoot } from "./landing/motion-root";
 import { PipelineBeam } from "./landing/pipeline-beam";
@@ -20,6 +20,15 @@ function SectionHead({ kicker, title, body, id }: { kicker: string; title: strin
   );
 }
 
+function DownloadNote() {
+  return (
+    <p className="download-note">
+      Bản portable: tải ZIP, giải nén rồi mở app.
+      {" "}<a href={CHECKSUM_URL} target="_blank" rel="noreferrer">Checksum SHA256</a> đi kèm.
+    </p>
+  );
+}
+
 export default function VietSubSite() {
   return (
     <MotionRoot>
@@ -34,9 +43,9 @@ export default function VietSubSite() {
           <div className="hero-backdrop" aria-hidden="true" />
           <div className="wrap hero-copy">
             <div className="hero-lead">
-              <a className="release-pill" href={RELEASE_URL} target="_blank" rel="noreferrer">
+              <a className="release-pill" href={CHANGELOG_URL} target="_blank" rel="noreferrer">
                 <span className="release-tag">v{VERSION}</span>
-                Tải 6 kết nối · Douyin bitrate vừa đủ cho OCR
+                <span className="release-summary">Batch import · Dọn dung lượng · Publish pack</span>
                 <ArrowUpRight size={14} aria-hidden="true" />
               </a>
               <h1 id="hero-title">
@@ -45,8 +54,8 @@ export default function VietSubSite() {
             </div>
             <div className="hero-side">
               <p className="hero-sub">
-                Dán link share 抖音, B站, 小红书, 快手 hoặc mở MP4 trên máy. VietSub Studio tải bản gốc, OCR đúng vùng chữ bằng VideOCR rồi
-                dịch sang tiếng Việt bằng DeepSeek hoặc Gemini, giữ nguyên index và timecode.
+                Dán nhiều link share hoặc chọn cả loạt MP4/MKV. VietSub Studio xử lý lần lượt: tải video, OCR đúng vùng chữ,
+                dịch sang tiếng Việt và giữ nguyên timecode. Khi xong, bạn chọn dọn video và giữ phụ đề cho bước dựng tiếp theo.
               </p>
               <div className="hero-actions">
                 <SakugaCta href={RELEASE_URL} ariaLabel={`Tải VietSub Studio v${VERSION} trên GitHub Releases (mở tab mới)`}>
@@ -56,6 +65,7 @@ export default function VietSubSite() {
                   <Play size={16} aria-hidden="true" /> Thử sandbox
                 </a>
               </div>
+              <DownloadNote />
               <ul className="trust">
                 <li>
                   <Check size={15} aria-hidden="true" /> Windows 10/11 x64, bản portable
@@ -64,7 +74,7 @@ export default function VietSubSite() {
                   <Check size={15} aria-hidden="true" /> Mã nguồn mở MIT
                 </li>
                 <li>
-                  <Check size={15} aria-hidden="true" /> Không gửi video lên máy chủ của app
+                  <Check size={15} aria-hidden="true" /> Video xử lý trên máy của bạn
                 </li>
               </ul>
             </div>
@@ -82,7 +92,7 @@ export default function VietSubSite() {
         <section className="metrics" aria-labelledby="metrics-title">
           <div className="wrap">
             <h2 id="metrics-title" className="sr-only">
-              Số liệu của v{VERSION}
+              Mặc định và kiểm thử của v{VERSION}
             </h2>
             <dl className="metric-grid">
               {METRICS.map((m) => (
@@ -112,8 +122,8 @@ export default function VietSubSite() {
             <SectionHead
               id="pipeline-title"
               kicker="Quy trình"
-              title="Từ một đoạn share tới file phụ đề, trong một cửa sổ."
-              body="Mỗi bước có kiểm tra riêng. Lỗi ở bước nào thì app dừng ở bước đó và nói rõ cần làm gì."
+              title="Từ cả loạt video tới từng bộ phụ đề, trong một cửa sổ."
+              body="Workbench gom nguồn, preview, crop và hàng đợi trong một cửa sổ. Chọn một video để chỉnh crop riêng; nhập hàng loạt để dùng crop mặc định."
             />
             <PipelineBeam />
           </div>
@@ -123,8 +133,9 @@ export default function VietSubSite() {
           <div className="wrap">
             <SectionHead
               id="features-title"
-              kicker="Tính năng"
-              title="Làm phần việc lặp lại, để bạn chỉ còn duyệt bản dịch."
+              kicker={`Có gì mới trong v${VERSION}`}
+              title="Nhập nhiều hơn. Dọn gọn hơn. Sẵn nội dung để đăng."
+              body="Giữ giao diện Studio Workbench, bổ sung thao tác hàng loạt và các tùy chọn cho bước sau khi xuất sub."
             />
             <BentoGrid />
           </div>
@@ -168,15 +179,16 @@ export default function VietSubSite() {
           <div className="wrap final-card">
             <div>
               <p className="kicker">VietSub Studio v{VERSION}</p>
-              <h2 id="final-title">Thử với video đầu tiên của bạn.</h2>
+              <h2 id="final-title">Bắt đầu với hàng đợi tiếp theo của bạn.</h2>
               <p className="section-body">
-                Tải bản portable, mở app, dán link. Các bản sau app tự kiểm tra cập nhật và so SHA256 trước khi thay file.
+                Mở bản portable v{VERSION}, nhập nhiều video và duyệt từng bộ phụ đề. Tự dọn nguồn và tạo publish pack chỉ chạy khi bạn bật trong Thiết lập.
               </p>
             </div>
             <div className="final-actions">
               <SakugaCta href={RELEASE_URL} ariaLabel={`Tải VietSub Studio v${VERSION} trên GitHub Releases (mở tab mới)`}>
                 <Download size={19} aria-hidden="true" /> Tải VietSub Studio v{VERSION}
               </SakugaCta>
+              <DownloadNote />
               <span className="final-meta">
                 <ShieldCheck size={15} aria-hidden="true" /> Windows 10/11 x64 · MIT License
               </span>
@@ -197,6 +209,9 @@ export default function VietSubSite() {
             </a>
             <a href={RELEASE_URL} target="_blank" rel="noreferrer">
               Release v{VERSION}
+            </a>
+            <a href={BUILD_URL} target="_blank" rel="noreferrer">
+              Kết quả CI
             </a>
             <a href={CHANGELOG_URL} target="_blank" rel="noreferrer">
               Changelog

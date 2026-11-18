@@ -1,9 +1,10 @@
-// Content of the VietSub Studio landing page. Numbers come from the v1.6.2 release notes and tests.
-
-export const VERSION = "1.7.0";
-export const RELEASE_URL = `https://github.com/qvinh8726/VietSub-Studio/releases/tag/v${VERSION}`;
+// Release and validation links for the published v1.8.0 build.
+export const VERSION = "1.8.0";
 export const REPO_URL = "https://github.com/qvinh8726/VietSub-Studio";
-export const CHANGELOG_URL = "https://github.com/qvinh8726/VietSub-Studio/blob/main/CHANGELOG.md";
+export const BUILD_URL = `${REPO_URL}/actions/runs/44359388673`;
+export const RELEASE_URL = `${REPO_URL}/releases/tag/v${VERSION}`;
+export const CHECKSUM_URL = `${REPO_URL}/releases/download/v${VERSION}/VietSub-Studio-Portable-v${VERSION}.zip.sha256.txt`;
+export const CHANGELOG_URL = `${REPO_URL}/blob/main/CHANGELOG.md`;
 
 export type SubtitleLine = { start: number; end: number; zh: string; vi: string };
 
@@ -132,18 +133,18 @@ export const TECH_ITEMS: MarqueeItem[] = [
 ];
 
 export const METRICS = [
-  { value: "15,4 s → 2,6 s", label: "tải 6 MB từ máy chủ giới hạn 0,4 MB/s mỗi kết nối, trong thử nghiệm của v1.6.2" },
-  { value: "15–20 MB/phút", label: "Douyin chọn bản H.264 720p–1080p ở 1,5–3,5 Mbps, đủ nét cho OCR" },
-  { value: "6 nền tảng", label: "Douyin, Bilibili, Xiaohongshu, Kuaishou, TikTok, YouTube, cùng file trên máy" },
-  { value: "333 test", label: "test tự động (Python và giao diện) chạy lại trên mỗi bản build" },
+  { value: "MP4 + MKV", label: "nhập nhiều file hoặc nhiều link share, xếp hàng xử lý tuần tự" },
+  { value: "60 giây", label: "nhàn rỗi trước khi Chrome của app tự đóng; công việc đang chạy được giữ nguyên" },
+  { value: "Giữ SRT", label: "mặc định khi dọn video và file tạm; tự dọn video sau xuất sub là tùy chọn" },
+  { value: "397 + 70", label: "test Python và frontend của v1.8.0; 3 test Python bỏ qua theo môi trường local" },
 ];
 
 export const PIPELINE_STEPS = [
-  { title: "Link share / File local", body: "Nguyên đoạn share 抖音 · B站 · 小红书 · 快手, hoặc MP4/MKV trên máy.", icon: "link" },
-  { title: "Chrome profile độc lập · Tải 6 kết nối", body: "--user-data-dir riêng, tải theo đoạn HTTP Range song song.", icon: "zap" },
+  { title: "Nhiều link / File local", body: "Dán mỗi link một dòng hoặc chọn nhiều MP4/MKV. Từng video vào hàng đợi tuần tự.", icon: "link" },
+  { title: "Chrome chạy nền · Tải 6 kết nối", body: "Profile riêng, mặc định headless. Gặp captcha thì hiện cửa sổ để bạn xác minh.", icon: "zap" },
   { title: "FFmpeg + VideOCR", body: "Cắt đúng vùng chữ, OCR ch · en · ja · ko · vi.", icon: "scan" },
   { title: "DeepSeek API / Gemini Notebook", body: "Dịch theo đoạn, giữ nguyên index và timestamp.", icon: "languages" },
-  { title: "File .vi.srt chuẩn", body: "Chỉ lưu khi số block, index và timecode đều khớp.", icon: "file" },
+  { title: "SRT + publish pack tùy chọn", body: "Kiểm tra phụ đề trước khi lưu. Có thể tạo thêm tiêu đề, mô tả và hashtag tiếng Việt.", icon: "file" },
 ] as const;
 
 export const REQUIREMENTS = {
@@ -153,16 +154,36 @@ export const REQUIREMENTS = {
 
 export const FAQS = [
   {
-    q: "App có đụng tới Chrome hoặc Edge tôi đang dùng không?",
-    a: "Không. App mở Google Chrome với profile riêng (--user-data-dir trong thư mục cấu hình), chạy song song với trình duyệt hằng ngày và không đọc hay sửa profile của bạn. Trình duyệt chỉ mở khi cần: dịch bằng Gemini Notebook, tải video cần trang web, hoặc khi bạn bấm đăng nhập.",
+    q: "Tải v1.8.0 ở đâu?",
+    a: "Bấm “Tải VietSub Studio v1.8.0” để mở GitHub Releases. Trong mục Assets, tải VietSub-Studio-Portable-v1.8.0.zip, giải nén rồi chạy VietSub Studio.exe. File .zip.sha256.txt đi kèm để kiểm tra tính toàn vẹn. Bản portable tải công khai, không cần đăng nhập GitHub.",
   },
   {
-    q: "Video Douyin chỉ cho người đã đăng nhập xem thì sao?",
-    a: "App dừng ngay thay vì chờ hết giờ, và hướng dẫn bấm “Mở Douyin trên Chrome” trong Thiết lập, đăng nhập một lần rồi thử lại.",
+    q: "Nhập nhiều video có khác chỉnh crop từng video không?",
+    a: "Dán nhiều link, mỗi link một dòng, hoặc bấm Chọn nhiều file để nhập MP4/MKV. App xử lý lần lượt và báo riêng video nào chưa thêm được. Batch dùng crop mặc định và tên từng video. Muốn chỉnh crop riêng, hãy tải preview một video rồi thêm vào hàng đợi.",
   },
   {
-    q: "Có dùng được video đã có sẵn trên máy không?",
-    a: "Có. Trong cửa sổ app, bấm Chọn video để mở thẳng MP4 hoặc MKV. File được dùng tại chỗ: không upload, không sao chép qua %TEMP%, và được hard-link vào project nếu cùng ổ đĩa.",
+    q: "Dọn hàng đợi có xóa video gốc hoặc phụ đề không?",
+    a: "Hộp thoại mặc định chỉ xóa bản ghi, giữ nguyên file. Bạn có thể chọn job đã kết thúc hoặc quá 3 ngày và xem dung lượng dự kiến trước khi chọn xóa video/file tạm. Chế độ xóa file có thể xóa cả video gốc đã chọn trên máy; file còn được job khác dùng sẽ được giữ. Giữ phụ đề SRT luôn được bật mặc định, và job đang xử lý được bảo vệ.",
+  },
+  {
+    q: "App có tự xóa video sau khi dịch xong không?",
+    a: "Mặc định không. Khi bật tùy chọn tự dọn video nguồn trong Thiết lập, app chỉ dọn sau khi xuất và kiểm tra phụ đề thành công, giữ các file SRT. Video nguồn và video project, kể cả file gốc trên máy, có thể bị xóa; file còn được job khác dùng được giữ. Kết quả đã dọn vẫn xem được trong lịch sử sau khi mở lại app.",
+  },
+  {
+    q: "Publish pack có tự đăng video lên mạng không?",
+    a: "Không. Đây là tùy chọn mặc định tắt: AI tạo thêm file .publish.json cạnh phụ đề, gồm tiêu đề, mô tả ngắn và hashtag tiếng Việt. Bạn có thể duyệt, chỉnh nội dung và dùng cho bước đăng video sau đó. App chưa tự đăng lên nền tảng nào.",
+  },
+  {
+    q: "Chrome chạy nền thế nào, và gặp captcha thì sao?",
+    a: "App dùng profile riêng và mặc định chạy headless, không mở cửa sổ. Sau 60 giây nhàn rỗi, Chrome của app tự đóng. Khi phát hiện captcha, app mở lại cùng profile để bạn xác minh; lượt tự động tiếp theo trở về headless. Profile Chrome hoặc Edge hằng ngày của bạn không bị đọc hay sửa.",
+  },
+  {
+    q: "Video chỉ cho người đã đăng nhập xem thì sao?",
+    a: "Trong Thiết lập, mở trang đăng nhập của nền tảng bằng Chrome của app, đăng nhập một lần rồi thử lại. Profile riêng giữ thông tin đăng nhập; đăng nhập và xác minh thủ công vẫn cần cửa sổ trình duyệt hiển thị.",
+  },
+  {
+    q: "File trên máy có được tải lên dịch vụ bên ngoài không?",
+    a: "Video được xử lý trên máy bạn. Trong cửa sổ app, Chọn video mở một MP4/MKV tại chỗ và có thể hard-link vào project khi cùng ổ đĩa. Nhập nhiều file sẽ chuyển file vào thư mục do app quản lý trên chính máy đó. Văn bản phụ đề được gửi tới nhà cung cấp AI bạn chọn để dịch và tạo publish pack nếu bật.",
   },
   {
     q: "Timestamp có bị model dịch sửa không?",
@@ -170,6 +191,6 @@ export const FAQS = [
   },
   {
     q: "Bản portable đã kèm VideOCR và FFmpeg chưa?",
-    a: "Chưa. Bản portable gồm VietSub Studio và bộ tải yt-dlp. VideOCR, FFmpeg, Google Chrome (hoặc Edge) và tài khoản AI là phụ thuộc bên ngoài do bạn tự cài.",
+    a: "Chưa. Bản portable gồm VietSub Studio và bộ tải yt-dlp. VideOCR, FFmpeg, Google Chrome (hoặc Edge) và tài khoản AI là phụ thuộc bên ngoài do bạn tự cài. App kiểm tra cập nhật từ GitHub Releases và đối chiếu SHA256 trước khi thay file.",
   },
 ];
