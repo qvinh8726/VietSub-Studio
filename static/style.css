@@ -201,6 +201,9 @@
         .translation-instructions-footer { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
         .translation-instructions-footer small { flex: 1; }
         .translation-instructions-footer .btn-ghost { flex: 0 0 auto; margin-top: 5px; white-space: nowrap; }
+        .translation-preset-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 7px; align-items: center; margin-top: 8px; }
+        .translation-preset-row label { font-size: 11px; font-weight: 800; }
+        .translation-preset-row .btn-ghost { min-height: 43px; white-space: nowrap; }
         .api-key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
         .api-key-row .btn-ghost { min-height: 43px; white-space: nowrap; }
         .path-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
@@ -228,6 +231,7 @@
         .toast { position: fixed; right: 20px; bottom: 20px; z-index: 80; max-width: min(390px, calc(100vw - 28px)); padding: 11px 14px; border: 1px solid #447663; border-radius: 12px; background: var(--forest); box-shadow: 0 16px 38px rgba(0,0,0,.22); color: var(--white); font-size: 11px; font-weight: 750; opacity: 0; pointer-events: none; transform: translateY(12px); transition: .18s ease; }
         .toast.show { opacity: 1; transform: translateY(0); }
         .toast.error { border-color: #d67868; background: #71372d; }
+        .connection-banner { position: fixed; top: 12px; left: 50%; z-index: 90; max-width: min(560px, calc(100vw - 28px)); padding: 10px 14px; border: 1px solid #d67868; border-radius: 12px; background: #71372d; box-shadow: 0 16px 38px rgba(0,0,0,.22); color: var(--white); font-size: 12px; font-weight: 800; transform: translateX(-50%); }
         .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3); border-top-color: currentColor; border-radius: 50%; animation: spin .7s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
 

@@ -4,6 +4,50 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-11-17
+
+### Security
+
+- API keys are now stored per provider and Base URL origin. Switching to another provider or host no longer sends the previous key there, and the translation client refuses HTTP redirects instead of forwarding the `Authorization` header. A key saved by 1.5.3 or earlier is bound to the provider it was saved for on the first settings save.
+- FFmpeg and FFprobe are taken from `PATH` only, never from the current or application folder, and Explorer and `taskkill` are started by absolute path from the Windows directory. A planted `ffprobe.exe`, `ffmpeg.exe` or `explorer.exe` next to the portable EXE (for example in Downloads) is no longer executed.
+- The local API token is compared as bytes, so a non-ASCII token header returns 403 instead of a server error. `/api/open-folder` rejects a non-string path with 400.
+- Line breaks inside a durable log message are escaped, so text from a provider or tool cannot fake extra log entries.
+
+### Fixed
+
+- Release assets follow the format every updater since 1.3.0 expects again. The 1.5.3 release published `.zip.sha256` instead of `.zip.sha256.txt` and a ZIP without the `VietSub Studio/` folder, so 1.3.0 to 1.5.2 could not update automatically. `tools/make_release.py` now builds exactly `VietSub-Studio-Portable-v<version>.zip` (with `VietSub Studio/VietSub Studio.exe`, `SHA256.txt`, `LICENSE` and `HUONG_DAN_SU_DUNG.txt`) and `VietSub-Studio-Portable-v<version>.zip.sha256.txt`, and `tests/test_release_contract.py` checks both against the updater.
+- The update helper starts the new EXE with `PYINSTALLER_RESET_ENVIRONMENT=1`, so it does not inherit the extraction folder of the old process.
+- The CLI no longer rewrites the desktop queue. The 1.5.3 notes listed this fix, but `automate.py` could still replace `workflow_queue.json` with an empty list after moving a Douzy video into its project. Only the desktop and server entry points now load and save the queue.
+- CLI output is written as UTF-8, so redirecting `automate.py` to a file or pipe on a non-UTF-8 code page no longer fails with `UnicodeEncodeError` after a successful run.
+- Douzy downloads no longer fail after a fixed 5 minutes. A download times out only when the sidecar's job status stops changing for 5 minutes (time fields such as timestamps and ETA are ignored) or after 6 hours in total.
+- A `videocr_gui_config.ini` written in the Windows ANSI code page, for example under a profile folder with accented or Chinese characters, no longer breaks OCR, Settings or preview creation. Lines without `=` are ignored.
+- The VideOCR time limit grows with the scanned span: three times its length plus 10 minutes, at least 30 minutes, and 4 hours when the duration is unknown. Every run used to stop at 30 minutes, including a single run over a 45-minute video.
+- VideOCR output lines no longer go to the durable log one by one; a failed run writes its last 20 lines, so earlier steps are not rotated out of the log. FFprobe no longer opens a console window in the packaged EXE.
+- Cancelling a job or closing the app stops the whole process tree of VideOCR, FFmpeg and Douzy (`taskkill /T /F`), not only the direct child. A process that does not exit is logged instead of hiding the original error, and Ctrl+C in the CLI also stops VideOCR and FFmpeg.
+- Closing the app while the queue runs stops the worker before it can claim another job. A cancel sent while the next job is starting is kept, and new previews are refused while the worker hands over to the next job, so two Douzy downloads never run together.
+- API translation requests can be cancelled and have a 30-minute deadline per attempt on top of the 180-second read timeout, so a stalled gateway no longer blocks the queue.
+- A streamed reply that ends without `finish_reason` or `data: [DONE]` is treated as truncated and retried. Only a 400, 415 or 422 response that mentions streaming switches the job to non-streaming JSON; any other 400 is reported once with the provider's message. `Retry-After` is honoured up to 120 seconds, and `IncompleteRead` and connection resets are retried.
+- Every subtitle file with more than 400 blocks or 24,000 characters is now split for translation, whatever the video length; videos longer than 45 minutes are still also split at 30-minute boundaries. A dense SRT under 45 minutes used to go out as one oversized request.
+- A translated chunk that the model renumbered from 1, or whose timecodes it rewrote, is rebuilt on the source indexes and timecodes. Glued blocks (a missing blank line) and missing blocks are rejected before the chunk is cached, so a retry no longer reuses a bad chunk.
+- Prompts name the job's real OCR language instead of always saying the input is Chinese, and Vietnamese OCR output is proofread instead of translated. The translation cache fingerprint now includes the system prompt, the prompt template and the source language.
+- A settings file saved with a UTF-8 BOM is read normally. A state file that is only locked for a moment (antivirus, backup, OneDrive) is retried and never quarantined, and saving settings no longer writes defaults over a config that could not be read. Only invalid JSON is moved aside, under a unique `.corrupt-*` name.
+- When the queue file cannot be written, adding, removing, retrying or clearing jobs returns HTTP 503 with the reason as JSON and keeps the in-memory queue unchanged. Other API errors are also returned as JSON instead of an HTML page.
+- A finished job whose project folder was moved or deleted is reported as missing project files instead of an untranslated subtitle, and its retry asks for confirmation before starting over. Retry decisions now use an `error_code` instead of matching message text.
+- Edge status polling reuses the Edge process check for 10 minutes per debug session instead of starting PowerShell and WMI every 5 seconds. Automation still checks the process before each use.
+- The interface no longer freezes when a request hangs. Reads time out after 15 seconds and actions after 60 seconds (preview, upload and update install have no limit), a banner appears while the local server is unreachable and disappears when it answers again, and a failed progress poll no longer discards a good queue update.
+- The **Cancel job** button shows "cancelling" only for the job that was cancelled, so the next job can be cancelled. A second click on an action that is still running is ignored. A 409 while installing an update shows the reason instead of switching to the manual GitHub download, and the progress caption names the translation provider in use.
+- Unit tests run in a temporary sandbox and no longer read or write the real `%APPDATA%`, Douzy or VideOCR files.
+
+### Changed
+
+- The default translation instructions are now neutral and suit any kind of video. The Delta Force game glossary that 1.5.3 sent with every request is available as the **Game Delta Force** preset in Settings. Instructions saved in an earlier version are kept unchanged.
+- Added the `VIETSUB_STUDIO_CONFIG_DIR` environment variable to keep settings, queue, managed videos, logs and the instance lock in a chosen folder.
+- CI uploads `VietSub-Studio-Portable-v<version>-release-assets` with exactly the two release files and `VietSub-Studio-build-info-<commit>` with `build-manifest.json` and `dependencies.txt`; the bare EXE is no longer uploaded. CI also checks `static/app.js` and runs the new frontend tests. `RELEASING.md` describes the release steps.
+
+### Known issues
+
+- Selecting a local MP4 still writes a temporary copy to `%TEMP%` before it is copied into the managed cache, so it needs twice the free space. The fix is planned for 1.6.x.
+
 ## [1.5.3] - 2026-08-04
 
 ### Security

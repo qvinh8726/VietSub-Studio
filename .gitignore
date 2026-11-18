@@ -40,6 +40,12 @@ VietSub Studio/
 *.tmp
 *.bak
 
+# Local Kiro specs, steering and hooks
+.kiro/
+
+# Temporary folder used while publishing a release
+_release_tmp/
+
 # Editors and OS files
 .idea/
 .vscode/

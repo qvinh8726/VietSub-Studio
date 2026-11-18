@@ -31,6 +31,10 @@ jobs:
         run: python -m py_compile app.py automate.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+      - name: Check frontend syntax
+        run: node --check static/app.js
+      - name: Run frontend tests
+        run: node --test tests/frontend/app.test.mjs
 
   package-smoke:
     needs: unit-tests
@@ -101,11 +105,26 @@ jobs:
               Stop-Process -Id $testProcess.ProcessId -Force
             }
           }
+      - name: Package release assets in the updater format
+        id: release
+        shell: pwsh
+        run: |
+          python tools/make_release.py --exe "dist_portable/VietSub Studio.exe" --output release --clean
+          $version = python -c "import app; print(app.APP_VERSION)"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Verify release assets against the updater contract
+        env:
+          RELEASE_DIR: release
+        run: python -m unittest discover -s tests -p test_release_contract.py -v
       - uses: actions/upload-artifact@v4
         with:
-          name: VietSub-Studio-Portable-${{ github.sha }}
+          name: VietSub-Studio-Portable-v${{ steps.release.outputs.version }}-release-assets
+          path: release/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VietSub-Studio-build-info-${{ github.sha }}
           path: |
-            dist_portable/VietSub Studio.exe
             dist_portable/build-manifest.json
             dist_portable/dependencies.txt
           if-no-files-found: error

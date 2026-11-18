@@ -20,8 +20,9 @@ Báo cáo nên có phiên bản bị ảnh hưởng, các bước tái hiện, m
 
 - Video downloading is delegated to the locally installed Douzy application.
 - OCR is delegated to the locally installed VideOCR CLI.
-- Subtitle text is submitted to the user's Gemini Notebook through a local Edge browser session.
-- VietSub Studio does not require a Gemini API key and does not bundle Google credentials.
+- Subtitle text is submitted either to the user's Gemini Notebook through a local Edge browser session or to the OpenAI-compatible API provider the user configured.
+- Notebook mode needs no API key, and VietSub Studio does not bundle Google credentials. API keys are encrypted with Windows DPAPI and saved per provider and Base URL host; the API client refuses redirects, so a key is only sent to the host it was saved for.
+- At startup the app asks `api.github.com` for the latest release. Release files are downloaded only when the user installs an update.
 - Packaged settings are stored locally under `%APPDATA%\VietSub Studio`.
 - The local Flask control plane binds to loopback and requires a fresh per-launch capability token for API requests; Host, Origin, Fetch Metadata, path, and mutation content-type checks are also enforced.
 - Local MP4 uploads are capped at 8 GiB and must contain an MP4 `ftyp` container header before being admitted to managed cache.

@@ -24,6 +24,10 @@
         let translationApiKeySet = false;
         let lastTranslationProvider = 'notebook';
         let defaultTranslationInstructions = '';
+        let translationInstructionPresets = {};
+        let connectionOk = true;
+        let cancellingJobId = '';
+        let translationProviderName = 'Gemini';
 
         function showToast(message, type = 'success') {
             clearTimeout(toastTimer);
@@ -33,22 +37,62 @@
             toastTimer = setTimeout(() => { toast.className = 'toast'; }, 3500);
         }
 
-        async function fetchJson(url, options = {}) {
-            const method = (options.method || 'GET').toUpperCase();
-            const headers = new Headers(options.headers || {});
-            headers.set('X-VietSub-Token', apiToken);
-            const nextOptions = {...options, headers};
-            if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !headers.has('Content-Type') && !(options.body instanceof FormData)) {
-                headers.set('Content-Type', 'application/json');
-                if (options.body == null) nextOptions.body = '{}';
+        function setConnection(ok) {
+            if (connectionOk === ok) return;
+            connectionOk = ok;
+            byId('connection-banner').hidden = ok;
+            if (ok) {
+                pollFailureCount = 0;
+                if (byId('process-caption').textContent.startsWith('Mất kết nối')) byId('process-caption').textContent = 'Sẵn sàng';
+                showToast('Đã kết nối lại với VietSub Studio.');
             }
-            const response = await fetch(url, nextOptions);
+        }
+
+        // timeoutMs: 0 means no limit (preview download, MP4 upload, update install).
+        async function fetchJson(url, options = {}) {
+            const {timeoutMs: requestedTimeout, ...fetchOptions} = options;
+            const method = (fetchOptions.method || 'GET').toUpperCase();
+            const timeoutMs = requestedTimeout ?? (method === 'GET' ? 15000 : 60000);
+            const headers = new Headers(fetchOptions.headers || {});
+            headers.set('X-VietSub-Token', apiToken);
+            const nextOptions = {...fetchOptions, headers};
+            if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !headers.has('Content-Type') && !(fetchOptions.body instanceof FormData)) {
+                headers.set('Content-Type', 'application/json');
+                if (fetchOptions.body == null) nextOptions.body = '{}';
+            }
+            const controller = timeoutMs ? new AbortController() : null;
+            const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+            if (controller) nextOptions.signal = controller.signal;
+            let response;
+            try {
+                response = await fetch(url, nextOptions);
+            } catch (cause) {
+                setConnection(false);
+                const error = new Error(cause?.name === 'AbortError'
+                    ? `VietSub Studio không phản hồi sau ${Math.round(timeoutMs / 1000)} giây.`
+                    : 'Mất kết nối tới máy chủ cục bộ của VietSub Studio.');
+                error.network = true;
+                throw error;
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+            setConnection(true);
             let data = {};
             try { data = await response.json(); } catch (_) {}
             if (!response.ok) {
-                throw new Error(data.error || `HTTP ${response.status}`);
+                const error = new Error(data.error || `HTTP ${response.status}`);
+                error.status = response.status;
+                throw error;
             }
             return data;
+        }
+
+        const busyActions = new Set();
+        // Ignore a second click while the same action is still waiting for the server.
+        async function runOnce(key, action) {
+            if (busyActions.has(key)) return;
+            busyActions.add(key);
+            try { await action(); } finally { busyActions.delete(key); }
         }
 
         async function checkForUpdate() {
@@ -87,11 +131,18 @@
                     button.textContent = 'Mở trang tải →';
                     return;
                 }
-                const data = await fetchJson('/api/update/install', {method: 'POST'});
+                const data = await fetchJson('/api/update/install', {method: 'POST', timeoutMs: 0});
                 button.textContent = 'Đang khởi động lại…';
                 byId('update-copy').textContent = data.message || 'Đã tải xong. App đang cài bản mới và sẽ tự mở lại.';
                 showToast(`Đang cài VietSub Studio v${data.version}.`);
             } catch (error) {
+                if (error.status === 409) {
+                    // A job or preview is still running: wait and let the user try again later.
+                    showToast(error.message, 'error');
+                    button.disabled = false;
+                    button.textContent = 'Tải & cài ngay →';
+                    return;
+                }
                 try {
                     await fetchJson('/api/update/open', {method: 'POST'});
                     showToast(`${error.message} Đã mở GitHub để cập nhật thủ công.`, 'error');
@@ -143,7 +194,7 @@
             button.disabled = true;
             button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang tải preview</span>';
             try {
-                const data = await fetchJson('/api/previews', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url}) });
+                const data = await fetchJson('/api/previews', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url}), timeoutMs: 0 });
                 if (requestId !== previewRequestId) return;
                 applyPreview(data);
                 showToast('Preview đã sẵn sàng. Kéo khung vàng vào vùng phụ đề.');
@@ -195,7 +246,7 @@
             byId('preview-status').value = 'Đang copy video local…';
             const form = new FormData(); form.append('video', file);
             try {
-                const data = await fetchJson('/api/previews/local', {method:'POST', body:form});
+                const data = await fetchJson('/api/previews/local', {method:'POST', body:form, timeoutMs: 0});
                 if (requestId !== previewRequestId) return;
                 applyPreview(data);
                 showToast('MP4 local đã sẵn sàng để chỉnh vùng OCR.');
@@ -317,8 +368,14 @@
             byId('start-queue-btn').disabled = !queuedCount || running || !queueReady;
             byId('start-queue-btn').textContent = running ? 'Đang chạy tuần tự…' : !queueReady ? 'Thiếu thành phần bắt buộc' : `Chạy hàng đợi${queuedCount ? ` (${queuedCount})` : ''}`;
             const cancelButton = byId('cancel-btn');
-            cancelButton.hidden = !running;
-            if (!running) { cancelButton.disabled = false; cancelButton.textContent = 'Huỷ job'; }
+            const runningJob = queueJobs.find(job => job.status === 'running');
+            cancelButton.hidden = !runningJob;
+            // "Đang huỷ…" only belongs to the job that was cancelled; the next job gets a usable button.
+            if (!runningJob || runningJob.id !== cancellingJobId) {
+                cancellingJobId = '';
+                cancelButton.disabled = false;
+                cancelButton.textContent = 'Huỷ job';
+            }
             if (!queueJobs.length) { list.innerHTML = '<div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div>'; return; }
             list.replaceChildren();
             queueJobs.forEach((job, index) => {
@@ -351,15 +408,24 @@
             queueLoadInFlight = true;
             byId('queue-list').setAttribute('aria-busy', 'true');
             try {
-                const [data] = await Promise.all([fetchJson(`/api/queue?revision=${queueRevision}`), pollProgress()]);
-                queueRevision = Number.isInteger(data.revision) ? data.revision : queueRevision;
-                if (Array.isArray(data.jobs)) {
-                    queueJobs = data.jobs;
-                    const signature = JSON.stringify(queueJobs);
-                    if (signature !== lastQueueSignature) { lastQueueSignature = signature; renderQueue(); }
+                // Handle each response on its own, so a failed progress poll never drops a good queue update.
+                const [queueResult, progressResult] = await Promise.allSettled([
+                    fetchJson(`/api/queue?revision=${queueRevision}`),
+                    pollProgress(),
+                ]);
+                if (queueResult.status === 'fulfilled') {
+                    const data = queueResult.value;
+                    queueRevision = Number.isInteger(data.revision) ? data.revision : queueRevision;
+                    if (Array.isArray(data.jobs)) {
+                        queueJobs = data.jobs;
+                        const signature = JSON.stringify(queueJobs);
+                        if (signature !== lastQueueSignature) { lastQueueSignature = signature; renderQueue(); }
+                    }
+                } else {
+                    console.warn(queueResult.reason);
                 }
+                if (progressResult.status === 'rejected') console.warn(progressResult.reason);
             }
-            catch (error) { console.warn(error); }
             finally { queueLoadInFlight = false; byId('queue-list').setAttribute('aria-busy', 'false'); }
         }
 
@@ -369,19 +435,30 @@
         }
 
         async function startQueue() {
-            try { await fetchJson('/api/queue/start', {method: 'POST'}); hideResult(); displayedLogCount = 0; progressJobId = ''; byId('console-box').replaceChildren(); await loadQueue(); showToast('Hàng đợi đã bắt đầu chạy tuần tự.'); }
-            catch (error) { showToast(error.message, 'error'); }
+            await runOnce('start-queue', async () => {
+                try { await fetchJson('/api/queue/start', {method: 'POST'}); hideResult(); displayedLogCount = 0; progressJobId = ''; byId('console-box').replaceChildren(); await loadQueue(); showToast('Hàng đợi đã bắt đầu chạy tuần tự.'); }
+                catch (error) { showToast(error.message, 'error'); }
+            });
         }
 
         async function removeQueueJob(id, status = 'queued') {
             if (status !== 'queued' && !window.confirm('Xoá job này khỏi lịch sử? File project đã tạo sẽ không bị xoá.')) return;
-            try { await fetchJson(`/api/queue/${id}`, {method: 'DELETE'}); queueRevision = -1; await loadQueue(); }
-            catch (error) { showToast(error.message, 'error'); }
+            await runOnce(`remove-${id}`, async () => {
+                try { await fetchJson(`/api/queue/${id}`, {method: 'DELETE'}); queueRevision = -1; await loadQueue(); }
+                catch (error) { showToast(error.message, 'error'); }
+            });
         }
 
         async function retryQueueJob(id) {
-            try { await fetchJson(`/api/queue/${id}/retry`, {method:'POST'}); hideResult(); await loadQueue(); showToast('Job đã được đưa lại vào hàng đợi.'); }
-            catch (error) { showToast(error.message, 'error'); }
+            const job = queueJobs.find(item => item.id === id);
+            if (job?.error_code === 'project_missing' && !window.confirm(
+                'Không tìm thấy file dự án ở vị trí cũ (có thể đã bị di chuyển hoặc xoá). '
+                + 'Chạy lại sẽ chuẩn bị video và làm lại từ đầu. Tiếp tục?'
+            )) return;
+            await runOnce(`retry-${id}`, async () => {
+                try { await fetchJson(`/api/queue/${id}/retry`, {method:'POST'}); hideResult(); await loadQueue(); showToast('Job đã được đưa lại vào hàng đợi.'); }
+                catch (error) { showToast(error.message, 'error'); }
+            });
         }
 
         async function showEdgeLogin() {
@@ -391,14 +468,17 @@
 
         async function clearFinished() {
             if (!window.confirm('Xoá toàn bộ job đã hoàn tất khỏi lịch sử? File project sẽ được giữ nguyên.')) return;
-            try { await fetchJson('/api/queue/finished', {method: 'DELETE'}); hideResult(); queueRevision = -1; await loadQueue(); }
-            catch (error) { showToast(error.message, 'error'); }
+            await runOnce('clear-finished', async () => {
+                try { await fetchJson('/api/queue/finished', {method: 'DELETE'}); hideResult(); queueRevision = -1; await loadQueue(); }
+                catch (error) { showToast(error.message, 'error'); }
+            });
         }
 
         async function cancelJob() {
             const button = byId('cancel-btn'); button.disabled = true; button.textContent = 'Đang huỷ…';
+            cancellingJobId = queueJobs.find(job => job.status === 'running')?.id || '';
             try { await fetchJson('/api/cancel', {method:'POST'}); showToast('Đã gửi yêu cầu huỷ job hiện tại.'); }
-            catch (error) { button.disabled = false; button.textContent = 'Huỷ job'; showToast(error.message, 'error'); }
+            catch (error) { cancellingJobId = ''; button.disabled = false; button.textContent = 'Huỷ job'; showToast(error.message, 'error'); }
         }
 
         function updateSteps(step, status) {
@@ -408,8 +488,8 @@
                 item.className = index < activeIndex || status === 'success' ? 'step completed' : index === activeIndex ? `step ${status === 'error' || status === 'cancelled' ? 'error' : 'active'}` : 'step';
             });
             byId('workflow-progress').setAttribute('aria-valuenow', String(progressWidth(step, status)));
-            const captions = {resolve:'Đang giải mã link',download:'Đang chuẩn bị video',ocr:'VideOCR đang quét',translate:'Gemini đang dịch',done:'Đã hoàn tất'};
-            const errorCaptions = {resolve:'Lỗi giải mã link',download:'Lỗi chuẩn bị video',ocr:'VideOCR bị lỗi',translate:'Dịch bằng Gemini bị lỗi',done:'Hoàn tất không hợp lệ'};
+            const captions = {resolve:'Đang giải mã link',download:'Đang chuẩn bị video',ocr:'VideOCR đang quét',translate:`${translationProviderName} đang dịch`,done:'Đã hoàn tất'};
+            const errorCaptions = {resolve:'Lỗi giải mã link',download:'Lỗi chuẩn bị video',ocr:'VideOCR bị lỗi',translate:`Dịch bằng ${translationProviderName} bị lỗi`,done:'Hoàn tất không hợp lệ'};
             byId('process-caption').textContent = status === 'cancelled' ? 'Job đã huỷ' : status === 'error' ? errorCaptions[step] || 'Job bị lỗi' : captions[step] || 'Sẵn sàng';
         }
 
@@ -478,6 +558,7 @@
         function updateTranslationProviderUI(applyPreset = false) {
             const provider = byId('setting-translation-provider').value;
             const usesNotebook = provider === 'notebook';
+            translationProviderName = {notebook: 'Gemini', deepseek: 'DeepSeek API', openrouter: 'OpenRouter'}[provider] || 'API dịch';
             byId('notebook-settings').hidden = !usesNotebook;
             byId('edge-settings').hidden = !usesNotebook;
             byId('api-translation-settings').hidden = usesNotebook;
@@ -506,6 +587,8 @@
                 byId('setting-api-base-url').value = data.translation_api_base_url || '';
                 byId('setting-api-model').value = data.translation_api_model || '';
                 defaultTranslationInstructions = data.translation_default_instructions || '';
+                translationInstructionPresets = data.translation_instruction_presets || {};
+                renderTranslationPresets();
                 byId('setting-translation-instructions').value = data.translation_instructions || defaultTranslationInstructions;
                 byId('setting-api-key').value = '';
                 translationApiKeySet = Boolean(data.translation_api_key_set);
@@ -548,13 +631,13 @@
                     if (apiKey) payload.translation_api_key = apiKey;
                 }
                 if (options.clearApiKey) payload.translation_api_key = null;
-                await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-                if (payload.translation_api_key) {
-                    translationApiKeySet = true;
-                    byId('setting-api-key').value = '';
-                } else if (options.clearApiKey) {
-                    translationApiKeySet = false;
-                }
+                const saved = await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+                if (payload.translation_api_key) byId('setting-api-key').value = '';
+                // Keys are stored per provider and API host, so the server says whether
+                // the provider selected now has one.
+                if (typeof saved.translation_api_key_set === 'boolean') translationApiKeySet = saved.translation_api_key_set;
+                else if (payload.translation_api_key) translationApiKeySet = true;
+                else if (options.clearApiKey) translationApiKeySet = false;
                 updateApiKeyHelp();
                 if (!options.silent) showToast('Đã lưu thiết lập.');
                 loadHealth();
@@ -569,6 +652,33 @@
             saveSettingsTimer = setTimeout(saveSettingsNow, 250);
         }
 
+        function renderTranslationPresets() {
+            const select = byId('setting-translation-preset');
+            const previous = select.value;
+            select.replaceChildren();
+            Object.entries(translationInstructionPresets).forEach(([key, preset]) => {
+                const option = document.createElement('option');
+                option.value = key;
+                option.textContent = preset.label || key;
+                select.appendChild(option);
+            });
+            if (previous && translationInstructionPresets[previous]) select.value = previous;
+            byId('apply-translation-preset-btn').disabled = !select.options.length;
+        }
+
+        async function applyTranslationPreset() {
+            const preset = translationInstructionPresets[byId('setting-translation-preset').value];
+            if (!preset) return;
+            const textarea = byId('setting-translation-instructions');
+            const current = textarea.value.trim();
+            const isKnownPreset = Object.values(translationInstructionPresets).some(item => item.instructions === current);
+            if (current && !isKnownPreset && !window.confirm('Thay nội dung "Cách dịch mong muốn" hiện tại bằng mẫu đã chọn?')) return;
+            textarea.value = preset.instructions;
+            clearTimeout(saveSettingsTimer);
+            await saveSettingsNow({silent: true});
+            showToast(`Đã nạp mẫu: ${preset.label}.`);
+        }
+
         async function resetTranslationInstructions() {
             byId('setting-translation-instructions').value = defaultTranslationInstructions;
             clearTimeout(saveSettingsTimer);
@@ -581,7 +691,7 @@
             button.textContent = 'Đang kiểm tra…';
             try {
                 await saveSettingsNow({silent:true, throwOnError:true});
-                const data = await fetchJson('/api/translation/test', {method:'POST'});
+                const data = await fetchJson('/api/translation/test', {method:'POST', timeoutMs: 200000});
                 showToast(`${data.provider} · ${data.model}: kết nối OK`);
             } catch (error) {
                 showToast(error.message, 'error');
@@ -670,6 +780,7 @@
             byId('setting-translation-provider').addEventListener('change', () => { updateTranslationProviderUI(true); saveSettings(); });
             byId('setting-translation-instructions').addEventListener('change', saveSettings);
             byId('reset-translation-instructions-btn').onclick=resetTranslationInstructions;
+            byId('apply-translation-preset-btn').onclick=applyTranslationPreset;
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
             byId('setting-api-base-url').addEventListener('change', saveSettings); byId('setting-api-model').addEventListener('change', saveSettings); byId('setting-api-key').addEventListener('change', saveSettings);
             byId('test-api-btn').onclick=testTranslationApi; byId('clear-api-key-btn').onclick=clearTranslationApiKey;

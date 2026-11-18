@@ -6,7 +6,21 @@ import sys
 from app import acquire_instance_lock, release_instance_lock, run_single_workflow
 
 
+def configure_console_encoding():
+    # A redirected stdout/stderr on Windows uses the ANSI code page, which cannot
+    # encode Vietnamese. UTF-8 keeps every message readable whatever the code page.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            pass
+
+
 def main():
+    configure_console_encoding()
     parser = argparse.ArgumentParser(
         description="Tải một video Douyin, OCR phụ đề và dịch sang tiếng Việt."
     )

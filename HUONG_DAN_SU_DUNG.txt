@@ -2,23 +2,38 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 ================================================
 
 1. CHAY APP
-- Giai nen file ZIP vao mot thu muc rieng.
+- Giai nen file ZIP vao mot thu muc rieng. ZIP co san thu muc "VietSub Studio"
+  gom VietSub Studio.exe, SHA256.txt, LICENSE va file huong dan nay.
 - Mo "VietSub Studio.exe".
 - Ban EXE se tu tao shortcut "VietSub Studio" ngoai Desktop o lan mo dau tien.
 - Neu shortcut bi xoa hoac ban chuyen thu muc app, bam "Tao lai shortcut ngoai Desktop" trong phan Thiet lap.
 - Lan mo dau co the mat 20-60 giay do Windows giai nen va quet bao mat file EXE.
 - Neu Windows SmartScreen hien canh bao vi app chua co chu ky so, chon More info > Run anyway.
+- Muon tu kiem tra file tai ve: chay "Get-FileHash -Algorithm SHA256 <file>" trong PowerShell.
+  Ma cua file ZIP phai khop voi file .zip.sha256.txt tren trang Release,
+  ma cua VietSub Studio.exe phai khop voi SHA256.txt trong ZIP.
 
 2. CAC THANH PHAN CAN CO TREN MAY
-- Windows 10/11 va Microsoft Edge.
-- Neu dung link Douyin: cai Douzy o thu muc mac dinh, mo it nhat mot lan va chon thu muc tai video.
+- Windows 10/11.
 - VideOCR duoc cai tai: C:\Program Files\VideOCR\videocr-cli.exe
-- Tuy chon: FFmpeg/FFprobe trong PATH de quy doi vung crop OCR chinh xac hon.
+- Neu dung link Douyin: cai Douzy o thu muc mac dinh, mo it nhat mot lan va chon thu muc tai video.
+- Neu dich bang Gemini Notebook hoac dung link Douyin ngan (v.douyin.com): Microsoft Edge.
+- Neu dich bang API: tai khoan DeepSeek, OpenRouter hoac dich vu OpenAI-compatible khac, kem API key.
+- Tuy chon: FFmpeg/FFprobe trong PATH de quy doi vung crop OCR chinh xac hon
+  va tu sua loi khi video dai doi do phan giai giua chung.
 
 3. THIET LAP LAN DAU
 - Trong VietSub Studio, mo tab "Thiet lap".
-- Dan link Gemini Notebook cua ban, dang:
-  https://gemini.google.com/notebook/ID-CUA-BAN
+- Chon "Cach dich phu de":
+  + Gemini Notebook qua Edge: dan link Notebook cua ban, dang
+    https://gemini.google.com/notebook/ID-CUA-BAN
+  + DeepSeek API, OpenRouter hoac API OpenAI-compatible khac: nhap Base URL, model va API key,
+    roi bam "Kiem tra ket noi API".
+- Moi provider va moi dia chi API giu API key rieng. Doi sang provider khac thi nhap key cua provider do;
+  key cu van duoc giu cho provider cu. Key duoc ma hoa bang tai khoan Windows hien tai.
+- O "Cach dich mong muon" la huong dan dich. Mac dinh la prompt trung tinh, dung cho moi loai video.
+  Voi video game Delta Force, chon mau "Game Delta Force" o "Mau co san" roi bam "Nap mau".
+  Bam "Khoi phuc mac dinh" de quay ve prompt trung tinh.
 - Kiem tra cac muc bat buoc. Khi tat ca muc mau do da het, app san sang.
 - De bat "Chay Edge an" neu muon. Edge van render binh thuong nhung duoc thu nho.
 - App chi tu hien Edge khi thay man hinh dang nhap hoac khong tim thay khung chat sau khi cho Notebook tai xong.
@@ -31,20 +46,41 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 - Bam "Them vao hang doi" va lap lai voi cac video khac.
 - Bam "Chay hang doi". App se tu xu ly tung video mot, khong chay song song.
 - Hang doi duoc luu khi dong app. Job loi/da huy co the chay lai tu video, OCR hoac dich neu file trung gian con ton tai.
+- Bam "Huy job" se dung ca VideOCR, FFmpeg va Douzy dang chay cho job do.
+  Dong app giua chung cung dung job hien tai; mo lai app roi bam chay lai.
 - Trong Thiet lap, bam "Chon thu muc..." de chon noi luu doc lap voi Douzy.
   Neu de trong, app dung Documents\VietSub Studio.
 - Ket qua duoc dat ten dong bo trong mot folder mang ten project:
-  Ten video.mp4 (MP4 Douyin duoc chuyen khoi Douzy sau khi dich thanh cong)
+  Ten video.mp4 (MP4 Douyin duoc chuyen khoi Douzy sau khi dich thanh cong,
+    duong dan trong lich su Douzy duoc cap nhat theo)
   Ten video.thumbnail.jpg/png/webp (neu nguon co thumbnail)
   Ten video.raw.srt
   Ten video.vi.srt
   Ten video.data.json, Ten video.music.mp3 va asset Douzy khac (neu co)
 - App chi bao "da san sang" khi ca ba file ton tai va sub Viet vuot qua kiem tra timestamp/so doan.
 - Job loi van co nut mo thu muc lam do, nhung khong duoc gan nhan la ket qua hoan tat.
+- Neu ban da di chuyen hoac xoa thu muc project cua job da xong, app bao khong tim thay file du an.
+  Bam chay lai se hoi xac nhan truoc khi lam lai tu dau.
 
-5. LUU Y KHI GUI CHO NGUOI KHAC
-- File EXE chua VietSub Studio, nhung khong kem Douzy, VideOCR hay tai khoan Gemini.
-- Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini cua ho.
+5. THOI GIAN CHO VA KHI APP KHONG PHAN HOI
+- Tai video Douyin: app cho Douzy bao lau cung duoc, mien trang thai tai con thay doi.
+  App chi bao loi khi trang thai dung yen 5 phut hoac tong thoi gian qua 6 gio.
+- OCR: moi lan chay VideOCR duoc phep chay toi da 3 lan do dai doan quet cong 10 phut,
+  it nhat 30 phut (4 gio neu khong doc duoc do dai video). May chi co CPU nen chon model OCR nhanh
+  hoac bo qua khung hinh trong Thiet lap neu hay bi qua thoi gian.
+- Dich bang API: moi lan gui co han chot 30 phut. Mat ket noi hoac loi 429/5xx se duoc thu toi da 3 lan.
+- Neu thanh do "Mat ket noi toi may chu cuc bo" hien o dau cua so, cho vai giay; thanh nay tu tat khi app tra loi lai.
+  Neu khong tat, dong va mo lai app. Hang doi da duoc luu tren o dia.
+- Khi them MP4 tu may, o dia tam thoi can cho trong cho hai ban video vi file di qua thu muc TEMP truoc.
+
+6. QUYEN RIENG TU
+- Video khong bi upload len may chu cua VietSub Studio. Douzy tai video va VideOCR xu ly ngay tren may.
+- Chi noi dung phu de duoc gui di de dich: toi Gemini Notebook qua Edge, hoac toi dia chi API ban da nhap.
+- App con ket noi GitHub de kiem tra ban moi moi lan mo app, va Douyin de giai ma link ngan, tai thumbnail.
+
+7. LUU Y KHI GUI CHO NGUOI KHAC
+- File EXE chua VietSub Studio, nhung khong kem Douzy, VideOCR, tai khoan Gemini hay API key.
+- Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini hoac API key cua ho.
 - Cau hinh cua moi may duoc luu rieng trong %APPDATA%\VietSub Studio.
 - Khi co phien ban moi, bam "Tai & cai ngay". App se tai ZIP chinh thuc, kiem tra SHA256, thay EXE va tu mo lai.
 - Neu khong the tu cai (vi du thu muc khong co quyen ghi), app se mo GitHub Releases de cap nhat thu cong.

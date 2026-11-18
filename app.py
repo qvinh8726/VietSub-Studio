@@ -14,15 +14,18 @@ import urllib.request
 import json
 import math
 import base64
+import http.client
 import webbrowser
 import hashlib
 import secrets
 import tempfile
 import zipfile
+from collections import deque
 from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread, local
+from threading import Event, Lock, Thread, current_thread, local
 from urllib.parse import urlparse
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
+from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,8 +42,9 @@ app = Flask(
 )
 
 # Paths
-APPDATA = os.environ.get("APPDATA")
-LOCALAPPDATA = os.environ.get("LOCALAPPDATA")
+HOME_DIR = os.path.expanduser("~")
+APPDATA = os.environ.get("APPDATA") or os.path.join(HOME_DIR, "AppData", "Roaming")
+LOCALAPPDATA = os.environ.get("LOCALAPPDATA") or os.path.join(HOME_DIR, "AppData", "Local")
 
 
 def get_windows_directory():
@@ -61,6 +65,11 @@ POWERSHELL_EXE = os.path.join(
     "v1.0",
     "powershell.exe",
 )
+# System tools are always started by absolute path so a planted copy in the
+# current or application directory (for example Downloads) is never executed.
+EXPLORER_EXE = os.path.join(WINDOWS_DIRECTORY, "explorer.exe")
+TASKKILL_EXE = os.path.join(WINDOWS_DIRECTORY, "System32", "taskkill.exe")
+NO_WINDOW_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 SIDECAR_BIN = os.path.join(LOCALAPPDATA, "Programs", "Douzy", "resources", "sidecar", "win32-x64", "douyin-dl-sidecar.exe")
 DOUZY_CONFIG = os.path.join(APPDATA, "douyin-downloader-desktop", "config.yml")
@@ -71,11 +80,16 @@ VIDEOCR_CONFIG = os.path.join(APPDATA, "VideOCR", "videocr_gui_config.ini")
 
 USER_DATA_DIR_DEBUG = os.path.join(LOCALAPPDATA, "Microsoft", "Edge", "User Data Debug")
 EDGE_DEBUG_PORT = 9222
-CONFIG_DIR = (
-    os.path.join(APPDATA, "VietSub Studio")
-    if getattr(sys, "frozen", False) and APPDATA
-    else APP_HOME
-)
+EDGE_OWNER_CACHE_SECONDS = 10 * 60
+# VIETSUB_STUDIO_CONFIG_DIR lets tests and portable setups keep settings, queue,
+# managed videos, logs and the instance lock in an explicit directory.
+CONFIG_DIR_OVERRIDE = os.environ.get("VIETSUB_STUDIO_CONFIG_DIR", "").strip()
+if CONFIG_DIR_OVERRIDE:
+    CONFIG_DIR = os.path.abspath(CONFIG_DIR_OVERRIDE)
+elif getattr(sys, "frozen", False):
+    CONFIG_DIR = os.path.join(APPDATA, "VietSub Studio")
+else:
+    CONFIG_DIR = APP_HOME
 CONFIG_PATH = os.path.join(CONFIG_DIR, "app_config.json")
 QUEUE_PATH = os.path.join(CONFIG_DIR, "workflow_queue.json")
 LOCAL_VIDEO_DIR = os.path.join(CONFIG_DIR, "local_videos")
@@ -87,17 +101,31 @@ SUPPORTED_OCR_MODEL_MODES = {"auto", "fast", "accurate"}
 MAX_OCR_FRAMES_TO_SKIP = 10
 VIDEOCR_CHUNK_SECONDS = 10 * 60
 VIDEOCR_CHUNK_THRESHOLD_SECONDS = 45 * 60
+# Minimum wall-clock limit for one VideOCR process; longer spans get more time.
 VIDEOCR_PROCESS_TIMEOUT_SECONDS = 30 * 60
+VIDEOCR_UNKNOWN_SPAN_TIMEOUT_SECONDS = 4 * 60 * 60
 VIDEOCR_TRANSCODE_TIMEOUT_SECONDS = 15 * 60
+PROCESS_FAILURE_TAIL_LINES = 20
+# A Douzy download only times out when its job payload stops changing.
+DOUZY_STALL_TIMEOUT_SECONDS = 5 * 60
+DOUZY_MAX_DOWNLOAD_SECONDS = 6 * 60 * 60
+DOUZY_VOLATILE_FIELD_WORDS = {
+    "time", "timestamp", "ts", "at", "updated", "heartbeat", "elapsed",
+    "eta", "remaining", "now", "date", "uptime", "clock",
+}
 TRANSLATION_CHUNK_THRESHOLD_SECONDS = 45 * 60
 TRANSLATION_CHUNK_TARGET_SECONDS = 30 * 60
 TRANSLATION_CHUNK_MAX_BLOCKS = 400
 TRANSLATION_CHUNK_MAX_CHARS = 24_000
+# Socket timeout for each read; the whole request also has an overall deadline.
 TRANSLATION_API_TIMEOUT_SECONDS = 180
+TRANSLATION_API_REQUEST_DEADLINE_SECONDS = 30 * 60
 TRANSLATION_API_MAX_ATTEMPTS = 3
+TRANSLATION_API_RETRY_DELAYS = (2, 4, 8)
+TRANSLATION_API_MAX_RETRY_AFTER_SECONDS = 120
 TRANSLATION_API_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_TRANSLATION_INSTRUCTIONS_CHARS = 16_000
-TRANSLATION_PROMPT_VERSION = "zh-vi-v4-deepseek-nonthinking"
+TRANSLATION_PROMPT_VERSION = "vi-v5-source-language"
 SUPPORTED_TRANSLATION_PROVIDERS = {"notebook", "deepseek", "openrouter", "custom"}
 TRANSLATION_PROVIDER_PRESETS = {
     "deepseek": {
@@ -126,18 +154,23 @@ MAX_LOG_BACKUPS = 2
 MAX_PROJECT_NAME_LENGTH = 100
 PREVIEW_TTL_SECONDS = 6 * 60 * 60
 QUEUE_SCHEMA_VERSION = 2
+# Machine-readable reasons for a terminal job error, so retry logic and the UI do
+# not depend on the wording of Vietnamese messages.
+JOB_ERROR_CODES = {"project_missing", "translation_invalid"}
 MAX_PERSISTED_JOBS = 500
 MAX_IN_MEMORY_JOBS = MAX_PERSISTED_JOBS
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
 UPDATE_CACHE_TTL_SECONDS = 15 * 60
 UPDATE_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
+# Every portable build since v1.3.0 extracts exactly this member from the release ZIP.
+UPDATE_ZIP_EXE_MEMBER = "VietSub Studio/VietSub Studio.exe"
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{number}" for number in range(1, 10)),
@@ -179,12 +212,17 @@ workflow_jobs = []
 queue_worker_thread = None
 current_job_id = ""
 queue_state_initialized = False
+# Only a process that loaded the saved queue may rewrite it. The CLI never loads
+# the desktop queue, so its empty in-memory list must never reach the file.
+queue_persistence_enabled = False
 queue_revision = 0
 update_cache_lock = Lock()
 update_install_lock = Lock()
 operation_admission_lock = Lock()
 shutdown_event = Event()
 update_cache = {"checked_at": 0.0, "status": None}
+edge_status_lock = Lock()
+edge_status_cache = {}
 config_write_lock = Lock()
 log_file_lock = Lock()
 # Per-thread workflow context: the prefetch thread runs download helpers with its own
@@ -606,14 +644,44 @@ def get_video_id(video_url):
 
 
 def stop_process(proc, name):
+    """Stop a child process and, on Windows, every process it started.
+
+    Popen.terminate() and kill() only end the direct child on Windows, so
+    VideOCR, FFmpeg or Douzy helpers could keep running and hold the GPU or files.
+    A child that ignores the request is logged instead of raising, so the
+    original error (cancel, timeout) is not replaced.
+    """
     if not proc or proc.poll() is not None:
         return
-    proc.terminate()
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                [TASKKILL_EXE, "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                creationflags=NO_WINDOW_FLAGS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    else:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
     try:
-        proc.wait(timeout=5)
+        proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        log_to_app(f"Tiến trình {name} chưa thoát sau khi đã yêu cầu dừng.", "error")
+        return
     log_to_app(f"Đã dừng tiến trình {name}.")
 
 
@@ -632,14 +700,33 @@ def unregister_active_process(name, proc=None):
             active_processes.pop(name, None)
 
 
-def check_cancel_requested():
+def cancel_requested():
     event = getattr(workflow_context, "cancel_event", None) or cancel_event
-    if event.is_set():
+    return event.is_set() or shutdown_event.is_set()
+
+
+def check_cancel_requested():
+    if shutdown_event.is_set():
+        raise WorkflowCancelled("App đang đóng nên job đã dừng; mở lại app rồi bấm Chạy lại.")
+    if cancel_requested():
         raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.")
 
 
+def queue_worker_active():
+    worker = queue_worker_thread
+    return bool(worker and worker.is_alive())
+
+
+def prefetch_active():
+    thread = prefetch_thread
+    return bool(thread and thread.is_alive())
+
+
 def request_workflow_cancel():
-    if not workflow_lock.locked():
+    # current_job_id is read without queue_state_lock: this runs from HTTP threads
+    # while the worker may hold that lock, and the read of a str is atomic.
+    job_starting = bool(current_job_id) and queue_worker_active()
+    if not workflow_lock.locked() and not job_starting:
         return False
     cancel_event.set()
     with active_process_lock:
@@ -713,9 +800,15 @@ def request_app_shutdown():
             stop_process(proc, name)
         except Exception:
             pass
+    current = current_thread()
     thread = prefetch_thread
-    if thread and thread.is_alive() and thread is not getattr(workflow_context, "thread", None):
+    if thread and thread.is_alive() and thread is not current:
         thread.join(timeout=5)
+    # The worker checks shutdown_event before claiming another job; wait for it so a
+    # job that starts during shutdown cannot leave VideOCR or Douzy running.
+    worker = queue_worker_thread
+    if worker and worker.is_alive() and worker is not current:
+        worker.join(timeout=15)
 
 
 def protect_config_secret(secret):
@@ -790,21 +883,121 @@ def unprotect_config_secret(protected):
     return raw.decode("utf-8")
 
 
+def url_origin(url):
+    parsed = urlparse(str(url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def translation_api_key_slot(provider, base_url):
+    return f"{provider}|{url_origin(base_url)}"
+
+
+def configured_translation_api_slot(config):
+    """Key slot for the provider and base URL origin currently in the settings."""
+    provider = validate_translation_provider(config.get("translation_provider"))
+    if provider == "notebook":
+        return ""
+    base_url = validate_translation_api_base_url(config.get("translation_api_base_url", ""), provider)
+    return translation_api_key_slot(provider, base_url)
+
+
+def legacy_translation_api_slot(config):
+    """Slot for a key saved before v1.5.4, when one key served every provider."""
+    try:
+        if validate_translation_provider(config.get("translation_provider")) != "notebook":
+            return configured_translation_api_slot(config)
+    except ValueError:
+        return ""
+    base_url = str(config.get("translation_api_base_url") or "").strip()
+    origin = url_origin(base_url)
+    if not origin:
+        return ""
+    for provider, preset in TRANSLATION_PROVIDER_PRESETS.items():
+        if preset["base_url"] and url_origin(preset["base_url"]) == origin:
+            return translation_api_key_slot(provider, base_url)
+    return translation_api_key_slot("custom", base_url)
+
+
 def get_translation_api_key(config):
-    protected = config.get("translation_api_key_protected", "")
-    if protected:
-        return validate_translation_api_key(unprotect_config_secret(protected), allow_empty=True)
-    # One-time compatibility for development configs created before DPAPI storage.
-    return validate_translation_api_key(config.get("translation_api_key", ""), allow_empty=True)
+    """Return the key saved for the configured provider and base URL origin only.
+
+    A key never follows a switch to another provider or host, so it cannot be sent
+    to a gateway it was not created for.
+    """
+    slot = configured_translation_api_slot(config)
+    if not slot:
+        return ""
+    keys = config.get("translation_api_keys_protected")
+    if isinstance(keys, dict) and keys.get(slot):
+        return validate_translation_api_key(unprotect_config_secret(keys[slot]), allow_empty=True)
+    if (config.get("translation_api_key_protected") or config.get("translation_api_key")) and (
+        slot == legacy_translation_api_slot(config)
+    ):
+        protected = config.get("translation_api_key_protected", "")
+        if protected:
+            return validate_translation_api_key(unprotect_config_secret(protected), allow_empty=True)
+        # Development configs created before DPAPI storage kept the key in plain text.
+        return validate_translation_api_key(config.get("translation_api_key", ""), allow_empty=True)
+    return ""
 
 
-def load_app_config():
+def migrate_legacy_translation_api_key(config):
+    """Bind a pre-v1.5.4 single key to the provider it was saved for, then drop it."""
+    legacy_protected = config.get("translation_api_key_protected", "") or ""
+    legacy_plain = config.get("translation_api_key", "") or ""
+    if not legacy_protected and not legacy_plain:
+        return
+    try:
+        slot = legacy_translation_api_slot(config)
+    except ValueError:
+        slot = ""
+    if not slot:
+        # Keep the old key untouched until it can be tied to a provider.
+        return
+    config.pop("translation_api_key_protected", None)
+    config.pop("translation_api_key", None)
+    keys = config.get("translation_api_keys_protected")
+    keys = dict(keys) if isinstance(keys, dict) else {}
+    if slot not in keys:
+        keys[slot] = legacy_protected or protect_config_secret(legacy_plain)
+    config["translation_api_keys_protected"] = keys
+
+
+def read_text_file(path):
+    # utf-8-sig accepts files saved with a UTF-8 BOM by Notepad and other editors.
+    with open(path, "r", encoding="utf-8-sig") as handle:
+        return handle.read()
+
+
+def read_text_file_with_retry(path, attempts=3, delay_seconds=0.25):
+    """Read a state file, retrying short locks held by antivirus, backup or OneDrive."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return read_text_file(path)
+        except FileNotFoundError:
+            raise
+        except OSError:
+            if attempt >= attempts:
+                raise
+            time.sleep(delay_seconds * attempt)
+    raise OSError(f"Không đọc được file: {path}")
+
+
+def load_app_config(strict=False):
+    """Return the saved settings merged over defaults.
+
+    A file that exists but cannot be read right now is never treated as corrupt.
+    With strict=True that case raises OSError, so read-modify-write callers never
+    save defaults over the real settings. Only invalid JSON is quarantined.
+    """
     default_config = {
         "notebook_url": "",
         "translation_provider": "notebook",
         "translation_api_base_url": "",
         "translation_api_model": "",
-        "translation_api_key_protected": "",
+        "translation_api_keys_protected": {},
         "translation_instructions": "",
         "ocr_lang": "ch",
         "ocr_model_mode": "auto",
@@ -814,24 +1007,34 @@ def load_app_config():
         "edge_background": True,
         "desktop_shortcut_initialized": False,
     }
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                saved_config = json.load(f)
-            if not isinstance(saved_config, dict):
-                raise ValueError("Cấu hình phải là một JSON object.")
-            merged_config = {**default_config, **saved_config}
-            # Migrate legacy aliases to the current quality-first DeepSeek model.
-            if (
-                merged_config.get("translation_provider") == "deepseek"
-                and str(merged_config.get("translation_api_model") or "").strip().lower()
-                in {"deepseek-chat", "deepseek-v4-flash"}
-            ):
-                merged_config["translation_api_model"] = "deepseek-v4-pro"
-            return merged_config
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-            quarantine_corrupt_file(CONFIG_PATH)
-    return default_config
+    if not os.path.exists(CONFIG_PATH):
+        return default_config
+    try:
+        text = read_text_file_with_retry(CONFIG_PATH)
+    except FileNotFoundError:
+        return default_config
+    except OSError as error:
+        if strict:
+            raise
+        log_to_app(f"Chưa đọc được file cấu hình, tạm dùng giá trị mặc định: {error}", "error")
+        return default_config
+    try:
+        saved_config = json.loads(text)
+        if not isinstance(saved_config, dict):
+            raise ValueError("Cấu hình phải là một JSON object.")
+    except ValueError:
+        # json.JSONDecodeError and UnicodeDecodeError are both ValueError subclasses.
+        quarantine_corrupt_file(CONFIG_PATH)
+        return default_config
+    merged_config = {**default_config, **saved_config}
+    # Migrate legacy aliases to the current quality-first DeepSeek model.
+    if (
+        merged_config.get("translation_provider") == "deepseek"
+        and str(merged_config.get("translation_api_model") or "").strip().lower()
+        in {"deepseek-chat", "deepseek-v4-flash"}
+    ):
+        merged_config["translation_api_model"] = "deepseek-v4-pro"
+    return merged_config
 
 def save_app_config(config):
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
@@ -962,7 +1165,11 @@ def create_desktop_shortcut():
 def ensure_initial_desktop_shortcut():
     if not is_packaged_app():
         return ""
-    config = load_app_config()
+    try:
+        config = load_app_config(strict=True)
+    except OSError as error:
+        log_to_app(f"Chưa đọc được cấu hình nên tạm bỏ qua shortcut ngoài Desktop: {error}", "error")
+        return ""
     if config.get("desktop_shortcut_initialized"):
         return ""
     try:
@@ -981,6 +1188,20 @@ def parse_update_checksum(text, expected_filename):
         if match and match.group(2) == expected_filename:
             return match.group(1).lower()
     raise ValueError("File checksum của release không hợp lệ.")
+
+
+def find_update_executable_member(archive):
+    members = {
+        item.filename.replace("\\", "/"): item
+        for item in archive.infolist()
+        if not item.is_dir()
+    }
+    member = members.get(UPDATE_ZIP_EXE_MEMBER)
+    if member is None or member.file_size <= 0:
+        raise RuntimeError("ZIP cập nhật không chứa đúng file VietSub Studio.exe.")
+    if member.file_size > UPDATE_DOWNLOAD_MAX_BYTES:
+        raise RuntimeError("File EXE cập nhật vượt quá kích thước cho phép.")
+    return member
 
 
 def download_release_asset(url, destination, max_bytes):
@@ -1046,19 +1267,9 @@ def prepare_update_executable(payload):
             raise RuntimeError("Kích thước file cập nhật không khớp với GitHub.")
 
         extracted_exe = os.path.join(update_dir, "VietSub Studio.exe")
-        expected_member = "VietSub Studio/VietSub Studio.exe"
         try:
             with zipfile.ZipFile(zip_path) as archive:
-                members = {
-                    item.filename.replace("\\", "/"): item
-                    for item in archive.infolist()
-                    if not item.is_dir()
-                }
-                member = members.get(expected_member)
-                if member is None or member.file_size <= 0:
-                    raise RuntimeError("ZIP cập nhật không chứa đúng file VietSub Studio.exe.")
-                if member.file_size > UPDATE_DOWNLOAD_MAX_BYTES:
-                    raise RuntimeError("File EXE cập nhật vượt quá kích thước cho phép.")
+                member = find_update_executable_member(archive)
                 with archive.open(member) as source, open(extracted_exe, "wb") as destination:
                     shutil.copyfileobj(source, destination, length=1024 * 1024)
         except (OSError, zipfile.BadZipFile) as error:
@@ -1093,7 +1304,15 @@ def prepare_update_executable(payload):
 
 
 def launch_update_helper(update_package):
-    helper_env = os.environ.copy()
+    # PyInstaller >= 6.9 treats a process started from the same one-file executable
+    # as a worker that reuses the parent's unpacked files. The updated app must
+    # outlive this process, so it needs a fresh bootloader environment.
+    helper_env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("_PYI_") and key.upper() != "_MEIPASS2"
+    }
+    helper_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     helper_env.update({
         "VIETSUB_UPDATE_PID": str(os.getpid()),
         "VIETSUB_UPDATE_TARGET": update_package["target_path"],
@@ -1215,17 +1434,21 @@ def write_durable_log(message):
                         os.replace(source, f"{LOG_PATH}.{index + 1}")
                 os.replace(LOG_PATH, f"{LOG_PATH}.1")
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            # One entry per line: text from APIs or tools cannot fake extra log entries.
+            safe_message = str(message).replace("\r", "\\r").replace("\n", "\\n")
             with open(LOG_PATH, "a", encoding="utf-8") as handle:
-                handle.write(f"{timestamp} {message}\n")
+                handle.write(f"{timestamp} {safe_message}\n")
     except OSError:
         pass
 
 
-def log_to_app(msg, log_type="system"):
+def log_to_app(msg, log_type="system", *, durable=True):
+    """Show a line in the app console; durable=False keeps it out of the log file."""
     quiet = getattr(workflow_context, "quiet", False)
     prefix = "[PREFETCH] " if quiet else ""
     console_message = f"{prefix}[{log_type.upper()}] {msg}"
-    write_durable_log(console_message)
+    if durable:
+        write_durable_log(console_message)
     if sys.stdout is not None:
         try:
             print(console_message, flush=True)
@@ -1374,14 +1597,49 @@ def edge_debug_owner_uses_profile():
     )
 
 
-def check_edge_status():
+def reset_edge_status_cache():
+    with edge_status_lock:
+        edge_status_cache.clear()
+
+
+def check_edge_status(fresh=False):
+    """Return True when the dedicated Edge profile owns the CDP port.
+
+    The owner check starts PowerShell and WMI (1-2.5 s), so UI polling reuses the
+    result while the same browser session (webSocketDebuggerUrl) keeps answering.
+    Automation passes fresh=True and always re-verifies the owner.
+    """
     try:
         req = urllib.request.Request(edge_debug_url("/json/version"))
         with urllib.request.urlopen(req, timeout=1.5) as response:
             payload = json.load(response)
-        return is_valid_edge_debug_payload(payload) and edge_debug_owner_uses_profile()
     except Exception:
+        reset_edge_status_cache()
         return False
+    if not is_valid_edge_debug_payload(payload):
+        reset_edge_status_cache()
+        return False
+    session_key = str(payload.get("webSocketDebuggerUrl") or "")
+    now = time.monotonic()
+    with edge_status_lock:
+        cached = dict(edge_status_cache)
+    if (
+        not fresh
+        and cached.get("session_key") == session_key
+        and now - float(cached.get("checked_at") or 0.0) < EDGE_OWNER_CACHE_SECONDS
+    ):
+        return bool(cached.get("owner_ok"))
+    try:
+        owner_ok = bool(edge_debug_owner_uses_profile())
+    except Exception:
+        owner_ok = False
+    with edge_status_lock:
+        edge_status_cache.update({
+            "session_key": session_key,
+            "owner_ok": owner_ok,
+            "checked_at": now,
+        })
+    return owner_ok
 
 def edge_executable_candidates():
     candidates = [
@@ -1408,7 +1666,7 @@ def resolve_edge_executable():
 
 def ensure_edge_running(notebook_url, background=None):
     check_cancel_requested()
-    if check_edge_status():
+    if check_edge_status(fresh=True):
         log_to_app("Trình duyệt Edge debug đang mở sẵn.")
         return True
 
@@ -1443,7 +1701,7 @@ def ensure_edge_running(notebook_url, background=None):
         for _ in range(40):
             check_cancel_requested()
             time.sleep(0.25)
-            if check_edge_status():
+            if check_edge_status(fresh=True):
                 log_to_app("Kích hoạt Edge thành công và đã kết nối cổng debug.")
                 return True
         raise RuntimeError(f"Trình duyệt đã bật nhưng cổng debug {debug_port} không phản hồi.")
@@ -1613,7 +1871,7 @@ def start_douzy_sidecar():
         while time.monotonic() < deadline:
             check_cancel_requested()
             try:
-                line = output_queue.get(timeout=min(0.25, deadline - time.monotonic()))
+                line = output_queue.get(timeout=max(0.0, min(0.25, deadline - time.monotonic())))
                 recent_output.append(line.strip())
                 recent_output = recent_output[-20:]
                 match = re.match(r"^DOUYIN_SIDECAR_READY port=(\d+)", line.strip())
@@ -1659,24 +1917,60 @@ def trigger_download(port, token, video_url, scope="single"):
         log_to_app(f"Đã tạo lệnh tải thành công. ID Job: {job_id}")
         return job_id
 
+def is_volatile_douzy_field(key):
+    # Split snake_case and camelCase names, e.g. "updatedAt" -> ["updated", "at"].
+    words = re.findall(r"[a-z]+", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower())
+    return any(word in DOUZY_VOLATILE_FIELD_WORDS for word in words)
+
+
+def douzy_job_signature(job):
+    """Text form of a sidecar job payload without fields that change with the clock."""
+
+    def without_timing(value):
+        if isinstance(value, dict):
+            return {
+                str(key): without_timing(item)
+                for key, item in value.items()
+                if not is_volatile_douzy_field(key)
+            }
+        if isinstance(value, list):
+            return [without_timing(item) for item in value]
+        return value
+
+    return json.dumps(without_timing(job), sort_keys=True, ensure_ascii=False, default=str)
+
+
 def poll_download_job(port, token, job_id):
     log_to_app("Đang chờ quá trình tải video hoàn tất...")
     url = f"http://127.0.0.1:{port}/api/v1/jobs/{job_id}"
     req = urllib.request.Request(url)
     req.add_header("Authorization", f"Bearer {token}")
 
-    start_time = time.monotonic()
+    started_at = time.monotonic()
+    last_change_at = started_at
+    last_signature = None
     consecutive_failures = 0
     last_status = None
     while True:
         check_cancel_requested()
-        if time.monotonic() - start_time > 300:
-            raise TimeoutError("Quá trình tải video bị quá thời gian chờ (5 phút).")
+        now = time.monotonic()
+        if now - started_at > DOUZY_MAX_DOWNLOAD_SECONDS:
+            raise TimeoutError("Tải video vượt quá giới hạn 6 giờ; đã dừng sidecar Douzy.")
+        if now - last_change_at > DOUZY_STALL_TIMEOUT_SECONDS:
+            raise TimeoutError(
+                "Douzy không báo tiến độ mới trong 5 phút; lượt tải có thể đã bị treo. "
+                "Hãy kiểm tra mạng rồi chạy lại."
+            )
 
         try:
             with urllib.request.urlopen(req, timeout=15) as response:
                 job = json.loads(response.read().decode("utf-8"))
                 consecutive_failures = 0
+                # Any change outside timing-only fields counts as progress.
+                signature = douzy_job_signature(job)
+                if signature != last_signature:
+                    last_signature = signature
+                    last_change_at = time.monotonic()
                 status = job.get("status")
                 if status != last_status:
                     log_to_app(f"Trạng thái tải: {status}...")
@@ -2280,20 +2574,49 @@ def write_project_manifest(project, *, video_id, source_url, status, error=""):
             os.remove(temporary_path)
 
 
+def read_videocr_gui_settings():
+    """Parse videocr_gui_config.ini whatever code page VideOCR used to write it.
+
+    VideOCR writes the file in the Windows ANSI code page, so a profile folder
+    such as C:\\Users\\José breaks a strict UTF-8 read. Lines without "=" are
+    ignored instead of raising.
+    """
+    if not os.path.isfile(VIDEOCR_CONFIG):
+        return {}
+    try:
+        with open(VIDEOCR_CONFIG, "rb") as handle:
+            raw = handle.read(1024 * 1024)
+    except OSError:
+        return {}
+    text = ""
+    for encoding in ("utf-8-sig", "mbcs", "latin-1"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    settings = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip():
+            settings[key.strip()] = value.strip()
+    return settings
+
+
+def videocr_ini_flag(settings, key, default="true"):
+    value = str(settings.get(key, default)).strip().lower()
+    return value if value in {"true", "false"} else default
+
+
 def get_videocr_crop_coords():
-    if not os.path.exists(VIDEOCR_CONFIG):
+    raw_crop_boxes = read_videocr_gui_settings().get("--saved_crop_boxes")
+    if not raw_crop_boxes:
         return None
-    crop_boxes = None
-    with open(VIDEOCR_CONFIG, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("--saved_crop_boxes"):
-                parts = line.split("=", 1)
-                if len(parts) == 2:
-                    try:
-                        crop_boxes = ast.literal_eval(parts[1].strip())
-                    except Exception:
-                        pass
-    if crop_boxes and len(crop_boxes) > 0:
+    try:
+        crop_boxes = ast.literal_eval(raw_crop_boxes)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return None
+    if isinstance(crop_boxes, (list, tuple)) and crop_boxes and isinstance(crop_boxes[0], dict):
         coords = crop_boxes[0].get("coords")
         required = ("crop_x", "crop_y", "crop_width", "crop_height")
         try:
@@ -2319,20 +2642,32 @@ def get_saved_crop_coords():
             pass
     return get_videocr_crop_coords()
 
+def resolve_path_executable(name):
+    """Find a tool in absolute PATH directories only.
+
+    shutil.which on Windows searches the current directory before PATH, so a
+    file such as Downloads\\ffprobe.exe would run instead of the real tool.
+    """
+    file_names = [name]
+    if os.name == "nt" and not name.lower().endswith(".exe"):
+        file_names = [name + ".exe"]
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        directory = directory.strip().strip('"')
+        if not directory or not os.path.isabs(directory):
+            continue
+        for file_name in file_names:
+            candidate = os.path.abspath(os.path.join(directory, file_name))
+            if os.path.isfile(candidate) and (os.name == "nt" or os.access(candidate, os.X_OK)):
+                return candidate
+    return ""
+
+
 def resolve_ffprobe_executable():
-    candidate = shutil.which("ffprobe")
-    if not candidate:
-        return ""
-    candidate = os.path.abspath(candidate)
-    return candidate if os.path.isfile(candidate) else ""
+    return resolve_path_executable("ffprobe")
 
 
 def resolve_ffmpeg_executable():
-    candidate = shutil.which("ffmpeg")
-    if not candidate:
-        return ""
-    candidate = os.path.abspath(candidate)
-    return candidate if os.path.isfile(candidate) else ""
+    return resolve_path_executable("ffmpeg")
 
 
 def get_video_resolution(video_path):
@@ -2345,7 +2680,13 @@ def get_video_resolution(video_path):
         video_path
     ]
     try:
-        out = subprocess.check_output(cmd, text=True, timeout=15).strip()
+        out = subprocess.check_output(
+            cmd,
+            text=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+            creationflags=NO_WINDOW_FLAGS,
+        ).strip()
         parts = out.split("x")
         if len(parts) == 2:
             return int(parts[0]), int(parts[1])
@@ -2363,7 +2704,13 @@ def get_video_duration_seconds(video_path):
         "-of", "default=noprint_wrappers=1:nokey=1", video_path,
     ]
     try:
-        duration = float(subprocess.check_output(cmd, text=True, timeout=15).strip())
+        duration = float(subprocess.check_output(
+            cmd,
+            text=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+            creationflags=NO_WINDOW_FLAGS,
+        ).strip())
         return duration if math.isfinite(duration) and duration > 0 else None
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -2467,9 +2814,35 @@ def build_videocr_command(
     return cmd
 
 
-def execute_videocr_command(cmd, output_srt, *, allow_empty=False):
+def videocr_timeout_seconds(span_seconds):
+    """Wall-clock limit for one VideOCR run that scans span_seconds of video.
+
+    CPU-only machines OCR slower than real time, so the limit grows with the span
+    (3x plus 10 minutes of model start-up) and never drops below 30 minutes.
+    """
+    try:
+        span = float(span_seconds)
+    except (TypeError, ValueError):
+        span = 0.0
+    if not math.isfinite(span) or span <= 0:
+        return VIDEOCR_UNKNOWN_SPAN_TIMEOUT_SECONDS
+    return max(VIDEOCR_PROCESS_TIMEOUT_SECONDS, math.ceil(span * 3) + 600)
+
+
+def write_process_failure_tail(name, lines):
+    # Per-line output only goes to the app console; the durable log keeps the
+    # last lines of a failed run so earlier steps are not rotated out of the file.
+    if not lines:
+        return
+    write_durable_log(f"[ERROR] {name}: {len(lines)} dòng output cuối trước khi dừng")
+    for line in lines:
+        write_durable_log(f"[OCR] {line}")
+
+
+def execute_videocr_command(cmd, output_srt, *, allow_empty=False, timeout_seconds=None):
     if os.path.exists(output_srt):
         os.remove(output_srt)
+    timeout_seconds = timeout_seconds or VIDEOCR_PROCESS_TIMEOUT_SECONDS
     process_started_at = time.time()
     proc = subprocess.Popen(
         cmd,
@@ -2478,41 +2851,53 @@ def execute_videocr_command(cmd, output_srt, *, allow_empty=False):
         text=True,
         encoding="utf-8",
         errors="ignore",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+        creationflags=NO_WINDOW_FLAGS,
     )
     register_active_process("VideOCR", proc)
     output_queue = Queue(maxsize=1_000)
     Thread(target=queue_process_output, args=(proc.stdout, output_queue), daemon=True).start()
-    deadline = time.monotonic() + VIDEOCR_PROCESS_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout_seconds
+    recent_output = deque(maxlen=PROCESS_FAILURE_TAIL_LINES)
+
+    def show_line(raw_line):
+        line_str = raw_line.strip()
+        if line_str:
+            recent_output.append(line_str)
+            log_to_app(line_str, "ocr", durable=False)
+
+    completed = False
     try:
         while proc.poll() is None:
             check_cancel_requested()
             if time.monotonic() >= deadline:
                 stop_process(proc, "VideOCR")
-                raise TimeoutError("VideOCR quá thời gian chờ cho một đoạn video (30 phút).")
+                raise TimeoutError(
+                    f"VideOCR quá thời gian chờ ({math.ceil(timeout_seconds / 60)} phút) "
+                    "cho đoạn video này."
+                )
             try:
-                line_str = output_queue.get(timeout=0.5).strip()
-                if line_str:
-                    log_to_app(line_str, "ocr")
+                show_line(output_queue.get(timeout=0.5))
             except Empty:
                 pass
 
         while True:
             try:
-                line_str = output_queue.get_nowait().strip()
-                if line_str:
-                    log_to_app(line_str, "ocr")
+                show_line(output_queue.get_nowait())
             except Empty:
                 break
 
         check_cancel_requested()
         if proc.returncode != 0:
             raise VideoOCRProcessError(proc.returncode)
-    except WorkflowCancelled:
+        completed = True
+    except BaseException:
+        # Includes WorkflowCancelled and KeyboardInterrupt (Ctrl+C in the CLI).
         stop_process(proc, "VideOCR")
         raise
     finally:
         unregister_active_process("VideOCR", proc)
+        if not completed:
+            write_process_failure_tail("VideOCR", list(recent_output))
 
     if not os.path.exists(output_srt):
         raise FileNotFoundError(f"Không tìm thấy file phụ đề sau quét: {output_srt}")
@@ -2593,7 +2978,8 @@ def transcode_videocr_chunk(
             details = " | ".join(recent_output[-3:])
             suffix = f" Chi tiết: {details}" if details else ""
             raise RuntimeError(f"FFmpeg không chuẩn hoá được đoạn video (mã {proc.returncode}).{suffix}")
-    except WorkflowCancelled:
+    except BaseException:
+        # Includes WorkflowCancelled and KeyboardInterrupt (Ctrl+C in the CLI).
         stop_process(proc, "FFmpeg sửa đoạn video")
         raise
     finally:
@@ -2684,19 +3070,13 @@ def run_videocr(
     else:
         log_to_app("Sử dụng cấu hình quét toàn màn hình mặc định.")
 
-    # Read config defaults
-    use_gpu = "true"
-    use_server_model = "true"
-    normalize_to_simplified = "true"
-    if os.path.exists(VIDEOCR_CONFIG):
-        with open(VIDEOCR_CONFIG, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("--use_gpu"):
-                    use_gpu = line.split("=", 1)[1].strip().lower()
-                elif line.startswith("--use_server_model"):
-                    use_server_model = line.split("=", 1)[1].strip().lower()
-                elif line.startswith("--normalize_to_simplified_chinese"):
-                    normalize_to_simplified = line.split("=", 1)[1].strip().lower()
+    # Defaults come from the VideOCR GUI settings when they are readable.
+    videocr_settings = read_videocr_gui_settings()
+    use_gpu = videocr_ini_flag(videocr_settings, "--use_gpu")
+    use_server_model = videocr_ini_flag(videocr_settings, "--use_server_model")
+    normalize_to_simplified = videocr_ini_flag(
+        videocr_settings, "--normalize_to_simplified_chinese"
+    )
 
     app_config = load_app_config()
     try:
@@ -2725,11 +3105,16 @@ def run_videocr(
         )
         entries = []
         normalize_remaining_chunks = False
-        with tempfile.TemporaryDirectory(prefix="VietSub-VideOCR-") as temporary_dir:
+        # ignore_cleanup_errors: a segment still held by a dying process must not
+        # replace the real error (cancel, timeout) with a PermissionError.
+        with tempfile.TemporaryDirectory(
+            prefix="VietSub-VideOCR-", ignore_cleanup_errors=True
+        ) as temporary_dir:
             for chunk_index in range(chunk_count):
                 check_cancel_requested()
                 start_seconds = chunk_index * VIDEOCR_CHUNK_SECONDS
                 end_seconds = min(duration, start_seconds + VIDEOCR_CHUNK_SECONDS)
+                chunk_timeout = videocr_timeout_seconds(end_seconds - start_seconds)
                 chunk_label = (
                     f"{format_videocr_time(start_seconds)} - "
                     f"{format_videocr_time(math.ceil(end_seconds))}"
@@ -2751,7 +3136,9 @@ def run_videocr(
                         time_end=end_seconds,
                     )
                     try:
-                        execute_videocr_command(direct_cmd, direct_srt, allow_empty=True)
+                        execute_videocr_command(
+                            direct_cmd, direct_srt, allow_empty=True, timeout_seconds=chunk_timeout
+                        )
                         chunk_entries = read_videocr_srt_entries(direct_srt)
                     except VideoOCRProcessError as error:
                         normalize_remaining_chunks = True
@@ -2788,7 +3175,12 @@ def run_videocr(
                         frames_to_skip=frames_to_skip,
                     )
                     try:
-                        execute_videocr_command(normalized_cmd, normalized_srt, allow_empty=True)
+                        execute_videocr_command(
+                            normalized_cmd,
+                            normalized_srt,
+                            allow_empty=True,
+                            timeout_seconds=chunk_timeout,
+                        )
                         chunk_entries = read_videocr_srt_entries(
                             normalized_srt,
                             offset_milliseconds=round(start_seconds * 1000),
@@ -2814,7 +3206,8 @@ def run_videocr(
             normalize_to_simplified=normalize_to_simplified,
             frames_to_skip=frames_to_skip,
         )
-        execute_videocr_command(cmd, output_srt)
+        # Without ffprobe the duration is unknown, so the generous 4-hour limit applies.
+        execute_videocr_command(cmd, output_srt, timeout_seconds=videocr_timeout_seconds(duration))
 
     log_to_app(f"Quét phụ đề thành công: {output_srt}")
     return output_srt
@@ -2867,7 +3260,23 @@ SRT_TIMECODE_LINE_PATTERN = re.compile(
 )
 
 
-TRANSLATION_GLOSSARY_PROMPT = """\
+# Default instructions for community builds: neutral rules for any kind of video.
+TRANSLATION_DEFAULT_INSTRUCTIONS = """\
+Bạn là biên dịch viên phụ đề chuyên nghiệp, dịch sang tiếng Việt.
+
+QUY TẮC:
+- Dịch tự nhiên, sát nghĩa và đúng ngữ cảnh của cả đoạn; không dịch word-by-word.
+- Chọn đại từ nhân xưng theo quan hệ và sắc thái nhân vật (tôi/bạn, anh/em, tao/mày,
+  ngài/tôi...) và giữ cách xưng hô nhất quán trong toàn bộ đoạn.
+- Giữ tên riêng, thương hiệu và thuật ngữ chuyên ngành ở cách gọi phổ biến nhất với người
+  Việt; nếu không chắc, giữ nguyên cách viết gốc.
+- Câu ngắn gọn, dễ đọc trên màn hình; mỗi block không quá 2 dòng.
+- Giữ nguyên tuyệt đối số thứ tự và timestamp của từng block.
+- Chỉ trả về đúng một block SRT; không thêm lời giải thích hay ghi chú.
+""".strip()
+
+# Optional preset for Delta Force game videos (the v1.5.3 default glossary).
+TRANSLATION_PRESET_DELTA_FORCE = """\
 Bạn là chuyên gia dịch phụ đề Trung sang Việt, đặc biệt am hiểu ngữ cảnh game,
 phim hành động khoa học viễn tưởng và video cốt truyện.
 
@@ -2901,17 +3310,29 @@ TỪ ĐIỂN THUẬT NGỮ VÀ TÊN RIÊNG:
   (鸟姆斯运河), Phòng Xanh (蓝室), Phòng Đen (黑室).
 - Meta: Vũ Trụ Tốc Lăng (速凌宇宙), Đột Kích (穿越火线), Ngũ Hiệp Đau Trứng
   (蛋疼五侠), Tư Lệnh (司令).
-"""
+""".strip()
+
+
+TRANSLATION_INSTRUCTION_PRESETS = {
+    "default": {
+        "label": "Mặc định (dùng cho mọi loại video)",
+        "instructions": TRANSLATION_DEFAULT_INSTRUCTIONS,
+    },
+    "delta_force": {
+        "label": "Game Delta Force (từ điển tên riêng và xưng hô)",
+        "instructions": TRANSLATION_PRESET_DELTA_FORCE,
+    },
+}
 
 
 def validate_translation_instructions(value):
     if value in (None, ""):
-        return TRANSLATION_GLOSSARY_PROMPT
+        return TRANSLATION_DEFAULT_INSTRUCTIONS
     if not isinstance(value, str):
         raise ValueError("Cách dịch mong muốn không hợp lệ.")
     normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
-        return TRANSLATION_GLOSSARY_PROMPT
+        return TRANSLATION_DEFAULT_INSTRUCTIONS
     if len(normalized) > MAX_TRANSLATION_INSTRUCTIONS_CHARS:
         raise ValueError(
             f"Cách dịch mong muốn không được vượt quá {MAX_TRANSLATION_INSTRUCTIONS_CHARS:,} ký tự."
@@ -2921,19 +3342,81 @@ def validate_translation_instructions(value):
     return normalized
 
 
-def build_translation_prompt(srt_content, translation_instructions=None):
-    instructions = validate_translation_instructions(translation_instructions)
+SOURCE_LANGUAGE_NAMES = {
+    "ch": "tiếng Trung",
+    "en": "tiếng Anh",
+    "ja": "tiếng Nhật",
+    "ko": "tiếng Hàn",
+    "vi": "tiếng Việt",
+}
+
+
+def source_language_name(source_lang):
+    return SOURCE_LANGUAGE_NAMES.get(source_lang, SOURCE_LANGUAGE_NAMES["ch"])
+
+
+def build_translation_task_rules(source_lang="ch"):
+    if source_lang == "vi":
+        return (
+            "ĐẦU VÀO LÀ PHỤ ĐỀ TIẾNG VIỆT NHẬN DẠNG BẰNG OCR. ĐẦU RA BẮT BUỘC LÀ TIẾNG VIỆT.\n"
+            "Chỉ sửa lỗi chính tả, dấu và chữ nhận dạng sai; giữ nguyên ý và cách xưng hô.\n"
+            "Giữ nguyên số thứ tự và timestamp; chỉ sửa phần nội dung phụ đề.\n"
+            "Đặt toàn bộ SRT đã sửa trong đúng một block code srt.\n\n"
+            "Hãy sửa SRT sau đây, không được bỏ sót block nào:\n\n"
+        )
+    if source_lang == "ch":
+        language_rules = (
+            "ĐẦU VÀO LÀ TIẾNG TRUNG. ĐẦU RA BẮT BUỘC LÀ TIẾNG VIỆT.\n"
+            "Mỗi block chỉ được có nội dung tiếng Việt tự nhiên.\n"
+            "Tuyệt đối không chép lại câu tiếng Trung và không xuất song ngữ Trung-Việt.\n"
+        )
+    else:
+        name = source_language_name(source_lang)
+        language_rules = (
+            f"ĐẦU VÀO LÀ {name.upper()}. ĐẦU RA BẮT BUỘC LÀ TIẾNG VIỆT.\n"
+            "Mỗi block chỉ được có nội dung tiếng Việt tự nhiên.\n"
+            f"Tuyệt đối không chép lại câu {name} gốc và không xuất song ngữ.\n"
+        )
     return (
-        instructions
-        + "\n\nĐẦU VÀO LÀ TIẾNG TRUNG. ĐẦU RA BẮT BUỘC LÀ TIẾNG VIỆT.\n"
-        + "Mỗi block chỉ được có nội dung tiếng Việt tự nhiên.\n"
-        + "Tuyệt đối không chép lại câu tiếng Trung và không xuất song ngữ Trung-Việt.\n"
+        language_rules
         + "Giữ nguyên số thứ tự và timestamp; chỉ dịch phần nội dung phụ đề.\n"
         + "Đặt toàn bộ SRT đã dịch trong đúng một block code srt.\n\n"
         + "Hãy dịch SRT sau đây, không được bỏ sót block nào:\n\n"
+    )
+
+
+def build_translation_prompt(srt_content, translation_instructions=None, source_lang="ch"):
+    instructions = validate_translation_instructions(translation_instructions)
+    return (
+        instructions
+        + "\n\n"
+        + build_translation_task_rules(source_lang)
         + "```srt\n"
         + f"{srt_content}\n"
         + "```"
+    )
+
+
+def build_translation_system_prompt(source_lang="ch"):
+    if source_lang == "vi":
+        return (
+            "Bạn là biên tập viên phụ đề tiếng Việt chuyên nghiệp. Đầu vào là phụ đề tiếng Việt "
+            "nhận dạng bằng OCR; hãy sửa lỗi chính tả, dấu và chữ nhận sai mà không đổi ý. "
+            "Tuân thủ quy tắc trong yêu cầu người dùng. Giữ nguyên số thứ tự và timestamp, "
+            "đặt SRT trong đúng một block code srt."
+        )
+    if source_lang == "ch":
+        direction = "Trung sang Việt"
+        echo_rule = "tuyệt đối không chép lại tiếng Trung và không xuất song ngữ"
+    else:
+        name = source_language_name(source_lang)
+        direction = f"{name[len('tiếng '):].capitalize()} sang Việt"
+        echo_rule = f"tuyệt đối không chép lại câu {name} gốc và không xuất song ngữ"
+    name = source_language_name(source_lang)
+    return (
+        f"Bạn là biên dịch viên phụ đề {direction} chuyên nghiệp. Đầu vào là {name}, đầu ra chỉ "
+        f"được là tiếng Việt; {echo_rule}. Tuân thủ từ điển và quy tắc trong yêu cầu người dùng. "
+        "Giữ nguyên số thứ tự và timestamp, đặt SRT trong đúng một block code srt."
     )
 
 
@@ -2995,13 +3478,13 @@ def chat_completions_url(base_url):
 
 def extract_chat_completion_content(payload):
     if not isinstance(payload, dict):
-        raise RuntimeError("API dịch trả về JSON không hợp lệ.")
+        raise TranslationApiError("API dịch trả về JSON không hợp lệ.", retryable=True)
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise RuntimeError("API dịch không trả về lựa chọn nào.")
+        raise TranslationApiError("API dịch không trả về lựa chọn nào.", retryable=True)
     choice = choices[0]
     if not isinstance(choice, dict):
-        raise RuntimeError("API dịch trả về lựa chọn không hợp lệ.")
+        raise TranslationApiError("API dịch trả về lựa chọn không hợp lệ.", retryable=True)
     message = choice.get("message")
     content = message.get("content") if isinstance(message, dict) else choice.get("text")
     if isinstance(content, list):
@@ -3010,16 +3493,93 @@ def extract_chat_completion_content(payload):
             for item in content
             if isinstance(item, dict) and item.get("text")
         )
-    if not isinstance(content, str) or not content.strip():
-        raise RuntimeError("API dịch trả về nội dung trống.")
     if choice.get("finish_reason") == "length":
-        raise RuntimeError("API đã cắt câu trả lời vì chạm giới hạn output token.")
+        raise TranslationApiError("API đã cắt câu trả lời vì chạm giới hạn output token.")
+    if not isinstance(content, str) or not content.strip():
+        raise TranslationApiError("API dịch trả về nội dung trống.", retryable=True)
     return content.strip()
+
+
+class TranslationApiError(RuntimeError):
+    """A translation API failure that carries its retry decision.
+
+    Retry logic reads these attributes instead of searching the message text.
+    """
+
+    def __init__(self, message, *, retryable=False, status=None, stream_unsupported=False, retry_after=None):
+        super().__init__(message)
+        self.retryable = bool(retryable)
+        self.status = status
+        self.stream_unsupported = bool(stream_unsupported)
+        self.retry_after = retry_after
+
+
+class RefuseRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects from a translation API.
+
+    urllib would resend the Authorization header to the redirect target, which can
+    be another host or plain HTTP.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise TranslationApiError(
+            f"API dịch chuyển hướng sang {newurl}; app không gửi API key theo chuyển hướng. "
+            "Hãy nhập đúng Base URL cuối cùng trong Thiết lập.",
+            status=code,
+        )
+
+
+TRANSLATION_API_OPENER = urllib.request.build_opener(RefuseRedirectHandler)
+
+
+def open_translation_api_request(request_object, timeout):
+    return TRANSLATION_API_OPENER.open(request_object, timeout=timeout)
+
+
+def parse_retry_after_seconds(headers):
+    try:
+        value = headers.get("Retry-After") if headers is not None else None
+        seconds = int(float(str(value).strip()))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return max(0, min(seconds, TRANSLATION_API_MAX_RETRY_AFTER_SECONDS))
+
+
+def translation_http_error(error, *, stream_requested):
+    try:
+        raw_error = error.read(128 * 1024) or b""
+    except Exception:
+        raw_error = b""
+    text = raw_error.decode("utf-8", errors="replace").strip()
+    detail = text
+    try:
+        payload = json.loads(text)
+        value = payload.get("error", payload) if isinstance(payload, dict) else payload
+        if isinstance(value, dict):
+            value = value.get("message") or value.get("code") or value
+        detail = str(value)
+    except ValueError:
+        pass
+    code = int(error.code or 0)
+    return TranslationApiError(
+        f"API dịch trả lỗi HTTP {code}: {detail[:500] or error.reason}",
+        retryable=code in {408, 409, 425, 429} or code >= 500,
+        status=code,
+        # Only a 400-class rejection that mentions streaming is a streaming problem;
+        # a wrong model name or bad parameter is reported at once.
+        stream_unsupported=stream_requested and code in {400, 415, 422} and "stream" in detail.lower(),
+        retry_after=parse_retry_after_seconds(getattr(error, "headers", None)),
+    )
 
 
 def read_streaming_chat_completion(response):
     content_parts = []
+    received_bytes = 0
+    finished = False
     for raw_line in iter(response.readline, b""):
+        received_bytes += len(raw_line)
+        if received_bytes > TRANSLATION_API_MAX_RESPONSE_BYTES:
+            raise TranslationApiError("Phản hồi streaming của API dịch vượt quá giới hạn an toàn 16 MiB.")
         if isinstance(raw_line, bytes):
             line = raw_line.decode("utf-8", errors="replace").strip()
         else:
@@ -3028,6 +3588,7 @@ def read_streaming_chat_completion(response):
             continue
         data = line[5:].strip()
         if data == "[DONE]":
+            finished = True
             break
         try:
             payload = json.loads(data)
@@ -3037,13 +3598,14 @@ def read_streaming_chat_completion(response):
             detail = payload["error"]
             if isinstance(detail, dict):
                 detail = detail.get("message") or detail.get("code") or str(detail)
-            raise RuntimeError(f"API dịch trả lỗi streaming: {str(detail)[:500]}")
+            raise TranslationApiError(f"API dịch trả lỗi streaming: {str(detail)[:500]}", retryable=True)
         choices = payload.get("choices") if isinstance(payload, dict) else None
         if not isinstance(choices, list) or not choices:
             continue
         choice = choices[0] if isinstance(choices[0], dict) else {}
-        if choice.get("finish_reason") == "length":
-            raise RuntimeError("API đã cắt câu trả lời vì chạm giới hạn output token.")
+        finish_reason = choice.get("finish_reason")
+        if finish_reason == "length":
+            raise TranslationApiError("API đã cắt câu trả lời vì chạm giới hạn output token.")
         delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
         piece = delta.get("content")
         if piece is None:
@@ -3057,13 +3619,27 @@ def read_streaming_chat_completion(response):
             )
         if isinstance(piece, str):
             content_parts.append(piece)
+        if finish_reason:
+            finished = True
+    if not finished:
+        raise TranslationApiError(
+            "Luồng streaming của API dịch bị ngắt giữa chừng (không có finish_reason hay [DONE]).",
+            retryable=True,
+        )
     content = "".join(content_parts).strip()
     if not content:
-        raise RuntimeError("API dịch streaming không trả về nội dung.")
+        raise TranslationApiError("API dịch streaming không trả về nội dung.", retryable=True)
     return content
 
 
-def call_openai_compatible_api(runtime_config, messages, *, max_tokens=16_000, stream=False):
+def call_openai_compatible_api(
+    runtime_config,
+    messages,
+    *,
+    max_tokens=16_000,
+    stream=False,
+    response_hook=None,
+):
     body = {
         "model": runtime_config["model"],
         "messages": messages,
@@ -3093,10 +3669,12 @@ def call_openai_compatible_api(runtime_config, messages, *, max_tokens=16_000, s
         method="POST",
     )
     try:
-        with urllib.request.urlopen(
+        with open_translation_api_request(
             request_object,
             timeout=TRANSLATION_API_TIMEOUT_SECONDS,
         ) as response:
+            if response_hook:
+                response_hook(response)
             content_type = ""
             headers = getattr(response, "headers", None)
             if headers is not None:
@@ -3105,26 +3683,23 @@ def call_openai_compatible_api(runtime_config, messages, *, max_tokens=16_000, s
                 return read_streaming_chat_completion(response)
             raw = response.read(TRANSLATION_API_MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as error:
-        raw_error = error.read(128 * 1024)
-        try:
-            error_payload = json.loads(raw_error.decode("utf-8", errors="replace"))
-            detail = error_payload.get("error", error_payload)
-            if isinstance(detail, dict):
-                detail = detail.get("message") or detail.get("code") or str(detail)
-            detail = str(detail)
-        except (json.JSONDecodeError, UnicodeError):
-            detail = raw_error.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(
-            f"API dịch trả lỗi HTTP {error.code}: {detail[:500] or error.reason}"
-        ) from error
+        raise translation_http_error(error, stream_requested=stream) from error
     except urllib.error.URLError as error:
-        raise RuntimeError(f"Không kết nối được API dịch: {error.reason}") from error
+        raise TranslationApiError(
+            f"Không kết nối được API dịch: {error.reason}", retryable=True
+        ) from error
+    except (http.client.HTTPException, OSError) as error:
+        # Includes IncompleteRead, reset connections and socket timeouts mid-response.
+        raise TranslationApiError(
+            f"Kết nối tới API dịch bị gián đoạn ({type(error).__name__}: {error}).",
+            retryable=True,
+        ) from error
     if len(raw) > TRANSLATION_API_MAX_RESPONSE_BYTES:
-        raise RuntimeError("Phản hồi API dịch vượt quá giới hạn an toàn 16 MiB.")
+        raise TranslationApiError("Phản hồi API dịch vượt quá giới hạn an toàn 16 MiB.")
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeError) as error:
-        raise RuntimeError("API dịch không trả về JSON UTF-8 hợp lệ.") from error
+        raise TranslationApiError("API dịch không trả về JSON UTF-8 hợp lệ.", retryable=True) from error
     return extract_chat_completion_content(payload)
 
 
@@ -3160,7 +3735,13 @@ def split_srt_for_translation(srt_content, video_duration_seconds=None):
         declared_duration = None
     if declared_duration is None or not math.isfinite(declared_duration) or declared_duration <= 0:
         declared_duration = end_milliseconds / 1000
-    if declared_duration <= TRANSLATION_CHUNK_THRESHOLD_SECONDS:
+    # Size limits apply to every video so a dense SRT never exceeds one request's
+    # output budget; the 30-minute time boundary only applies to long videos.
+    use_time_boundaries = declared_duration > TRANSLATION_CHUNK_THRESHOLD_SECONDS
+    if not use_time_boundaries and (
+        len(blocks) <= TRANSLATION_CHUNK_MAX_BLOCKS
+        and len(format_srt_blocks(blocks)) <= TRANSLATION_CHUNK_MAX_CHARS
+    ):
         return [srt_content], False
 
     chunks = []
@@ -3175,7 +3756,8 @@ def split_srt_for_translation(srt_content, video_duration_seconds=None):
         start_milliseconds = srt_timestamp_milliseconds(
             SRT_TIMECODE_PATTERN.fullmatch(timecode).group(1)
         )
-        block_chars = len(format_srt_blocks([block]))
+        # Count the blank-line separator too, so a joined chunk stays within the limit.
+        block_chars = len(format_srt_blocks([block])) + 1
         reached_time_boundary = (
             current
             and next_time_boundary is not None
@@ -3194,7 +3776,8 @@ def split_srt_for_translation(srt_content, video_duration_seconds=None):
 
         if chunk_start_milliseconds is None:
             chunk_start_milliseconds = start_milliseconds
-            next_time_boundary = chunk_start_milliseconds + target_chunk_milliseconds
+            if use_time_boundaries:
+                next_time_boundary = chunk_start_milliseconds + target_chunk_milliseconds
         current.append(block)
         current_chars += block_chars
 
@@ -3257,7 +3840,7 @@ def validate_translation_language(source_srt, translated_srt):
     if unchanged or translated_ratio >= 0.35 or bilingual:
         raise ValueError(
             "Model vẫn trả về tiếng Trung hoặc song ngữ Trung-Việt; "
-            "hãy dùng model deepseek-v4-pro và dịch lại."
+            "hãy chạy lại bước dịch hoặc chọn model dịch mạnh hơn."
         )
     return translated_srt
 
@@ -3310,22 +3893,49 @@ def validate_srt_structure(srt_content, label="SRT"):
     return blocks
 
 
+def srt_block_times(blocks):
+    times = []
+    for _, timecode, _ in blocks:
+        match = SRT_TIMECODE_PATTERN.fullmatch(timecode)
+        times.append(
+            (srt_timestamp_milliseconds(match.group(1)), srt_timestamp_milliseconds(match.group(2)))
+            if match else None
+        )
+    return times
+
+
 def normalize_translated_srt(source_srt, translated_srt):
-    """Restore source timing when Gemini preserves subtitle blocks but rewrites timecodes."""
+    """Rebuild a translation on the source indexes and timecodes, block by block.
+
+    Models sometimes renumber a chunk from 1 or rewrite timecodes. When the block
+    count matches and either the indexes or the times still line up, the source
+    values are restored. Glued blocks (a missing blank line) and missing blocks
+    are rejected, so a bad chunk is never cached as a resumable part.
+    """
     source_blocks = parse_srt_blocks(source_srt)
     translated_blocks = parse_srt_blocks(translated_srt)
-    if source_blocks and len(source_blocks) == len(translated_blocks):
-        source_indexes = [block[0] for block in source_blocks]
-        translated_indexes = [block[0] for block in translated_blocks]
-        if source_indexes == translated_indexes:
-            rebuilt = "\n\n".join(
-                f"{source_index}\n{source_timecode}\n{translated_text}"
-                for (source_index, source_timecode, _), (_, _, translated_text) in zip(
-                    source_blocks, translated_blocks
-                )
-            )
-            return validate_translated_srt(source_srt, rebuilt)
-    return validate_translated_srt(source_srt, translated_srt)
+    if not source_blocks:
+        validate_srt_structure(source_srt, "SRT gốc")
+    if not translated_blocks:
+        raise ValueError("Phản hồi dịch không phải SRT đầy đủ; không lưu file.")
+    for _, _, text in translated_blocks:
+        if any(SRT_TIMECODE_LINE_PATTERN.fullmatch(line) for line in text.splitlines()):
+            raise ValueError("Bản dịch có block bị dính nhau (thiếu dòng trống giữa hai block).")
+    if len(translated_blocks) != len(source_blocks):
+        raise ValueError(
+            f"Bản dịch có {len(translated_blocks)}/{len(source_blocks)} block so với SRT gốc."
+        )
+    same_indexes = [block[0] for block in source_blocks] == [block[0] for block in translated_blocks]
+    same_times = srt_block_times(source_blocks) == srt_block_times(translated_blocks)
+    if not same_indexes and not same_times:
+        raise ValueError("Bản dịch lệch cả số thứ tự lẫn mốc thời gian so với SRT gốc.")
+    rebuilt = "\n\n".join(
+        f"{source_index}\n{source_timecode}\n{translated_text}"
+        for (source_index, source_timecode, _), (_, _, translated_text) in zip(
+            source_blocks, translated_blocks
+        )
+    )
+    return validate_translated_srt(source_srt, rebuilt)
 
 
 def validate_project_result(result):
@@ -3426,8 +4036,15 @@ def extract_gemini_translated_srt(response, source_srt):
     code_blocks = response.locator("pre")
     if code_blocks.count() == 0:
         code_blocks = response.locator("code")
-    if code_blocks.count() > 0:
-        translated_srt = "\n".join(code_blocks.all_inner_texts()) + "\n"
+    # Keep only code blocks that contain subtitles (a term list is ignored) and join
+    # them with a blank line so a reply split over two blocks stays valid SRT.
+    subtitle_blocks = [
+        text.strip()
+        for text in (code_blocks.all_inner_texts() if code_blocks.count() > 0 else [])
+        if SRT_TIMECODE_PATTERN.search(text)
+    ]
+    if subtitle_blocks:
+        translated_srt = "\n\n".join(subtitle_blocks) + "\n"
     else:
         translated_srt = response.inner_text()
     translated_srt = re.sub(r'^```[a-zA-Z0-9]*\n', '', translated_srt, flags=re.MULTILINE)
@@ -3444,10 +4061,11 @@ def translate_gemini_chunk(
     chunk_index,
     chunk_count,
     translation_instructions=None,
+    source_lang="ch",
 ):
     previous_response = find_last_response(gemini_page, response_selectors)
     previous_response_text = previous_response.inner_text() if previous_response else ""
-    prompt = build_translation_prompt(source_srt, translation_instructions)
+    prompt = build_translation_prompt(source_srt, translation_instructions, source_lang=source_lang)
     log_to_app(
         f"Nạp đoạn dịch {chunk_index}/{chunk_count} ({len(source_srt):,} ký tự)..."
     )
@@ -3475,8 +4093,9 @@ def translate_gemini_chunk(
     last_length = 0
     stable_count = 0
     while True:
-        if cancel_event.is_set():
+        if cancel_requested():
             stop_gemini_generation(gemini_page)
+            check_cancel_requested()
             raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.")
         if time.monotonic() - start_wait > 300:
             stop_gemini_generation(gemini_page)
@@ -3541,22 +4160,18 @@ def write_text_atomic(path, content):
 
 
 def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
+    source_lang = runtime_config.get("source_lang") or "ch"
     messages = [
         {
             "role": "system",
-            "content": (
-                "Bạn là biên dịch viên phụ đề Trung sang Việt chuyên nghiệp, am hiểu game và phim hành động. "
-                "Đầu vào là tiếng Trung, đầu ra chỉ được là tiếng Việt; tuyệt đối không chép lại tiếng Trung "
-                "và không xuất song ngữ. Tuân thủ từ điển và quy tắc trong yêu cầu người dùng. "
-                "Giữ nguyên số thứ tự và timestamp, đặt SRT trong đúng một block code srt, rồi liệt kê "
-                "ngắn gọn tên riêng, thuật ngữ và đại từ đã dùng ở bên ngoài block."
-            ),
+            "content": build_translation_system_prompt(source_lang),
         },
         {
             "role": "user",
             "content": build_translation_prompt(
                 source_srt,
                 runtime_config.get("translation_instructions"),
+                source_lang=source_lang,
             ),
         },
     ]
@@ -3566,74 +4181,139 @@ def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
             f"Gửi đoạn {chunk_index}/{chunk_count} tới {runtime_config['label']} "
             f"(lần thử {attempt}/{TRANSLATION_API_MAX_ATTEMPTS})..."
         )
+        label = runtime_config["label"]
         try:
+            use_stream = not runtime_config.get("stream_unsupported")
             try:
-                response = call_openai_compatible_api(
-                    runtime_config,
-                    messages,
-                    max_tokens=32_768,
-                    stream=True,
-                )
-            except RuntimeError as error:
-                # Some compatible gateways reject stream=true; retry that request once as JSON.
-                if "HTTP 400" not in str(error):
+                response = request_translation_completion(runtime_config, messages, stream=use_stream)
+            except TranslationApiError as error:
+                if not (use_stream and error.stream_unsupported):
                     raise
-                log_to_app(
-                    f"{runtime_config['label']} không hỗ trợ streaming; chuyển sang JSON đầy đủ.",
-                    "error",
-                )
-                response = call_openai_compatible_api(
-                    runtime_config,
-                    messages,
-                    max_tokens=32_768,
-                    stream=False,
-                )
+                # Remember the rejection so later chunks of this job go straight to JSON.
+                runtime_config["stream_unsupported"] = True
+                log_to_app(f"{label} không hỗ trợ streaming; chuyển sang JSON đầy đủ.", "error")
+                response = request_translation_completion(runtime_config, messages, stream=False)
             translated = extract_api_translated_srt(response, source_srt)
             log_to_app(f"Đã dịch xong đoạn {chunk_index}/{chunk_count}.")
             return translated
-        except (RuntimeError, OSError, ValueError) as error:
-            message = str(error)
-            non_retryable = (
-                "HTTP 400" in message
-                or "HTTP 401" in message
-                or "HTTP 403" in message
-                or "cắt câu trả lời" in message
-                or "SRT" in message
-                or "tiếng Trung" in message
-                or "song ngữ" in message
-            )
-            if non_retryable or attempt >= TRANSLATION_API_MAX_ATTEMPTS:
-                raise RuntimeError(
-                    f"Dịch đoạn {chunk_index}/{chunk_count} qua {runtime_config['label']} thất bại: {message}"
+        except TranslationApiError as error:
+            if not error.retryable or attempt >= TRANSLATION_API_MAX_ATTEMPTS:
+                raise TranslationApiError(
+                    f"Dịch đoạn {chunk_index}/{chunk_count} qua {label} thất bại: {error}",
+                    status=error.status,
                 ) from error
-            delay = 2 ** (attempt - 1)
+            planned_delay = TRANSLATION_API_RETRY_DELAYS[
+                min(attempt - 1, len(TRANSLATION_API_RETRY_DELAYS) - 1)
+            ]
+            delay = max(planned_delay, error.retry_after or 0)
             log_to_app(
-                f"API lỗi ở đoạn {chunk_index}/{chunk_count}; thử lại sau {delay} giây: {message}",
+                f"API lỗi ở đoạn {chunk_index}/{chunk_count}; thử lại sau {delay} giây: {error}",
                 "error",
             )
-            for _ in range(delay):
-                check_cancel_requested()
-                time.sleep(1)
+        except ValueError as error:
+            # The model answered, but the SRT failed validation (missing blocks, changed
+            # timestamps, Chinese or bilingual echo); the same request rarely does better.
+            raise RuntimeError(
+                f"Dịch đoạn {chunk_index}/{chunk_count} qua {label} thất bại: {error}"
+            ) from error
+        for _ in range(int(delay)):
+            check_cancel_requested()
+            time.sleep(1)
     raise RuntimeError("Không thể dịch đoạn phụ đề qua API.")
+
+
+def close_quietly(resource):
+    try:
+        if resource is not None:
+            resource.close()
+    except Exception:
+        pass
+
+
+def run_cancellable(func, *, deadline_seconds, timeout_message):
+    """Run a blocking network call in a helper thread; stop waiting on cancel or deadline.
+
+    func receives a callback that records the open response. Closing that response
+    unblocks a read stuck on a slow or silent server, so Cancel takes effect within
+    about half a second instead of when the server finally finishes.
+    """
+    state = {"response": None, "aborted": False}
+    result = {}
+    done = Event()
+
+    def remember_response(response):
+        state["response"] = response
+        if state["aborted"]:
+            close_quietly(response)
+
+    def target():
+        try:
+            result["value"] = func(remember_response)
+        except BaseException as error:
+            result["error"] = error
+        finally:
+            done.set()
+
+    Thread(target=target, daemon=True).start()
+    deadline = time.monotonic() + deadline_seconds
+    while not done.wait(0.5):
+        cancelled = cancel_requested()
+        if cancelled or time.monotonic() >= deadline:
+            state["aborted"] = True
+            close_quietly(state["response"])
+            if cancelled:
+                check_cancel_requested()
+                raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.")
+            raise TranslationApiError(timeout_message, retryable=True)
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+def request_translation_completion(runtime_config, messages, *, stream):
+    deadline_seconds = TRANSLATION_API_REQUEST_DEADLINE_SECONDS
+    return run_cancellable(
+        lambda remember_response: call_openai_compatible_api(
+            runtime_config,
+            messages,
+            max_tokens=32_768,
+            stream=stream,
+            response_hook=remember_response,
+        ),
+        deadline_seconds=deadline_seconds,
+        timeout_message=(
+            f"API dịch không trả lời xong trong hạn chót {math.ceil(deadline_seconds / 60)} phút."
+        ),
+    )
 
 
 def translation_cache_fingerprint(runtime_config):
     """Separate resumable chunks whenever the translation configuration changes."""
+    source_lang = runtime_config.get("source_lang") or "ch"
+    instructions = validate_translation_instructions(runtime_config.get("translation_instructions"))
+    # Hash the exact prompt templates so any wording change starts fresh parts.
+    prompt_template = (
+        build_translation_system_prompt(source_lang)
+        + build_translation_prompt("{SRT}", instructions, source_lang=source_lang)
+    )
     identity = {
         "provider": str(runtime_config.get("provider") or ""),
         "base_url": str(runtime_config.get("base_url") or ""),
         "model": str(runtime_config.get("model") or ""),
         "prompt_version": TRANSLATION_PROMPT_VERSION,
-        "translation_instructions": validate_translation_instructions(
-            runtime_config.get("translation_instructions")
-        ),
+        "source_lang": source_lang,
+        "prompt_template": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest(),
+        "translation_instructions": instructions,
     }
     encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
-def translate_srt_via_api(srt_path, runtime_config, output_srt=None):
+def translate_srt_via_api(srt_path, runtime_config, output_srt=None, source_lang="ch"):
     check_cancel_requested()
+    # A per-job copy: it carries the source language and remembers whether the
+    # gateway rejected streaming, without changing the caller's settings dict.
+    runtime_config = {**runtime_config, "source_lang": source_lang or "ch"}
     with open(srt_path, "r", encoding="utf-8-sig") as source_file:
         srt_content = source_file.read().strip()
     if not srt_content:
@@ -3641,17 +4321,17 @@ def translate_srt_via_api(srt_path, runtime_config, output_srt=None):
 
     video_path = infer_translation_video_path(srt_path)
     video_duration = get_video_duration_seconds(video_path) if os.path.isfile(video_path) else None
-    translation_chunks, is_long_video = split_srt_for_translation(
+    translation_chunks, is_chunked = split_srt_for_translation(
         srt_content,
         video_duration_seconds=video_duration,
     )
-    if is_long_video:
+    if is_chunked:
         log_to_app(
-            f"Video dài hơn 45 phút; chia thành {len(translation_chunks)} đoạn để dịch qua "
+            f"SRT dài hoặc dày; chia thành {len(translation_chunks)} đoạn để dịch qua "
             f"{runtime_config['label']}."
         )
     else:
-        log_to_app(f"Video không quá 45 phút; gửi SRT một lần qua {runtime_config['label']}.")
+        log_to_app(f"SRT nằm trong giới hạn một request; gửi một lần qua {runtime_config['label']}.")
 
     output_translated_srt = translation_output_path(srt_path, output_srt)
     parts_dir = output_translated_srt + ".parts"
@@ -3706,6 +4386,7 @@ def translate_srt_via_gemini_edge(
     notebook_url,
     output_srt=None,
     translation_instructions=None,
+    source_lang="ch",
 ):
     check_cancel_requested()
     log_to_app("Đang đọc nội dung phụ đề thô...")
@@ -3724,11 +4405,9 @@ def translate_srt_via_gemini_edge(
         video_duration_seconds=video_duration,
     )
     if is_long_video:
-        log_to_app(
-            f"SRT thuộc video dài hơn 45 phút; chia thành {len(translation_chunks)} đoạn để dịch."
-        )
+        log_to_app(f"SRT dài hoặc dày; chia thành {len(translation_chunks)} đoạn để dịch.")
     else:
-        log_to_app("Video không quá 45 phút; dịch toàn bộ SRT trong một lần.")
+        log_to_app("SRT nằm trong giới hạn một lượt; dịch toàn bộ trong một lần.")
 
     notebook_url = validate_notebook_url(notebook_url)
     edge_background = bool(load_app_config().get("edge_background", True))
@@ -3800,6 +4479,7 @@ def translate_srt_via_gemini_edge(
                         chunk_index,
                         len(translation_chunks),
                         translation_instructions,
+                        source_lang=source_lang,
                     )
                 )
             except RuntimeError as error:
@@ -3886,14 +4566,26 @@ def get_video_preview(preview_id):
         return dict(preview) if preview else None
 
 
+def ensure_preview_admission_locked():
+    """Raise when a preview must not start; call while holding operation_admission_lock.
+
+    Between two jobs workflow_lock is free while the worker waits for the
+    prefetch download, so the worker and prefetch threads are checked too.
+    Otherwise a preview could start a second Douzy sidecar and clear a cancel.
+    """
+    if shutdown_event.is_set():
+        raise RuntimeError("Ứng dụng đang đóng; không thể tạo preview mới.")
+    if update_install_lock.locked():
+        raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; không thể tạo preview mới.")
+    if workflow_lock.locked() or queue_worker_active() or prefetch_active():
+        raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
+    if not preview_lock.acquire(blocking=False):
+        raise RuntimeError("Một preview khác đang được chuẩn bị.")
+
+
 def create_video_preview(video_url):
     with operation_admission_lock:
-        if update_install_lock.locked():
-            raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; không thể tạo preview mới.")
-        if workflow_lock.locked():
-            raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
-        if not preview_lock.acquire(blocking=False):
-            raise RuntimeError("Một preview khác đang được chuẩn bị.")
+        ensure_preview_admission_locked()
     cancel_event.clear()
     try:
         config = load_app_config()
@@ -3938,12 +4630,7 @@ def validate_local_mp4_file(path):
 
 def create_local_video_preview(upload):
     with operation_admission_lock:
-        if update_install_lock.locked():
-            raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; không thể tạo preview mới.")
-        if workflow_lock.locked():
-            raise RuntimeError("Hãy chờ hàng đợi hiện tại chạy xong trước khi tạo preview mới.")
-        if not preview_lock.acquire(blocking=False):
-            raise RuntimeError("Một preview khác đang được chuẩn bị.")
+        ensure_preview_admission_locked()
     try:
         original_name = os.path.basename((upload.filename or "").replace("\\", "/"))
         extension = os.path.splitext(original_name)[1].lower()
@@ -3998,7 +4685,8 @@ def get_job_retry_step(job):
     if not os.path.isfile(str(available_video)):
         available_video = result.get("video_destination") or ""
     if os.path.isfile(str(available_video)):
-        if job.get("step") == "translate" and os.path.isfile(str(result.get("raw_srt") or "")):
+        translation_failed = job.get("step") == "translate" or job.get("resume_step") == "translate"
+        if translation_failed and os.path.isfile(str(result.get("raw_srt") or "")):
             return "translate"
         return "ocr"
     return "download"
@@ -4009,7 +4697,8 @@ def serialize_job(job):
         key: job.get(key)
         for key in (
             "id", "source_url", "video_id", "video_title", "project_name", "ocr_lang",
-            "crop_coords", "video_resolution", "preview_id", "status", "step", "error", "result",
+            "crop_coords", "video_resolution", "preview_id", "status", "step", "error",
+            "error_code", "result",
             "created_at", "started_at", "finished_at", "source_type", "needs_edge_login",
             "resume_step",
         )
@@ -4028,7 +4717,7 @@ def serialize_job(job):
 PERSISTED_JOB_KEYS = (
     "id", "source_url", "video_id", "video_title", "source_video", "project_name",
     "ocr_lang", "crop_coords", "video_resolution", "preview_id", "use_saved_crop",
-    "source_type", "managed_source", "status", "step", "error", "result", "result_ready",
+    "source_type", "managed_source", "status", "step", "error", "error_code", "result", "result_ready",
     "needs_edge_login", "resume_step", "created_at", "started_at", "finished_at",
 )
 
@@ -4054,7 +4743,7 @@ def write_queue_file(path, jobs):
 
 
 def persist_queue_state_locked(jobs=None):
-    if app.config.get("TESTING"):
+    if app.config.get("TESTING") or not queue_persistence_enabled:
         return
     write_queue_file(QUEUE_PATH, workflow_jobs if jobs is None else jobs)
 
@@ -4102,6 +4791,7 @@ def normalize_persisted_job(value):
         status = "error"
         error = "Video local không còn tồn tại. Hãy chọn lại file MP4."
 
+    error_code = value.get("error_code") if value.get("error_code") in JOB_ERROR_CODES else ""
     result_ready = bool(value.get("result_ready", False))
     if status == "success" and (
         "result_ready" not in value or result_ready
@@ -4110,10 +4800,18 @@ def normalize_persisted_job(value):
         result_ready = project_result_ready(result)
         if not result_ready:
             status = "error"
-            error = (
-                "File sub dịch không hợp lệ hoặc vẫn là tiếng Trung. "
-                "Hãy chạy lại bước dịch với model deepseek-v4-pro."
-            )
+            if project_files_present(result) and os.path.isdir(str(result.get("project_dir") or "")):
+                error_code = "translation_invalid"
+                error = (
+                    "File phụ đề dịch không hợp lệ (thiếu block, sai timestamp hoặc chưa được dịch). "
+                    "Hãy chạy lại bước dịch."
+                )
+            else:
+                error_code = "project_missing"
+                error = (
+                    "Không tìm thấy file dự án ở vị trí cũ; thư mục có thể đã bị di chuyển, "
+                    "đổi tên hoặc xoá. Hãy trả thư mục về vị trí cũ rồi mở lại app, hoặc xoá job này."
+                )
 
     return {
         "id": str(value.get("id") or uuid.uuid4().hex),
@@ -4136,10 +4834,13 @@ def normalize_persisted_job(value):
         "error": error,
         "result": dict(result),
         "result_ready": result_ready if status == "success" else False,
+        "error_code": error_code if status in {"error", "cancelled"} else "",
         "needs_edge_login": bool(value.get("needs_edge_login", False)),
         "resume_step": (
             "translate"
-            if status == "error" and "tiếng Trung" in error
+            if status == "error"
+            # Jobs saved before v1.5.4 only carry the legacy Vietnamese message.
+            and (error_code == "translation_invalid" or "tiếng Trung" in error)
             else value.get("resume_step")
             if value.get("resume_step") in {"download", "ocr", "translate"}
             else "download"
@@ -4153,7 +4854,8 @@ def normalize_persisted_job(value):
 def quarantine_corrupt_file(path):
     if not os.path.isfile(path):
         return ""
-    quarantined = f"{path}.corrupt-{int(time.time())}"
+    # The random suffix keeps two quarantines within the same second apart.
+    quarantined = f"{path}.corrupt-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     try:
         os.replace(path, quarantined)
         log_to_app(f"Đã tách file dữ liệu hỏng để không làm mất dữ liệu: {quarantined}", "error")
@@ -4164,12 +4866,16 @@ def quarantine_corrupt_file(path):
 
 
 def load_queue_file(path):
+    """Load saved jobs. Raises OSError when the file exists but cannot be read now."""
     if not os.path.isfile(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        text = read_text_file_with_retry(path)
+    except FileNotFoundError:
+        return []
+    try:
+        payload = json.loads(text)
+    except ValueError:
         quarantine_corrupt_file(path)
         return []
     if not isinstance(payload, dict):
@@ -4237,13 +4943,26 @@ def prune_orphaned_local_videos(referenced_paths=None):
 
 
 def initialize_queue_state():
-    global queue_revision, queue_state_initialized
+    global queue_revision, queue_state_initialized, queue_persistence_enabled
     with queue_state_lock:
         if queue_state_initialized:
             return
-        workflow_jobs[:] = load_queue_file(QUEUE_PATH)
-        queue_revision += 1
         queue_state_initialized = True
+        try:
+            loaded_jobs = load_queue_file(QUEUE_PATH)
+        except OSError as error:
+            # Keep the unreadable file untouched for this session; never replace it
+            # and never prune local videos whose queue references are unknown.
+            log_to_app(
+                f"Chưa đọc được file hàng đợi ({error}). Phiên này sẽ không ghi đè file cũ; "
+                "hãy đóng các chương trình đang giữ file rồi mở lại app.",
+                "error",
+            )
+            queue_revision += 1
+            return
+        workflow_jobs[:] = loaded_jobs
+        queue_revision += 1
+        queue_persistence_enabled = True
         referenced_paths = [job.get("source_video") for job in workflow_jobs]
         try:
             persist_queue_state_locked()
@@ -4309,6 +5028,7 @@ def enqueue_workflow(
         "status": "queued",
         "step": "resolve",
         "error": "",
+        "error_code": "",
         "result": {},
         "result_ready": False,
         "needs_edge_login": False,
@@ -4416,7 +5136,7 @@ def run_prefetch_worker():
 
 def start_prefetch_thread():
     global prefetch_thread
-    if app.config.get("TESTING"):
+    if app.config.get("TESTING") or shutdown_event.is_set():
         return
     if prefetch_thread and prefetch_thread.is_alive():
         return
@@ -4461,6 +5181,8 @@ def missing_runtime_dependencies(source_types):
 def start_workflow_queue():
     global queue_worker_thread
     with operation_admission_lock:
+        if shutdown_event.is_set():
+            raise RuntimeError("Ứng dụng đang đóng; chưa thể chạy hàng đợi.")
         if update_install_lock.locked():
             raise RuntimeError("Ứng dụng đang chuẩn bị cập nhật; chưa thể chạy hàng đợi.")
         if preview_lock.locked():
@@ -4488,7 +5210,9 @@ def run_queue_worker():
     global current_job_id, queue_worker_thread
     while True:
         with queue_state_lock:
-            picked = next((item for item in workflow_jobs if item["status"] == "queued"), None)
+            picked = None
+            if not shutdown_event.is_set():
+                picked = next((item for item in workflow_jobs if item["status"] == "queued"), None)
             if not picked:
                 current_job_id = ""
                 queue_worker_thread = None
@@ -4497,6 +5221,10 @@ def run_queue_worker():
         # Outside the lock: wait for a prefetch of this exact job, or stop an unrelated one.
         coordinate_prefetch_before_job(picked_snapshot)
         with queue_state_lock:
+            if shutdown_event.is_set():
+                current_job_id = ""
+                queue_worker_thread = None
+                return
             candidate_jobs = copy.deepcopy(workflow_jobs)
             job = next(
                 (
@@ -4510,10 +5238,14 @@ def run_queue_worker():
             job.update({
                 "status": "running",
                 "error": "",
+                "error_code": "",
                 "needs_edge_login": False,
                 "result_ready": False,
                 "started_at": int(time.time()),
             })
+            # Clear the previous job's cancel before this job becomes visible as
+            # running, so a cancel sent from here on applies to this job.
+            cancel_event.clear()
             current_job_id = job["id"]
             job_data = copy.deepcopy(job)
             try:
@@ -4524,7 +5256,6 @@ def run_queue_worker():
                 queue_worker_thread = None
                 return
         workflow_lock.acquire()
-        cancel_event.clear()
         reset_progress(job_data["id"])
         stop_worker = False
         try:
@@ -4638,6 +5369,7 @@ def retry_queue_job(job_id):
             "status": "queued",
             "step": resume_step if resume_step != "download" else "resolve",
             "error": "",
+            "error_code": "",
             "result_ready": False,
             "needs_edge_login": False,
             "resume_step": resume_step,
@@ -4766,12 +5498,14 @@ def run_workflow_thread(
                 notebook_url,
                 output_srt=project["translated_srt"],
                 translation_instructions=translation_config["translation_instructions"],
+                source_lang=ocr_lang,
             )
         else:
             translated_srt = translate_srt_via_api(
                 raw_srt,
                 translation_config,
                 output_srt=project["translated_srt"],
+                source_lang=ocr_lang,
             )
         update_progress(result={"translated_srt": translated_srt})
         project["raw_srt"] = raw_srt
@@ -4857,7 +5591,11 @@ def api_request_authorized():
     if app.config.get("TESTING"):
         return True
     supplied_token = request.headers.get(API_TOKEN_HEADER, "")
-    if not secrets.compare_digest(supplied_token, API_TOKEN):
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str values.
+    if not secrets.compare_digest(
+        supplied_token.encode("utf-8", "surrogateescape"),
+        API_TOKEN.encode("ascii"),
+    ):
         return False
     origin = request.headers.get("Origin")
     if origin:
@@ -4897,6 +5635,36 @@ def add_response_security_headers(response):
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
     )
     return response
+
+
+@app.errorhandler(QueuePersistenceError)
+def handle_queue_persistence_error(error):
+    message = str(error)
+    prefix = "Không thể lưu trạng thái hàng đợi"
+    if not message.startswith(prefix):
+        message = f"{prefix}: {message}"
+    return jsonify({"error": message}), 503
+
+
+@app.errorhandler(HTTPException)
+def handle_api_http_error(error):
+    if not request.path.startswith("/api/"):
+        return error
+    if error.code == 413:
+        message = "File tải lên vượt quá giới hạn 8 GiB của ứng dụng."
+    else:
+        message = f"Yêu cầu không hợp lệ (HTTP {error.code}: {error.name})."
+    return jsonify({"error": message}), error.code
+
+
+@app.errorhandler(InternalServerError)
+def handle_api_internal_error(error):
+    if not request.path.startswith("/api/"):
+        return error
+    original = getattr(error, "original_exception", None)
+    detail = f" ({type(original).__name__}: {original})" if original else ""
+    log_to_app(f"Lỗi máy chủ cục bộ ở {request.path}{detail}", "error")
+    return jsonify({"error": f"Lỗi nội bộ của VietSub Studio{detail}."}), 500
 
 
 # Web routes
@@ -5009,7 +5777,7 @@ def create_shortcut():
     try:
         shortcut_path = create_desktop_shortcut()
         with config_write_lock:
-            config = load_app_config()
+            config = load_app_config(strict=True)
             config["desktop_shortcut_initialized"] = True
             save_app_config(config)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -5220,8 +5988,15 @@ def clear_queue_finished():
     return jsonify({"ok": True})
 
 def apply_settings_update(data):
-    config = load_app_config()
     try:
+        config = load_app_config(strict=True)
+    except OSError as error:
+        return jsonify({
+            "error": f"Chưa đọc được file cấu hình hiện tại nên chưa lưu thay đổi: {error}"
+        }), 503
+    try:
+        # Bind a pre-v1.5.4 key to its provider before this request changes the provider.
+        migrate_legacy_translation_api_key(config)
         if "translation_provider" in data:
             config["translation_provider"] = validate_translation_provider(
                 data["translation_provider"]
@@ -5245,16 +6020,23 @@ def apply_settings_update(data):
                     translation_provider,
                 )
         if "translation_api_key" in data:
+            # Keys are stored per provider and base URL origin (after this request's
+            # provider and URL changes), so switching provider never reuses a key.
+            slot = configured_translation_api_slot(config)
+            saved_keys = config.get("translation_api_keys_protected")
+            keys = dict(saved_keys) if isinstance(saved_keys, dict) else {}
             if data["translation_api_key"] is None:
-                config["translation_api_key_protected"] = ""
+                keys.pop(slot, None)
             else:
                 api_key = validate_translation_api_key(
                     data["translation_api_key"],
                     allow_empty=True,
                 )
                 if api_key:
-                    config["translation_api_key_protected"] = protect_config_secret(api_key)
-            config.pop("translation_api_key", None)
+                    if not slot:
+                        raise ValueError("Hãy chọn nhà cung cấp API trước khi lưu API key.")
+                    keys[slot] = protect_config_secret(api_key)
+            config["translation_api_keys_protected"] = keys
         if "translation_instructions" in data:
             config["translation_instructions"] = validate_translation_instructions(
                 data["translation_instructions"]
@@ -5274,9 +6056,15 @@ def apply_settings_update(data):
                 raise ValueError("Tuỳ chọn chạy Edge ẩn không hợp lệ.")
             config["edge_background"] = data["edge_background"]
         save_app_config(config)
-    except (OSError, ValueError) as e:
+    except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    return jsonify({"ok": True})
+    except OSError as e:
+        return jsonify({"error": f"Không thể lưu cấu hình: {e}"}), 503
+    try:
+        api_key_set = bool(get_translation_api_key(config))
+    except (OSError, UnicodeError, ValueError):
+        api_key_set = False
+    return jsonify({"ok": True, "translation_api_key_set": api_key_set})
 
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -5335,7 +6123,7 @@ def handle_settings():
                 config.get("translation_instructions")
             )
         except ValueError:
-            translation_instructions = TRANSLATION_GLOSSARY_PROMPT
+            translation_instructions = TRANSLATION_DEFAULT_INSTRUCTIONS
         crop = get_saved_crop_coords()
         down_dir = get_douzy_download_dir()
         try:
@@ -5359,7 +6147,11 @@ def handle_settings():
             "translation_api_model": translation_api_model,
             "translation_api_key_set": translation_api_key_set,
             "translation_instructions": translation_instructions,
-            "translation_default_instructions": TRANSLATION_GLOSSARY_PROMPT,
+            "translation_default_instructions": TRANSLATION_DEFAULT_INSTRUCTIONS,
+            "translation_instruction_presets": {
+                key: {"label": value["label"], "instructions": value["instructions"]}
+                for key, value in TRANSLATION_INSTRUCTION_PRESETS.items()
+            },
             "translation_provider_presets": {
                 key: {
                     "base_url": value["base_url"],
@@ -5463,8 +6255,10 @@ def get_progress():
 
 @app.route('/api/open-folder', methods=['POST'])
 def open_folder():
-    data = request.get_json(silent=True) or {}
-    path = data.get("path")
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("path"), str):
+        return jsonify({"error": "Yêu cầu mở thư mục cần JSON có trường path dạng chuỗi."}), 400
+    path = data["path"]
     results = [progress_snapshot()["result"]]
     with queue_state_lock:
         results.extend(dict(job.get("result", {})) for job in workflow_jobs)
@@ -5479,9 +6273,9 @@ def open_folder():
     if path and os.path.exists(path):
         try:
             if os.path.isdir(path):
-                subprocess.Popen(["explorer.exe", path])
+                subprocess.Popen([EXPLORER_EXE, path])
             else:
-                subprocess.Popen(["explorer.exe", f"/select,{path}"])
+                subprocess.Popen([EXPLORER_EXE, f"/select,{path}"])
             return jsonify({"ok": True})
         except Exception as e:
             return jsonify({"error": str(e)}), 500

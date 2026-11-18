@@ -3,15 +3,25 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
+# The sandbox must be in place before app.py computes its module-level paths.
+try:
+    from . import _isolation  # python -m unittest tests.test_app
+except ImportError:
+    import _isolation  # python -m unittest discover -s tests
+
 import app
 import automate
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 SOURCE_SRT = """1
@@ -303,6 +313,77 @@ class ValidationTests(unittest.TestCase):
                 )
             )
         popen.assert_not_called()
+
+    def test_edge_status_polling_reuses_the_verified_debug_session(self):
+        payload = {
+            "Browser": "Edg/128.0.0.0",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/session-1",
+        }
+
+        def fake_urlopen(*_args, **_kwargs):
+            return io.BytesIO(json.dumps(payload).encode())
+
+        with (
+            patch.object(app, "edge_status_cache", {}, create=True),
+            patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen),
+            patch.object(app, "edge_debug_owner_uses_profile", return_value=True) as owner_check,
+        ):
+            for _ in range(3):
+                self.assertTrue(app.check_edge_status())
+            self.assertEqual(owner_check.call_count, 1)
+
+            payload["webSocketDebuggerUrl"] = "ws://127.0.0.1:9222/devtools/browser/session-2"
+            self.assertTrue(app.check_edge_status())
+            self.assertEqual(owner_check.call_count, 2)
+
+            self.assertTrue(app.check_edge_status(fresh=True))
+            self.assertEqual(owner_check.call_count, 3)
+
+    def test_automation_always_reverifies_the_edge_owner(self):
+        with (
+            patch.object(app, "check_edge_status", return_value=True) as status,
+            patch.object(app.subprocess, "Popen") as popen,
+        ):
+            self.assertTrue(app.ensure_edge_running("https://gemini.google.com/notebook/test-id"))
+        status.assert_called_once_with(fresh=True)
+        popen.assert_not_called()
+
+    def test_ffmpeg_tools_are_never_taken_from_the_current_directory(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            planted = Path(temporary_dir) / "Downloads"
+            trusted = Path(temporary_dir) / "ffmpeg" / "bin"
+            planted.mkdir()
+            trusted.mkdir(parents=True)
+            for tool in ("ffprobe.exe", "ffmpeg.exe"):
+                (planted / tool).write_bytes(b"MZplanted")
+            (trusted / "ffprobe.exe").write_bytes(b"MZtrusted")
+            original_cwd = os.getcwd()
+            os.chdir(planted)
+            try:
+                with patch.dict(os.environ, {"PATH": str(trusted)}):
+                    self.assertEqual(
+                        os.path.normcase(app.resolve_ffprobe_executable()),
+                        os.path.normcase(str(trusted / "ffprobe.exe")),
+                    )
+                    self.assertEqual(app.resolve_ffmpeg_executable(), "")
+                with patch.dict(os.environ, {"PATH": os.pathsep.join([".", "Downloads", ""])}):
+                    self.assertEqual(app.resolve_ffprobe_executable(), "")
+                    self.assertEqual(app.resolve_ffmpeg_executable(), "")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_ffprobe_runs_without_a_console_window(self):
+        with (
+            patch.object(app, "resolve_ffprobe_executable", return_value=r"C:\Tools\ffprobe.exe"),
+            patch.object(app.subprocess, "check_output", side_effect=["1920x1080\n", "12.5\n"]) as check_output,
+        ):
+            self.assertEqual(app.get_video_resolution("video.mp4"), (1920, 1080))
+            self.assertEqual(app.get_video_duration_seconds("video.mp4"), 12.5)
+
+        self.assertEqual(check_output.call_count, 2)
+        for call in check_output.call_args_list:
+            self.assertIs(call.kwargs.get("stdin"), app.subprocess.DEVNULL)
+            self.assertEqual(call.kwargs.get("creationflags"), getattr(app.subprocess, "CREATE_NO_WINDOW", 0))
 
     def test_browser_fallback_closes_an_unstarted_server(self):
         server = Mock(server_port=4321)
@@ -629,12 +710,19 @@ class ValidationTests(unittest.TestCase):
         runtime["translation_instructions"] = "Dịch ngắn gọn, dứt khoát."
         self.assertNotEqual(first, app.translation_cache_fingerprint(runtime))
 
-    def test_translation_prompt_includes_glossary_and_srt_contract(self):
+    def test_default_prompt_is_neutral_and_the_game_glossary_is_a_preset(self):
         prompt = app.build_translation_prompt(SOURCE_SRT)
-        self.assertIn("Saeed (赛伊德)", prompt)
-        self.assertIn("HA AVK CITY", prompt)
+        self.assertNotIn("Saeed", prompt)
+        self.assertNotIn("game", prompt.lower())
+        self.assertNotIn("liệt kê", prompt.lower())
         self.assertIn("```srt", prompt)
         self.assertIn(SOURCE_SRT, prompt)
+
+        preset = app.TRANSLATION_INSTRUCTION_PRESETS["delta_force"]["instructions"]
+        preset_prompt = app.build_translation_prompt(SOURCE_SRT, preset)
+        self.assertIn("Saeed (赛伊德)", preset_prompt)
+        self.assertIn("HA AVK CITY", preset_prompt)
+        self.assertIn(SOURCE_SRT, preset_prompt)
 
         custom_prompt = app.build_translation_prompt(
             SOURCE_SRT,
@@ -736,7 +824,7 @@ class ValidationTests(unittest.TestCase):
             "model": "deepseek/deepseek-chat",
             "api_key": "sk-test",
         }
-        with patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(app, "open_translation_api_request", side_effect=fake_urlopen):
             result = app.call_openai_compatible_api(
                 runtime_config,
                 [{"role": "user", "content": "Ping"}],
@@ -779,7 +867,7 @@ class ValidationTests(unittest.TestCase):
             "model": "deepseek-v4-pro",
             "api_key": "sk-test",
         }
-        with patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(app, "open_translation_api_request", side_effect=fake_urlopen):
             app.call_openai_compatible_api(
                 runtime_config,
                 [{"role": "user", "content": "Ping"}],
@@ -824,7 +912,7 @@ class ValidationTests(unittest.TestCase):
             "model": "test-model",
             "api_key": "",
         }
-        with patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(app, "open_translation_api_request", side_effect=fake_urlopen):
             result = app.call_openai_compatible_api(
                 runtime_config,
                 [{"role": "user", "content": "Ping"}],
@@ -1041,7 +1129,7 @@ class ValidationTests(unittest.TestCase):
             output_srt = directory / "long.raw.srt"
             executed_commands = []
 
-            def fake_execute(cmd, target, *, allow_empty=False):
+            def fake_execute(cmd, target, *, allow_empty=False, **_kwargs):
                 executed_commands.append(list(cmd))
                 target_path = Path(target)
                 if target_path.name.endswith(".normalized.srt"):
@@ -1107,6 +1195,130 @@ class ValidationTests(unittest.TestCase):
                 ],
                 ["00:00:00", "00:10:00"],
             )
+
+    ANSI_VIDEOCR_INI = (
+        "[Settings]\n"
+        "--output_dir = C:\\Users\\José\\Documents\\VideOCR\n"
+        "--use_gpu = false\n"
+        "--use_server_model = true\n"
+        "--normalize_to_simplified_chinese = false\n"
+        "--saved_crop_boxes = [{'coords': {'crop_x': 0.1, 'crop_y': 0.8, "
+        "'crop_width': 0.8, 'crop_height': 0.15}}]\n"
+        "--frames_to_skip\n"
+    )
+
+    def write_ansi_videocr_ini(self, directory):
+        ini_path = Path(directory) / "videocr_gui_config.ini"
+        ini_path.write_bytes(self.ANSI_VIDEOCR_INI.encode("cp1252"))
+        return ini_path
+
+    def test_videocr_ini_written_in_an_ansi_code_page_is_readable(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            ini_path = self.write_ansi_videocr_ini(temporary_dir)
+            with (
+                patch.object(app, "VIDEOCR_CONFIG", str(ini_path)),
+                patch.object(app, "load_app_config", return_value={}),
+            ):
+                settings = app.read_videocr_gui_settings()
+                crop = app.get_saved_crop_coords()
+
+        self.assertEqual(settings["--use_gpu"], "false")
+        self.assertIn("José", settings["--output_dir"])
+        self.assertNotIn("--frames_to_skip", settings)
+        self.assertEqual(crop["crop_y"], 0.8)
+
+    def test_run_videocr_uses_flags_from_an_ansi_videocr_ini(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            ini_path = self.write_ansi_videocr_ini(directory)
+            cli = directory / "videocr-cli.exe"
+            cli.write_bytes(b"exe")
+            video = directory / "video.mp4"
+            video.write_bytes(b"video")
+            output_srt = directory / "video.raw.srt"
+            captured = {}
+
+            def fake_execute(cmd, target, **kwargs):
+                captured["cmd"] = list(cmd)
+                captured["kwargs"] = kwargs
+                Path(target).write_text(SOURCE_SRT, encoding="utf-8")
+                return target
+
+            with (
+                patch.object(app, "VIDEOCR_CLI", str(cli)),
+                patch.object(app, "VIDEOCR_CONFIG", str(ini_path)),
+                patch.object(app, "load_app_config", return_value={}),
+                patch.object(app, "get_video_resolution", return_value=(1280, 720)),
+                patch.object(app, "get_video_duration_seconds", return_value=44 * 60),
+                patch.object(app, "execute_videocr_command", side_effect=fake_execute),
+            ):
+                app.run_videocr(str(video), ocr_lang="ch", output_srt=str(output_srt))
+
+        cmd = captured["cmd"]
+        self.assertEqual(cmd[cmd.index("--use_gpu") + 1], "false")
+        self.assertEqual(cmd[cmd.index("--normalize_to_simplified_chinese") + 1], "false")
+        self.assertIn("--crop_y", cmd)
+        # A 44-minute single run needs far more than the old fixed 30-minute limit.
+        self.assertGreaterEqual(captured["kwargs"]["timeout_seconds"], 2 * 60 * 60)
+
+    def test_videocr_timeout_scales_with_the_scanned_span(self):
+        self.assertEqual(app.videocr_timeout_seconds(10 * 60), 40 * 60)
+        self.assertEqual(app.videocr_timeout_seconds(44 * 60), 44 * 60 * 3 + 600)
+        self.assertEqual(app.videocr_timeout_seconds(30), app.VIDEOCR_PROCESS_TIMEOUT_SECONDS)
+        self.assertEqual(app.videocr_timeout_seconds(None), app.VIDEOCR_UNKNOWN_SPAN_TIMEOUT_SECONDS)
+
+    def test_settings_page_loads_with_an_ansi_videocr_ini(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            ini_path = self.write_ansi_videocr_ini(temporary_dir)
+            with (
+                patch.object(app, "VIDEOCR_CONFIG", str(ini_path)),
+                patch.object(app, "CONFIG_PATH", str(Path(temporary_dir) / "app_config.json")),
+                patch.dict(app.app.config, {"TESTING": True}),
+            ):
+                response = app.app.test_client().get("/api/settings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["crop_coords"]["crop_x"], 0.1)
+
+    def make_videocr_process(self, output_srt, returncode, lines):
+        process = Mock()
+        process.stdout = io.StringIO("".join(f"{line}\n" for line in lines))
+        process.poll.side_effect = [None] * len(lines) + [returncode] * 20
+        process.returncode = returncode
+        Path(output_srt).write_text(SOURCE_SRT, encoding="utf-8")
+        return process
+
+    def test_videocr_output_goes_to_the_console_and_only_failures_reach_the_log_file(self):
+        lines = [f"OCR frame line {index:02d}" for index in range(30)]
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            log_path = Path(temporary_dir) / "vietsub-studio.log"
+            output_srt = Path(temporary_dir) / "out.srt"
+            with patch.object(app, "LOG_PATH", str(log_path)):
+                app.reset_progress()
+                with patch.object(
+                    app.subprocess,
+                    "Popen",
+                    side_effect=lambda *_a, **_k: self.make_videocr_process(output_srt, 0, lines),
+                ):
+                    app.execute_videocr_command(["videocr"], str(output_srt))
+                success_log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+                console = app.progress_snapshot()["logs"]
+
+                with (
+                    patch.object(
+                        app.subprocess,
+                        "Popen",
+                        side_effect=lambda *_a, **_k: self.make_videocr_process(output_srt, 3, lines),
+                    ),
+                    self.assertRaises(app.VideoOCRProcessError),
+                ):
+                    app.execute_videocr_command(["videocr"], str(output_srt))
+                failure_log = log_path.read_text(encoding="utf-8")
+
+        self.assertIn("[VideOCR] OCR frame line 00", console)
+        self.assertNotIn("OCR frame line", success_log)
+        self.assertIn("OCR frame line 29", failure_log)
+        self.assertNotIn("OCR frame line 00", failure_log)
 
     def test_videocr_normalization_filter_tracks_resolution_changes(self):
         video_filter = app.build_videocr_normalization_filter(
@@ -1480,6 +1692,190 @@ class QueuePersistenceTests(unittest.TestCase):
         self.assertEqual(restored, [])
         self.assertEqual(len(quarantined), 1)
 
+    def test_cli_process_never_rewrites_the_desktop_queue_file(self):
+        # The CLI never loads the desktop queue, so moving a Douzy video from a CLI
+        # run must not replace the saved queue with its empty in-memory list.
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            app.write_queue_file(
+                str(queue_path),
+                [self.make_job(), self.make_job(id="job-2", status="error")],
+            )
+            original_bytes = queue_path.read_bytes()
+            with (
+                patch.object(app, "QUEUE_PATH", str(queue_path)),
+                patch.object(app, "queue_persistence_enabled", False, create=True),
+                patch.object(app, "workflow_jobs", []),
+            ):
+                app.replace_source_video_references(
+                    str(Path(temporary_dir) / "douzy" / "video.mp4"),
+                    str(Path(temporary_dir) / "project" / "video.mp4"),
+                )
+
+            self.assertEqual(queue_path.read_bytes(), original_bytes)
+
+    def test_desktop_queue_keeps_persisting_after_it_was_loaded(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            app.write_queue_file(str(queue_path), [self.make_job()])
+            with (
+                patch.object(app, "QUEUE_PATH", str(queue_path)),
+                patch.object(app, "LOCAL_VIDEO_DIR", str(Path(temporary_dir) / "local_videos")),
+                patch.object(app, "queue_state_initialized", False),
+                patch.object(app, "queue_persistence_enabled", False, create=True),
+                patch.object(app, "workflow_jobs", []),
+            ):
+                app.initialize_queue_state()
+                app.enqueue_workflow("https://www.douyin.com/video/456", "ch")
+                restored = app.load_queue_file(str(queue_path))
+
+        self.assertEqual([job["id"] for job in restored][0], "job-1")
+        self.assertEqual(len(restored), 2)
+
+    def test_unreadable_queue_file_is_kept_and_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            app.write_queue_file(str(queue_path), [self.make_job()])
+            original_bytes = queue_path.read_bytes()
+            locked = PermissionError(13, "The process cannot access the file")
+            with (
+                patch.object(app, "QUEUE_PATH", str(queue_path)),
+                patch.object(app, "LOCAL_VIDEO_DIR", str(Path(temporary_dir) / "local_videos")),
+                patch.object(app, "queue_state_initialized", False),
+                patch.object(app, "queue_persistence_enabled", False),
+                patch.object(app, "workflow_jobs", []),
+                patch.object(app, "read_text_file", side_effect=locked, create=True),
+                patch.object(app.time, "sleep"),
+            ):
+                with self.assertRaises(OSError):
+                    app.load_queue_file(str(queue_path))
+                app.initialize_queue_state()
+                app.enqueue_workflow("https://www.douyin.com/video/789", "ch")
+
+            self.assertEqual(queue_path.read_bytes(), original_bytes)
+            self.assertEqual(list(Path(temporary_dir).glob("*.corrupt-*")), [])
+
+    def test_quarantined_files_never_overwrite_each_other(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            with patch.object(app.time, "time", return_value=1_700_000_000):
+                for content in ("{broken-1", "{broken-2"):
+                    queue_path.write_text(content, encoding="utf-8")
+                    self.assertEqual(app.load_queue_file(str(queue_path)), [])
+            quarantined = sorted(
+                path.read_text(encoding="utf-8")
+                for path in Path(temporary_dir).glob("workflow_queue.json.corrupt-*")
+            )
+
+        self.assertEqual(quarantined, ["{broken-1", "{broken-2"])
+
+    def test_moved_project_reports_missing_files_instead_of_a_translation_hint(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            moved = Path(temporary_dir) / "moved-away"
+            result = {
+                "project_dir": str(moved),
+                "video": str(moved / "Video.mp4"),
+                "raw_srt": str(moved / "Video.raw.srt"),
+                "translated_srt": str(moved / "Video.vi.srt"),
+            }
+            app.write_queue_file(
+                str(queue_path),
+                [self.make_job(status="success", step="done", result=result, result_ready=True)],
+            )
+            restored = app.load_queue_file(str(queue_path))[0]
+
+        self.assertEqual(restored["status"], "error")
+        self.assertEqual(restored["error_code"], "project_missing")
+        self.assertIn("di chuyển", restored["error"])
+        self.assertNotIn("deepseek", restored["error"].lower())
+        self.assertNotIn("dịch lại", restored["error"].lower())
+        self.assertEqual(app.serialize_job(restored)["error_code"], "project_missing")
+
+    def test_invalid_translation_after_restart_resumes_from_translation(self):
+        chinese_srt = (
+            "1\n00:00:01,000 --> 00:00:02,000\n你好世界，这是测试字幕。\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\n我们现在出发。\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            project_dir = Path(temporary_dir) / "project"
+            project_dir.mkdir()
+            (project_dir / "Video.mp4").write_bytes(b"video")
+            (project_dir / "Video.raw.srt").write_text(chinese_srt, encoding="utf-8")
+            (project_dir / "Video.vi.srt").write_text(chinese_srt, encoding="utf-8")
+            result = {
+                "project_dir": str(project_dir),
+                "video": str(project_dir / "Video.mp4"),
+                "raw_srt": str(project_dir / "Video.raw.srt"),
+                "translated_srt": str(project_dir / "Video.vi.srt"),
+            }
+            queue_path = Path(temporary_dir) / "workflow_queue.json"
+            app.write_queue_file(
+                str(queue_path),
+                [self.make_job(status="success", step="done", result=result, result_ready=True)],
+            )
+            restored = app.load_queue_file(str(queue_path))[0]
+            retry_step = app.get_job_retry_step(restored)
+
+        self.assertEqual(restored["status"], "error")
+        self.assertEqual(restored["error_code"], "translation_invalid")
+        self.assertEqual(restored["resume_step"], "translate")
+        self.assertEqual(retry_step, "translate")
+        self.assertNotIn("deepseek", restored["error"].lower())
+
+
+class ConfigFileSafetyTests(unittest.TestCase):
+    NOTEBOOK_URL = "https://gemini.google.com/notebook/real-notebook"
+
+    def test_config_saved_with_a_utf8_bom_is_read_normally(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            config_path.write_text(json.dumps({"notebook_url": self.NOTEBOOK_URL}), encoding="utf-8-sig")
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                config = app.load_app_config()
+
+            self.assertEqual(config["notebook_url"], self.NOTEBOOK_URL)
+            self.assertEqual(list(Path(temporary_dir).glob("*.corrupt-*")), [])
+
+    def test_config_read_retries_a_transient_lock(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            reads = [
+                PermissionError(13, "The process cannot access the file"),
+                json.dumps({"notebook_url": self.NOTEBOOK_URL}),
+            ]
+            with (
+                patch.object(app, "CONFIG_PATH", str(config_path)),
+                patch.object(app, "read_text_file", side_effect=reads, create=True),
+                patch.object(app.time, "sleep"),
+            ):
+                config = app.load_app_config()
+
+        self.assertEqual(config["notebook_url"], self.NOTEBOOK_URL)
+
+    def test_locked_config_is_never_quarantined_or_overwritten_with_defaults(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            config_path.write_text(json.dumps({"notebook_url": self.NOTEBOOK_URL}), encoding="utf-8")
+            original_bytes = config_path.read_bytes()
+            locked = PermissionError(13, "The process cannot access the file")
+            with (
+                patch.object(app, "CONFIG_PATH", str(config_path)),
+                patch.object(app, "read_text_file", side_effect=locked, create=True),
+                patch.object(app.time, "sleep"),
+                patch.dict(app.app.config, {"TESTING": True}),
+            ):
+                self.assertEqual(app.load_app_config()["notebook_url"], "")
+                with self.assertRaises(OSError):
+                    app.load_app_config(strict=True)
+                response = app.app.test_client().post("/api/settings", json={"ocr_lang": "en"})
+
+            self.assertEqual(response.status_code, 503)
+            self.assertIn("error", response.get_json())
+            self.assertEqual(config_path.read_bytes(), original_bytes)
+            self.assertEqual(list(Path(temporary_dir).glob("*.corrupt-*")), [])
+
 
 class SecurityBoundaryTests(unittest.TestCase):
     def setUp(self):
@@ -1514,6 +1910,42 @@ class SecurityBoundaryTests(unittest.TestCase):
         self.assertEqual(cross_origin.status_code, 403)
         simple_post = self.client.post("/api/cancel", headers=self.api_headers())
         self.assertEqual(simple_post.status_code, 415)
+
+    def test_a_non_ascii_token_is_rejected_without_a_server_error(self):
+        response = self.client.get(
+            "/api/progress",
+            headers=self.api_headers(**{app.API_TOKEN_HEADER: "tökén-đặc-biệt".encode("utf-8").decode("latin-1")}),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_durable_log_keeps_one_entry_per_line(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            log_path = Path(temporary_dir) / "vietsub-studio.log"
+            with patch.object(app, "LOG_PATH", str(log_path)):
+                app.log_to_app("API trả lỗi\r\n2026-01-01 00:00:00 [SYSTEM] dòng giả mạo")
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(lines), 1)
+        self.assertIn("\\n", lines[0])
+
+    def test_unexpected_api_errors_are_returned_as_json(self):
+        with patch.object(app, "progress_snapshot", side_effect=RuntimeError("boom")):
+            response = self.client.get("/api/progress", headers=self.api_headers())
+        self.assertEqual(response.status_code, 500)
+        self.assertTrue(response.is_json)
+        self.assertIn("error", response.get_json())
+
+    def test_oversized_upload_is_rejected_with_json(self):
+        with patch.dict(app.app.config, {"MAX_CONTENT_LENGTH": 16}):
+            response = self.client.post(
+                "/api/previews/local",
+                headers=self.api_headers(),
+                data={"video": (io.BytesIO(b"x" * 64), "video.mp4")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 413)
+        self.assertTrue(response.is_json)
+        self.assertIn("8 GiB", response.get_json()["error"])
 
     def test_security_headers_are_present(self):
         response = self.client.get("/")
@@ -1552,6 +1984,50 @@ class CliTests(unittest.TestCase):
         self.assertIsNone(app.instance_lock_handle)
         self.assertEqual(exit_code, 0)
         direct_run.assert_called_once_with("https://www.douyin.com/video/1", "ch", "")
+
+    def run_cli_with_legacy_code_page(self, result):
+        stdout_bytes = io.BytesIO()
+        stderr_bytes = io.BytesIO()
+        # A redirected stdout on Windows uses the ANSI code page with strict errors.
+        legacy_stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252", errors="strict")
+        legacy_stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252", errors="backslashreplace")
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                patch.object(app, "INSTANCE_LOCK_PATH", str(Path(temporary_dir) / "instance.lock")),
+                patch.object(sys, "argv", ["automate.py", "--url", "https://www.douyin.com/video/1"]),
+                patch.object(sys, "stdout", legacy_stdout),
+                patch.object(sys, "stderr", legacy_stderr),
+                patch.object(automate, "run_single_workflow", return_value=result),
+            ):
+                exit_code = automate.main()
+            legacy_stdout.flush()
+            legacy_stderr.flush()
+        return exit_code, stdout_bytes.getvalue().decode("utf-8"), stderr_bytes.getvalue().decode("utf-8")
+
+    def test_cli_prints_vietnamese_results_through_a_legacy_code_page_pipe(self):
+        exit_code, stdout, _stderr = self.run_cli_with_legacy_code_page({
+            "status": "success",
+            "error": "",
+            "result": {
+                "video": r"C:\Dự án\Video.mp4",
+                "raw_srt": r"C:\Dự án\Video.raw.srt",
+                "translated_srt": r"C:\Dự án\Video.vi.srt",
+            },
+        })
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn(r"Video gốc: C:\Dự án\Video.mp4", stdout)
+        self.assertIn(r"Phụ đề dịch: C:\Dự án\Video.vi.srt", stdout)
+
+    def test_cli_errors_stay_readable_through_a_legacy_code_page_pipe(self):
+        exit_code, _stdout, stderr = self.run_cli_with_legacy_code_page({
+            "status": "error",
+            "error": "Không tìm thấy video",
+            "result": {},
+        })
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Lỗi: Không tìm thấy video", stderr)
 
 
 class DesktopShortcutTests(unittest.TestCase):
@@ -1769,6 +2245,81 @@ class ApiTests(unittest.TestCase):
                     self.client.get("/api/settings").get_json()["translation_api_key_set"]
                 )
 
+    def test_api_key_does_not_follow_a_provider_or_base_url_change(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                saved = self.client.post(
+                    "/api/settings",
+                    json={"translation_provider": "deepseek", "translation_api_key": "sk-deepseek"},
+                )
+                self.assertTrue(saved.get_json()["translation_api_key_set"])
+                self.assertEqual(app.get_translation_runtime_config()["api_key"], "sk-deepseek")
+
+                switched = self.client.post(
+                    "/api/settings",
+                    json={
+                        "translation_provider": "custom",
+                        "translation_api_base_url": "https://gateway.example.test/v1",
+                        "translation_api_model": "any-model",
+                    },
+                )
+                self.assertFalse(switched.get_json()["translation_api_key_set"])
+                self.assertEqual(app.get_translation_runtime_config()["api_key"], "")
+                self.assertFalse(self.client.get("/api/settings").get_json()["translation_api_key_set"])
+
+                self.client.post(
+                    "/api/settings",
+                    json={"translation_provider": "deepseek", "translation_api_base_url": ""},
+                )
+                self.assertEqual(app.get_translation_runtime_config()["api_key"], "sk-deepseek")
+
+    def test_a_key_saved_before_v154_stays_with_its_original_provider(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            config_path.write_text(json.dumps({
+                "translation_provider": "deepseek",
+                "translation_api_key_protected": app.protect_config_secret("sk-legacy"),
+            }), encoding="utf-8")
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                self.assertEqual(app.get_translation_runtime_config()["api_key"], "sk-legacy")
+                self.client.post(
+                    "/api/settings",
+                    json={
+                        "translation_provider": "custom",
+                        "translation_api_base_url": "https://gateway.example.test/v1",
+                        "translation_api_model": "any-model",
+                    },
+                )
+                self.assertEqual(app.get_translation_runtime_config()["api_key"], "")
+                self.client.post(
+                    "/api/settings",
+                    json={"translation_provider": "deepseek", "translation_api_base_url": ""},
+                )
+                self.assertEqual(app.get_translation_runtime_config()["api_key"], "sk-legacy")
+
+    def test_open_folder_rejects_bodies_that_are_not_objects(self):
+        for body in (["C:\\Videos"], {"path": ["C:\\Videos"]}, {"path": {"x": 1}}):
+            with self.subTest(body=body):
+                response = self.client.post("/api/open-folder", json=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertTrue(response.is_json)
+
+    def test_saved_glossary_instructions_are_kept_after_the_default_changes(self):
+        preset = app.TRANSLATION_INSTRUCTION_PRESETS["delta_force"]["instructions"]
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config_path = Path(temporary_dir) / "app_config.json"
+            config_path.write_text(
+                json.dumps({"translation_instructions": preset}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with patch.object(app, "CONFIG_PATH", str(config_path)):
+                settings = self.client.get("/api/settings").get_json()
+                runtime = app.get_translation_runtime_config()
+
+        self.assertEqual(settings["translation_instructions"], preset)
+        self.assertEqual(runtime["translation_instructions"], preset)
+
     def test_settings_expose_default_and_store_translation_instructions(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             config_path = Path(temporary_dir) / "app_config.json"
@@ -1776,12 +2327,18 @@ class ApiTests(unittest.TestCase):
                 defaults = self.client.get("/api/settings").get_json()
                 self.assertEqual(
                     defaults["translation_instructions"],
-                    app.TRANSLATION_GLOSSARY_PROMPT,
+                    app.TRANSLATION_DEFAULT_INSTRUCTIONS,
                 )
                 self.assertEqual(
                     defaults["translation_default_instructions"],
-                    app.TRANSLATION_GLOSSARY_PROMPT,
+                    app.TRANSLATION_DEFAULT_INSTRUCTIONS,
                 )
+                presets = defaults["translation_instruction_presets"]
+                self.assertEqual(
+                    presets["default"]["instructions"], app.TRANSLATION_DEFAULT_INSTRUCTIONS
+                )
+                self.assertIn("Saeed (赛伊德)", presets["delta_force"]["instructions"])
+                self.assertTrue(presets["delta_force"]["label"])
 
                 custom = "Dịch tự nhiên, câu ngắn, ưu tiên đúng sắc thái nhân vật."
                 response = self.client.post(
@@ -2295,6 +2852,7 @@ class ApiTests(unittest.TestCase):
                 str(raw_srt),
                 runtime_config,
                 output_srt=str(translated_srt),
+                source_lang="ch",
             )
             translate_notebook.assert_not_called()
             self.assertEqual(app.progress_snapshot()["status"], "success")
@@ -2380,6 +2938,40 @@ class ApiTests(unittest.TestCase):
         self.assert_queue_worker_recovers_from_persistence_error(
             UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogate not allowed")
         )
+
+    def test_result_folder_opens_with_the_windows_explorer_binary(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with app.queue_state_lock:
+                app.workflow_jobs.append({"id": "done", "result": {"project_dir": temporary_dir}})
+            with patch.object(app.subprocess, "Popen") as popen:
+                response = self.client.post("/api/open-folder", json={"path": temporary_dir})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            os.path.normcase(popen.call_args.args[0][0]),
+            os.path.normcase(os.path.join(app.WINDOWS_DIRECTORY, "explorer.exe")),
+        )
+
+    def test_queue_persistence_failures_return_json_and_keep_memory_state(self):
+        queued = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        finished = app.enqueue_workflow("https://www.douyin.com/video/2", "ch")
+        with app.queue_state_lock:
+            next(job for job in app.workflow_jobs if job["id"] == finished["id"])["status"] = "error"
+        before = app.queue_snapshot()
+        requests = (
+            ("post", "/api/queue", {"url": "https://www.douyin.com/video/3", "lang": "ch"}),
+            ("delete", f"/api/queue/{queued['id']}", None),
+            ("post", f"/api/queue/{finished['id']}/retry", {}),
+            ("delete", "/api/queue/finished", None),
+        )
+        with patch.object(app, "persist_queue_state_locked", side_effect=OSError(28, "No space left on device")):
+            for method, url, body in requests:
+                with self.subTest(url=url):
+                    response = getattr(self.client, method)(url, json=body)
+                    self.assertEqual(response.status_code, 503)
+                    self.assertTrue(response.is_json)
+                    self.assertIn("Không thể lưu trạng thái hàng đợi", response.get_json()["error"])
+        self.assertEqual(app.queue_snapshot(), before)
 
     def test_process_passes_the_requested_project_name(self):
         with patch.object(app, "queue_workflow") as queue:
@@ -2495,15 +3087,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.get_json()["status"], "cancelling")
 
     def test_cancel_stops_registered_processes(self):
-        process = Mock()
+        process = Mock(pid=2468)
         process.poll.return_value = None
         self.assertTrue(app.workflow_lock.acquire(blocking=False))
         app.register_active_process("test process", process)
         try:
-            self.assertTrue(app.request_workflow_cancel())
+            with patch.object(app.subprocess, "run") as run:
+                self.assertTrue(app.request_workflow_cancel())
             self.assertTrue(app.cancel_event.is_set())
-            process.terminate.assert_called_once()
-            process.wait.assert_called_once_with(timeout=5)
+            if os.name == "nt":
+                self.assertEqual(run.call_args.args[0][1:3], ["/PID", "2468"])
+            else:
+                process.terminate.assert_called_once()
+            process.wait.assert_called_with(timeout=10)
         finally:
             app.unregister_active_process("test process", process)
             app.cancel_event.clear()
@@ -2579,12 +3175,580 @@ class ApiTests(unittest.TestCase):
                 "raw.srt",
                 "https://gemini.google.com/notebook/test-id",
                 output_srt="project/Test video.vi.srt",
-                translation_instructions=app.TRANSLATION_GLOSSARY_PROMPT,
+                translation_instructions=app.TRANSLATION_DEFAULT_INSTRUCTIONS,
+                source_lang="ch",
             )
             self.assertEqual(app.progress_snapshot()["status"], "success")
         finally:
             if app.workflow_lock.locked():
                 app.workflow_lock.release()
+
+
+TRANSLATED_REPLY = "```srt\n" + TRANSLATED_SRT + "```\n"
+
+
+class FakeApiResponse:
+    """Minimal stand-in for an HTTP response returned by the translation API opener."""
+
+    def __init__(self, *, stream_lines=None, json_body=None, fail_on_read=None):
+        content_type = "text/event-stream" if stream_lines is not None else "application/json"
+        self.headers = {"Content-Type": content_type}
+        self.lines = iter(stream_lines or [])
+        self.json_body = json_body
+        self.fail_on_read = fail_on_read
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def close(self):
+        self.closed = True
+
+    def readline(self, *_args):
+        if self.fail_on_read:
+            raise self.fail_on_read
+        return next(self.lines, b"")
+
+    def read(self, *_args):
+        return json.dumps(self.json_body).encode("utf-8")
+
+
+def sse_line(payload):
+    return f"data: {json.dumps(payload)}\n".encode("utf-8")
+
+
+def complete_stream():
+    return FakeApiResponse(stream_lines=[
+        sse_line({"choices": [{"delta": {"content": TRANSLATED_REPLY}}]}),
+        sse_line({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n",
+    ])
+
+
+def http_error(code, body, headers=None):
+    return app.urllib.error.HTTPError(
+        "https://api.example.test/v1/chat/completions",
+        code,
+        "error",
+        headers or {},
+        io.BytesIO(json.dumps(body).encode("utf-8")),
+    )
+
+
+class TranslationApiReliabilityTests(unittest.TestCase):
+    RUNTIME = {
+        "provider": "custom",
+        "label": "Custom API",
+        "base_url": "https://api.example.test/v1",
+        "model": "test-model",
+        "api_key": "sk-test",
+    }
+
+    def setUp(self):
+        app.cancel_event.clear()
+        self.sent_bodies = []
+        self.sleeps = []
+
+    def tearDown(self):
+        app.cancel_event.clear()
+
+    def run_chunk(self, responses, runtime=None):
+        responses = iter(responses)
+
+        def fake_open(request_object, timeout):
+            self.sent_bodies.append(json.loads(request_object.data.decode("utf-8")))
+            response = next(responses)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+
+        with (
+            patch.object(app.urllib.request, "urlopen", side_effect=AssertionError("network")),
+            patch.object(app, "open_translation_api_request", side_effect=fake_open),
+            patch.object(app.time, "sleep", side_effect=self.sleeps.append),
+            patch.object(app, "log_to_app") as log,
+        ):
+            try:
+                return app.translate_api_chunk(dict(runtime or self.RUNTIME), SOURCE_SRT, 1, 1)
+            finally:
+                self.logged = " ".join(str(call.args[0]) for call in log.call_args_list)
+
+    def test_a_stream_cut_without_done_is_retried(self):
+        truncated = FakeApiResponse(stream_lines=[
+            sse_line({"choices": [{"delta": {"content": TRANSLATED_REPLY[:40]}}]}),
+        ])
+        result = self.run_chunk([truncated, complete_stream()])
+
+        self.assertEqual(len(self.sent_bodies), 2)
+        self.assertIn("Xin chao", result)
+
+    def test_an_incomplete_read_is_retried(self):
+        broken = FakeApiResponse(
+            stream_lines=[],
+            fail_on_read=app.http.client.IncompleteRead(b"partial"),
+        )
+        result = self.run_chunk([broken, complete_stream()])
+
+        self.assertEqual(len(self.sent_bodies), 2)
+        self.assertIn("The gioi", result)
+
+    def test_a_bad_model_400_is_reported_after_one_request(self):
+        error = http_error(400, {"error": {"message": "Model Not Exist"}})
+        with self.assertRaisesRegex(RuntimeError, "Model Not Exist"):
+            self.run_chunk([error])
+
+        self.assertEqual(len(self.sent_bodies), 1)
+        self.assertNotIn("không hỗ trợ streaming", self.logged)
+
+    def test_a_gateway_that_rejects_streaming_falls_back_to_json_once(self):
+        runtime = dict(self.RUNTIME)
+        rejection = http_error(400, {"error": {"message": "stream mode is not supported"}})
+        json_reply = FakeApiResponse(json_body={
+            "choices": [{"message": {"content": TRANSLATED_REPLY}, "finish_reason": "stop"}],
+        })
+        responses = iter([rejection, json_reply, FakeApiResponse(json_body=json_reply.json_body)])
+
+        def fake_open(request_object, timeout):
+            self.sent_bodies.append(json.loads(request_object.data.decode("utf-8")))
+            response = next(responses)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+
+        with (
+            patch.object(app.urllib.request, "urlopen", side_effect=AssertionError("network")),
+            patch.object(app, "open_translation_api_request", side_effect=fake_open),
+            patch.object(app.time, "sleep"),
+            patch.object(app, "log_to_app"),
+        ):
+            app.translate_api_chunk(runtime, SOURCE_SRT, 1, 2)
+            app.translate_api_chunk(runtime, SOURCE_SRT, 2, 2)
+
+        self.assertEqual([body["stream"] for body in self.sent_bodies], [True, False, False])
+
+    def test_rate_limits_wait_for_retry_after(self):
+        limited = http_error(429, {"error": {"message": "rate limited"}}, {"Retry-After": "7"})
+        self.run_chunk([limited, complete_stream()])
+
+        self.assertEqual(len(self.sent_bodies), 2)
+        self.assertEqual(sum(self.sleeps), 7)
+
+    def test_unauthorized_requests_are_not_retried(self):
+        with self.assertRaisesRegex(RuntimeError, "401"):
+            self.run_chunk([http_error(401, {"error": {"message": "bad key"}})])
+        self.assertEqual(len(self.sent_bodies), 1)
+
+    def test_cancel_interrupts_a_slow_api_request(self):
+        release = threading.Event()
+
+        def slow_open(_request_object, timeout):
+            release.wait(10)
+            raise OSError("connection closed")
+
+        threading.Timer(0.3, app.cancel_event.set).start()
+        started = app.time.monotonic()
+        try:
+            with (
+                patch.object(app, "open_translation_api_request", side_effect=slow_open),
+                patch.object(app, "log_to_app"),
+            ):
+                with self.assertRaises(app.WorkflowCancelled):
+                    app.translate_api_chunk(dict(self.RUNTIME), SOURCE_SRT, 1, 1)
+        finally:
+            release.set()
+        self.assertLess(app.time.monotonic() - started, 3)
+
+    def test_each_api_request_has_a_deadline(self):
+        release = threading.Event()
+
+        def slow_open(_request_object, timeout):
+            release.wait(10)
+            raise OSError("connection closed")
+
+        try:
+            with (
+                patch.object(app, "TRANSLATION_API_REQUEST_DEADLINE_SECONDS", 0.2, create=True),
+                patch.object(app, "open_translation_api_request", side_effect=slow_open),
+                patch.object(app.time, "sleep"),
+                patch.object(app, "log_to_app"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "hạn chót"):
+                    app.translate_api_chunk(dict(self.RUNTIME), SOURCE_SRT, 1, 1)
+        finally:
+            release.set()
+
+    def test_redirects_are_refused_so_the_key_stays_with_the_configured_host(self):
+        request_object = app.urllib.request.Request(
+            "https://api.example.test/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-test"},
+        )
+        handler = app.RefuseRedirectHandler()
+        with self.assertRaisesRegex(RuntimeError, "chuyển hướng"):
+            handler.redirect_request(
+                request_object, io.BytesIO(b""), 302, "Found", {}, "http://evil.example/collect"
+            )
+
+
+def numbered_srt(entries):
+    return "\n\n".join(f"{index}\n{timecode}\n{text}" for index, timecode, text in entries) + "\n"
+
+
+class TranslationIntegrityTests(unittest.TestCase):
+    SOURCE_CHUNK = numbered_srt([
+        (401, "00:50:01,000 --> 00:50:02,000", "Hello"),
+        (402, "00:50:03,000 --> 00:50:04,000", "World"),
+    ])
+
+    def test_a_renumbered_chunk_gets_the_source_indexes_back(self):
+        renumbered = numbered_srt([
+            (1, "00:50:01,000 --> 00:50:02,000", "Xin chao"),
+            (2, "00:50:03,000 --> 00:50:04,000", "The gioi"),
+        ])
+        normalized = app.normalize_translated_srt(self.SOURCE_CHUNK, renumbered)
+        self.assertEqual([block[0] for block in app.parse_srt_blocks(normalized)], ["401", "402"])
+
+    def test_glued_blocks_are_rejected_before_they_reach_the_cache(self):
+        glued = (
+            "401\n00:50:01,000 --> 00:50:02,000\nXin chao\n"
+            "402\n00:50:03,000 --> 00:50:04,000\nThe gioi\n"
+        )
+        with self.assertRaisesRegex(ValueError, "dính"):
+            app.normalize_translated_srt(self.SOURCE_CHUNK, glued)
+
+    def test_a_missing_block_is_rejected(self):
+        missing = numbered_srt([(401, "00:50:01,000 --> 00:50:02,000", "Xin chao")])
+        with self.assertRaisesRegex(ValueError, "1/2"):
+            app.normalize_translated_srt(self.SOURCE_CHUNK, missing)
+
+    def test_gemini_reply_ignores_code_blocks_without_subtitles(self):
+        class Locator:
+            def __init__(self, texts):
+                self.texts = texts
+
+            def count(self):
+                return len(self.texts)
+
+            def all_inner_texts(self):
+                return list(self.texts)
+
+        class Reply:
+            def locator(self, selector):
+                return Locator([
+                    "1\n00:00:01,000 --> 00:00:02,000\nXin chao",
+                    "Tên riêng: Saeed",
+                    "2\n00:00:03,000 --> 00:00:04,000\nThe gioi",
+                ] if selector == "pre" else [])
+
+            def inner_text(self):
+                return ""
+
+        translated = app.extract_gemini_translated_srt(Reply(), SOURCE_SRT)
+        self.assertEqual([block[2] for block in app.parse_srt_blocks(translated)], ["Xin chao", "The gioi"])
+
+    def test_a_dense_short_video_is_split_by_size(self):
+        entries = []
+        for index in range(1, 1321):
+            start = index * 2000
+            entries.append((
+                index,
+                f"{app.format_srt_timestamp(start)} --> {app.format_srt_timestamp(start + 1500)}",
+                f"Câu thoại số {index:04d} khá dài để mô phỏng phụ đề dày đặc.",
+            ))
+        dense_srt = numbered_srt(entries)
+        chunks, chunked = app.split_srt_for_translation(dense_srt, video_duration_seconds=44 * 60)
+
+        self.assertTrue(chunked)
+        self.assertGreaterEqual(len(chunks), 3)
+        for chunk in chunks:
+            self.assertLessEqual(len(app.parse_srt_blocks(chunk)), app.TRANSLATION_CHUNK_MAX_BLOCKS)
+            self.assertLessEqual(len(chunk), app.TRANSLATION_CHUNK_MAX_CHARS)
+        self.assertEqual(
+            [block for chunk in chunks for block in app.parse_srt_blocks(chunk)],
+            app.parse_srt_blocks(dense_srt),
+        )
+
+    def test_a_small_srt_is_still_sent_in_one_request(self):
+        chunks, chunked = app.split_srt_for_translation(SOURCE_SRT, video_duration_seconds=20 * 60)
+        self.assertFalse(chunked)
+        self.assertEqual(chunks, [SOURCE_SRT])
+
+    def test_prompts_name_the_real_source_language(self):
+        english = app.build_translation_prompt(SOURCE_SRT, "Dịch tự nhiên.", source_lang="en")
+        self.assertNotIn("TIẾNG TRUNG", english)
+        self.assertIn("TIẾNG ANH", english)
+        chinese = app.build_translation_prompt(SOURCE_SRT, "Dịch tự nhiên.", source_lang="ch")
+        self.assertIn("ĐẦU VÀO LÀ TIẾNG TRUNG", chinese)
+        vietnamese = app.build_translation_prompt(SOURCE_SRT, "Dịch tự nhiên.", source_lang="vi")
+        self.assertNotIn("TIẾNG TRUNG", vietnamese)
+        self.assertIn("sửa lỗi", vietnamese)
+        for lang in ("en", "ja", "ko", "vi"):
+            with self.subTest(lang=lang):
+                self.assertNotIn("Trung", app.build_translation_system_prompt(lang))
+        self.assertIn("Trung sang Việt", app.build_translation_system_prompt("ch"))
+
+    def test_api_requests_carry_the_job_source_language(self):
+        captured = {}
+
+        def fake_request(runtime_config, messages, *, stream):
+            captured["messages"] = messages
+            return "```srt\n" + TRANSLATED_SRT + "```"
+
+        runtime = {"provider": "custom", "label": "Custom API", "source_lang": "en"}
+        with (
+            patch.object(app, "request_translation_completion", side_effect=fake_request),
+            patch.object(app, "log_to_app"),
+        ):
+            app.translate_api_chunk(runtime, SOURCE_SRT, 1, 1)
+
+        system_prompt, user_prompt = (message["content"] for message in captured["messages"])
+        self.assertIn("tiếng Anh", system_prompt)
+        self.assertNotIn("TIẾNG TRUNG", user_prompt)
+
+    def test_cache_fingerprint_changes_with_the_source_language(self):
+        runtime = {"provider": "deepseek", "base_url": "https://api.deepseek.com", "model": "m"}
+        chinese = app.translation_cache_fingerprint({**runtime, "source_lang": "ch"})
+        english = app.translation_cache_fingerprint({**runtime, "source_lang": "en"})
+        self.assertNotEqual(chinese, english)
+
+
+class ProcessLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        app.app.config["TESTING"] = True
+        with app.queue_state_lock:
+            app.workflow_jobs.clear()
+            app.current_job_id = ""
+            app.queue_worker_thread = None
+        app.cancel_event.clear()
+        app.shutdown_event.clear()
+
+    def tearDown(self):
+        app.app.config["TESTING"] = False
+        with app.queue_state_lock:
+            app.workflow_jobs.clear()
+            app.current_job_id = ""
+            app.queue_worker_thread = None
+        app.cancel_event.clear()
+        app.shutdown_event.clear()
+        app.prefetch_cancel_event.clear()
+        if app.workflow_lock.locked():
+            app.workflow_lock.release()
+
+    @unittest.skipUnless(os.name == "nt", "taskkill is Windows-only")
+    def test_stopping_a_process_kills_its_whole_tree(self):
+        process = Mock(pid=4321)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with patch.object(app.subprocess, "run") as run:
+            app.stop_process(process, "VideOCR")
+
+        command = run.call_args.args[0]
+        self.assertEqual(os.path.normcase(command[0]), os.path.normcase(app.TASKKILL_EXE))
+        self.assertEqual(command[1:], ["/PID", "4321", "/T", "/F"])
+
+    def test_a_process_that_ignores_the_stop_does_not_hide_the_original_error(self):
+        process = Mock(pid=4321)
+        process.poll.return_value = None
+        process.wait.side_effect = subprocess.TimeoutExpired("videocr", 10)
+        with patch.object(app.subprocess, "run"):
+            app.stop_process(process, "VideOCR")
+
+    def test_keyboard_interrupt_still_stops_videocr(self):
+        process = Mock(pid=4321)
+        process.poll.return_value = None
+        process.stdout = io.StringIO("")
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                patch.object(app.subprocess, "Popen", return_value=process),
+                patch.object(app, "check_cancel_requested", side_effect=KeyboardInterrupt),
+                patch.object(app, "stop_process") as stop_process,
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    app.execute_videocr_command(["videocr"], str(Path(temporary_dir) / "out.srt"))
+
+        stop_process.assert_called_with(process, "VideOCR")
+
+    def test_closing_the_app_stops_the_worker_before_the_next_job(self):
+        first = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        second = app.enqueue_workflow("https://www.douyin.com/video/2", "ch")
+
+        def close_app_during_first_job(*_args, **_kwargs):
+            app.request_app_shutdown()
+            app.update_progress(status="cancelled", error="App đang đóng.")
+
+        with (
+            patch.object(app, "start_prefetch_thread"),
+            patch.object(app, "run_workflow_thread", side_effect=close_app_during_first_job) as run,
+        ):
+            app.run_queue_worker()
+
+        run.assert_called_once()
+        jobs = {job["id"]: job for job in app.queue_snapshot()}
+        self.assertEqual(jobs[first["id"]]["status"], "cancelled")
+        self.assertEqual(jobs[second["id"]]["status"], "queued")
+        self.assertIsNone(app.queue_worker_thread)
+
+    def test_workflow_steps_refuse_to_start_while_the_app_is_closing(self):
+        app.shutdown_event.set()
+        with self.assertRaises(app.WorkflowCancelled):
+            app.check_cancel_requested()
+
+    def test_previews_wait_for_the_queue_and_prefetch_between_jobs(self):
+        alive = Mock()
+        alive.is_alive.return_value = True
+        with patch.object(app, "queue_worker_thread", alive):
+            with self.assertRaisesRegex(RuntimeError, "hàng đợi"):
+                app.create_video_preview("https://www.douyin.com/video/1")
+        with patch.object(app, "prefetch_thread", alive):
+            with self.assertRaisesRegex(RuntimeError, "hàng đợi"):
+                app.create_video_preview("https://www.douyin.com/video/1")
+        app.shutdown_event.set()
+        with self.assertRaisesRegex(RuntimeError, "đang đóng"):
+            app.create_video_preview("https://www.douyin.com/video/1")
+        self.assertFalse(app.preview_lock.locked())
+
+    def test_a_cancel_sent_while_the_next_job_starts_is_not_erased(self):
+        job = app.enqueue_workflow("https://www.douyin.com/video/1", "ch")
+        seen = {}
+
+        def cancel_while_claiming(_jobs=None):
+            if app.current_job_id == job["id"]:
+                seen["accepted"] = app.request_workflow_cancel()
+
+        def run_job(*_args, **_kwargs):
+            seen["cancel_set"] = app.cancel_event.is_set()
+            app.update_progress(status="cancelled", error="Đã huỷ")
+
+        app.queue_worker_thread = threading.current_thread()
+        with (
+            patch.object(app, "persist_queue_state_locked", side_effect=cancel_while_claiming),
+            patch.object(app, "start_prefetch_thread"),
+            patch.object(app, "run_workflow_thread", side_effect=run_job),
+        ):
+            app.run_queue_worker()
+
+        self.assertTrue(seen.get("accepted"))
+        self.assertTrue(seen.get("cancel_set"))
+
+
+class DouzyPollingTests(unittest.TestCase):
+    def poll_with_fake_clock(self, payloads, seconds_per_poll=60):
+        clock = {"now": 1_000.0}
+
+        def fake_sleep(seconds):
+            clock["now"] += seconds
+
+        def fake_urlopen(_request, timeout):
+            clock["now"] += seconds_per_poll
+            return io.BytesIO(json.dumps(next(payloads)).encode("utf-8"))
+
+        with (
+            patch.object(app.time, "monotonic", side_effect=lambda: clock["now"]),
+            patch.object(app.time, "sleep", side_effect=fake_sleep),
+            patch.object(app.urllib.request, "urlopen", side_effect=fake_urlopen),
+        ):
+            return app.poll_download_job(1234, "token", "job-1")
+
+    def test_a_long_download_that_keeps_progressing_is_not_cancelled(self):
+        payloads = [
+            {"status": "downloading", "progress": index, "updated_at": 5_000 + index}
+            for index in range(12)
+        ] + [{"status": "success", "progress": 100}]
+        # Twelve one-minute polls: the old fixed limit stopped at five minutes.
+        job = self.poll_with_fake_clock(iter(payloads))
+        self.assertEqual(job["status"], "success")
+
+    def test_a_stalled_download_times_out_with_a_specific_reason(self):
+        payloads = (
+            {
+                "status": "downloading",
+                "progress": 40,
+                "updated_at": 5_000 + index,
+                "updatedAt": f"2026-11-17T10:{index:02d}:00",
+                "elapsedSeconds": index * 60,
+            }
+            for index in range(100)
+        )
+        with self.assertRaisesRegex(TimeoutError, "5 phút"):
+            self.poll_with_fake_clock(payloads)
+
+    def test_downloads_have_an_absolute_six_hour_limit(self):
+        payloads = ({"status": "downloading", "progress": index} for index in range(10_000))
+        with self.assertRaisesRegex(TimeoutError, "6 giờ"):
+            self.poll_with_fake_clock(payloads)
+
+    def test_sidecar_startup_never_waits_with_a_negative_timeout(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.stdout = io.StringIO("")
+        readings = iter([100.0, 100.0, 200.0])
+
+        def fake_monotonic():
+            return next(readings, 200.0)
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            sidecar = Path(temporary_dir) / "sidecar.exe"
+            config = Path(temporary_dir) / "config.yml"
+            sidecar.write_bytes(b"exe")
+            config.write_text("path: test", encoding="utf-8")
+            with (
+                patch.object(app, "SIDECAR_BIN", str(sidecar)),
+                patch.object(app, "DOUZY_CONFIG", str(config)),
+                patch.object(app.subprocess, "Popen", return_value=process),
+                patch.object(app.time, "monotonic", side_effect=fake_monotonic),
+                patch.object(app, "stop_process"),
+            ):
+                with self.assertRaises(TimeoutError):
+                    app.start_douzy_sidecar()
+
+
+class TestSandboxTests(unittest.TestCase):
+    def test_machine_specific_paths_point_into_the_test_sandbox(self):
+        for name in (
+            "CONFIG_DIR",
+            "CONFIG_PATH",
+            "QUEUE_PATH",
+            "LOCAL_VIDEO_DIR",
+            "INSTANCE_LOCK_PATH",
+            "LOG_PATH",
+            "VIDEOCR_CONFIG",
+            "DOUZY_CONFIG",
+            "DOUZY_DB",
+            "SIDECAR_BIN",
+            "USER_DATA_DIR_DEBUG",
+        ):
+            with self.subTest(name=name):
+                value = getattr(app, name)
+                self.assertTrue(app.path_is_within(value, _isolation.SANDBOX_DIR), f"{name} = {value}")
+
+    def test_durable_log_is_written_inside_the_sandbox(self):
+        app.log_to_app("sandbox log probe")
+        self.assertTrue(app.path_is_within(app.LOG_PATH, _isolation.SANDBOX_DIR))
+        with open(app.LOG_PATH, "r", encoding="utf-8") as log_file:
+            self.assertIn("sandbox log probe", log_file.read())
+
+    def test_app_imports_without_windows_profile_variables(self):
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() not in {"APPDATA", "LOCALAPPDATA"}
+        }
+        env["VIETSUB_STUDIO_CONFIG_DIR"] = os.path.join(_isolation.SANDBOX_DIR, "no-profile")
+        completed = subprocess.run(
+            [sys.executable, "-c", "import app; print(app.APPDATA); print(app.LOCALAPPDATA)"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        appdata, localappdata = completed.stdout.strip().splitlines()[-2:]
+        home = os.path.expanduser("~")
+        self.assertTrue(app.path_is_within(appdata, home), appdata)
+        self.assertTrue(app.path_is_within(localappdata, home), localappdata)
 
 
 if __name__ == "__main__":
