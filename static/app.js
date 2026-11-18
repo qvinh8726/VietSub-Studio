@@ -7,7 +7,11 @@
         let currentPreview = null;
         let previewRequestId = 0;
         let autoProjectName = '';
-        let healthReadiness = {local: false, douyin: false};
+        let healthReadiness = {local: false, douyin: false, sources: {}};
+        const sourceLabels = {douyin: 'Douyin', kuaishou: 'Kuaishou', xiaohongshu: 'Xiaohongshu', bilibili: 'Bilibili', tiktok: 'TikTok', youtube: 'YouTube', local: 'Video trên máy'};
+        let sourceSessionSites = [];
+        let sourceCookiesSet = {};
+        let downloadWatchTimer = null;
         let crop = { crop_x: 0, crop_y: 0, crop_width: 1, crop_height: 1 };
         let dragState = null;
         let queueJobs = [];
@@ -183,16 +187,62 @@
             byId('preview-status').value = status; byId('add-queue-btn').disabled = true;
         }
 
+        function formatMegabytes(bytes) {
+            return (Number(bytes || 0) / 1048576).toFixed(1).replace('.', ',');
+        }
+
+        // prefix 'preview' is the panel under the composer, 'job' the one in the job progress card.
+        function renderDownloadProgress(download, prefix = 'job') {
+            const box = byId(`${prefix}-download`);
+            if (!download || !download.active) { box.hidden = true; return; }
+            box.hidden = false;
+            const phases = {start: 'Đang chuẩn bị tải', capture: 'Đang đọc trang video', captcha: 'Đang chờ bạn thao tác trên Edge', download: 'Đang tải'};
+            byId(`${prefix}-download-label`).textContent = `${phases[download.phase] || 'Đang tải'} · ${sourceLabels[download.source] || 'video'}`;
+            const parts = [];
+            if (download.percent != null) parts.push(`${download.percent}%`);
+            if (download.downloaded) parts.push(download.total ? `${formatMegabytes(download.downloaded)}/${formatMegabytes(download.total)} MB` : `${formatMegabytes(download.downloaded)} MB`);
+            if (download.speed) parts.push(`${formatMegabytes(download.speed)} MB/s`);
+            byId(`${prefix}-download-stats`).textContent = parts.join(' · ');
+            const known = download.percent != null;
+            const bar = byId(`${prefix}-download-bar`);
+            bar.setAttribute('aria-valuenow', String(known ? download.percent : 0));
+            bar.classList.toggle('indeterminate', !known);
+            byId(`${prefix}-download-fill`).style.width = `${known ? download.percent : 0}%`;
+            const notice = byId(`${prefix}-download-notice`);
+            notice.hidden = !download.notice;
+            notice.textContent = download.notice || '';
+        }
+
+        // While a preview downloads, poll its live progress (percent, speed, captcha notice).
+        function startDownloadWatch() {
+            stopDownloadWatch();
+            const tick = async () => {
+                try {
+                    const data = await fetchJson(`/api/progress?after=${displayedLogCount}`);
+                    if (downloadWatchTimer) renderDownloadProgress(data.download, 'preview');
+                } catch (_) {}
+            };
+            downloadWatchTimer = setInterval(tick, 700);
+            tick();
+        }
+
+        function stopDownloadWatch() {
+            if (downloadWatchTimer) clearInterval(downloadWatchTimer);
+            downloadWatchTimer = null;
+            renderDownloadProgress(null, 'preview');
+        }
+
         async function preparePreview(event) {
             event.preventDefault();
             const url = byId('url-input').value.trim();
-            if (!url) { setUrlError('Hãy dán link hoặc đoạn share Douyin.'); return; }
+            if (!url) { setUrlError('Hãy dán link video hoặc đoạn chia sẻ.'); return; }
             setUrlError();
             invalidatePreview('Đang chuẩn bị…');
             const requestId = previewRequestId;
             const button = byId('prepare-btn');
             button.disabled = true;
             button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang tải preview</span>';
+            startDownloadWatch();
             try {
                 const data = await fetchJson('/api/previews', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url}), timeoutMs: 0 });
                 if (requestId !== previewRequestId) return;
@@ -203,8 +253,34 @@
                 byId('preview-status').value = 'Chuẩn bị thất bại';
                 showToast(error.message, 'error');
             } finally {
+                stopDownloadWatch();
                 button.disabled = false;
                 button.textContent = 'Tải preview';
+            }
+        }
+
+        // In the desktop window the native dialog gives the real path: the video is used in
+        // place (no upload, no %TEMP% copy). The browser fallback still uploads the MP4.
+        async function chooseLocalVideo() {
+            const api = window.pywebview && window.pywebview.api;
+            if (!api || typeof api.choose_local_video !== 'function') { byId('local-video-input').click(); return; }
+            invalidatePreview('Đang mở hộp thoại chọn video…');
+            const requestId = previewRequestId;
+            const button = byId('local-video-btn');
+            button.disabled = true;
+            try {
+                const data = await api.choose_local_video();
+                if (requestId !== previewRequestId) return;
+                if (!data) { byId('preview-status').value = 'Chưa chọn video'; return; }
+                if (data.error) { byId('preview-status').value = 'Không nạp được video'; showToast(data.error, 'error'); return; }
+                applyPreview(data);
+                showToast('Video trên máy đã sẵn sàng; app dùng file tại chỗ, không sao chép.');
+            } catch (error) {
+                if (requestId !== previewRequestId) return;
+                byId('preview-status').value = 'Không nạp được video';
+                showToast(error.message || String(error), 'error');
+            } finally {
+                button.disabled = false;
             }
         }
 
@@ -238,12 +314,12 @@
             const input = byId('local-video-input');
             const file = input.files?.[0];
             if (!file) return;
-            invalidatePreview('Đang copy video local…');
+            invalidatePreview('Đang tải MP4 lên app…');
             const requestId = previewRequestId;
             const button = byId('local-video-btn');
             button.disabled = true;
             button.innerHTML = '<span style="display:inline-flex;gap:8px;align-items:center"><i class="spinner"></i> Đang nạp MP4</span>';
-            byId('preview-status').value = 'Đang copy video local…';
+            byId('preview-status').value = 'Đang tải MP4 lên app…';
             const form = new FormData(); form.append('video', file);
             try {
                 const data = await fetchJson('/api/previews/local', {method:'POST', body:form, timeoutMs: 0});
@@ -256,7 +332,7 @@
                 showToast(error.message, 'error');
             } finally {
                 button.disabled = false;
-                button.textContent = 'Chọn MP4';
+                button.textContent = 'Chọn video';
             }
         }
 
@@ -353,6 +429,12 @@
             byId('char-count').textContent = '0 ký tự'; updateNamePreview();
         }
 
+        function sourceReady(source) {
+            const sources = healthReadiness.sources || {};
+            if (Object.prototype.hasOwnProperty.call(sources, source)) return Boolean(sources[source]);
+            return source === 'local' ? Boolean(healthReadiness.local) : Boolean(healthReadiness.douyin);
+        }
+
         function progressWidth(step, status) {
             if (status === 'success') return 100;
             return [8, 28, 52, 78, 100][stepIndex[step] ?? 0];
@@ -364,7 +446,7 @@
             const queuedCount = queueJobs.filter(job => job.status === 'queued').length;
             const running = queueJobs.some(job => job.status === 'running');
             const queuedSources = new Set(queueJobs.filter(job => job.status === 'queued').map(job => job.source_type || 'douyin'));
-            const queueReady = [...queuedSources].every(source => source === 'local' ? healthReadiness.local : healthReadiness.douyin);
+            const queueReady = [...queuedSources].every(sourceReady);
             byId('start-queue-btn').disabled = !queuedCount || running || !queueReady;
             byId('start-queue-btn').textContent = running ? 'Đang chạy tuần tự…' : !queueReady ? 'Thiếu thành phần bắt buộc' : `Chạy hàng đợi${queuedCount ? ` (${queuedCount})` : ''}`;
             const cancelButton = byId('cancel-btn');
@@ -382,9 +464,10 @@
                 const row = document.createElement('article'); row.className = `queue-item ${job.status}`;
                 const top = document.createElement('div'); top.className = 'queue-item-top';
                 const info = document.createElement('div'); info.style.minWidth = '0';
-                const sourceMeta = job.source_type === 'local' ? 'LOCAL' : `ID ${job.video_id || 'đang chờ giải mã'}`;
+                const sourceLabel = sourceLabels[job.source_type] || 'Douyin';
+                const sourceMeta = job.source_type === 'local' ? 'VIDEO TRÊN MÁY' : `${sourceLabel.toUpperCase()} · ID ${job.video_id || 'đang chờ giải mã'}`;
                 const queueIndex = document.createElement('div'); queueIndex.className = 'queue-index'; queueIndex.textContent = `JOB ${String(index + 1).padStart(2,'0')}`;
-                const queueName = document.createElement('div'); queueName.className = 'queue-name'; queueName.textContent = job.project_name || job.video_title || (job.source_type === 'local' ? 'Video local' : 'Tên tự động từ Douyin');
+                const queueName = document.createElement('div'); queueName.className = 'queue-name'; queueName.textContent = job.project_name || job.video_title || (job.source_type === 'local' ? 'Video trên máy' : `Tên tự động từ ${sourceLabel}`);
                 const queueId = document.createElement('div'); queueId.className = 'queue-id'; queueId.textContent = `${sourceMeta} · ${String(job.ocr_lang || '').toUpperCase()}`;
                 info.append(queueIndex, queueName, queueId);
                 const badge = document.createElement('span'); badge.className = `badge ${job.status}`; badge.textContent = statusLabels[job.status] || job.status;
@@ -506,6 +589,8 @@
                 const data = await fetchJson(`/api/progress?after=${displayedLogCount}`);
                 if (data.job_id && data.job_id !== progressJobId) { hideResult(); progressJobId = data.job_id; displayedLogCount = 0; byId('console-box').replaceChildren(); return pollProgress(); }
                 (data.logs || []).forEach(addLog); displayedLogCount = data.next_log_index ?? displayedLogCount;
+                // A preview download has its own panel; otherwise the live download belongs to the job.
+                if (!downloadWatchTimer) renderDownloadProgress(data.download, 'job');
                 if (data.status !== 'idle') updateSteps(data.step, data.status);
                 if (data.status === 'success' && data.result_ready) showResult(data.result, false);
                 else if (['running', 'error', 'cancelled'].includes(data.status)) hideResult();
@@ -598,7 +683,11 @@
                 const syncWarning = data.output_dir_synced ? ' ⚠ Thư mục này đang được OneDrive đồng bộ: mỗi video xuất sẽ bị upload lên cloud và có thể chậm hơn — cân nhắc chọn thư mục ngoài OneDrive.' : '';
                 byId('output-help').textContent = `Để trống sẽ lưu tại ${data.default_output_dir}. Mỗi project có folder riêng chứa đủ video, SRT và thumbnail.${syncWarning}`;
                 byId('setting-crop').value = data.crop_coords ? JSON.stringify(data.crop_coords) : 'Toàn khung hình';
-                byId('setting-download').value = data.download_dir || 'Chưa xác định'; byId('ocr-lang').value = data.ocr_lang || 'ch';
+                byId('ocr-lang').value = data.ocr_lang || 'ch';
+                sourceSessionSites = Array.isArray(data.source_session_sites) ? data.source_session_sites : [];
+                sourceCookiesSet = data.source_cookies_set || {};
+                renderSourceCookieSites();
+                byId('setting-cookies-file').value = data.cookies_file || '';
                 byId('setting-ocr-speed').value = data.ocr_model_mode || 'auto';
                 byId('setting-frames-skip').value = data.ocr_frames_to_skip == null ? '' : String(data.ocr_frames_to_skip);
                 byId('setting-edge-background').checked = data.edge_background !== false;
@@ -724,30 +813,142 @@
             const list = byId('diagnostics-list'); list.innerHTML = '<span>Đang kiểm tra…</span>';
             try {
                 const data = await fetchJson('/api/health'); list.replaceChildren();
-                healthReadiness = {local: Boolean(data.ready_local), douyin: Boolean(data.ready_douyin)};
+                healthReadiness = {local: Boolean(data.ready_local), douyin: Boolean(data.ready_douyin), sources: data.ready_sources || {}};
                 renderQueue();
-                const labels = {douzy_sidecar:'Douzy sidecar',douzy_config:'Cấu hình Douzy',douzy_database:'Database Douzy',videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',edge:'Microsoft Edge'};
+                const labels = {videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',edge:'Microsoft Edge',douyin_source:'Tải Douyin/Kuaishou (Edge)',ytdlp:'yt-dlp',js_runtime:'JavaScript cho YouTube'};
                 Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; const strong=document.createElement('strong'); strong.textContent=`${labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
-            } catch (error) { healthReadiness = {local: false, douyin: false}; renderQueue(); list.textContent = error.message; }
+            } catch (error) { healthReadiness = {local: false, douyin: false, sources: {}}; renderQueue(); list.textContent = error.message; }
+        }
+
+        function sessionState(site, edgeConnected) {
+            if (!edgeConnected) return {text: 'Edge chưa mở', css: ''};
+            if (site.logged_in === true) return {text: 'Đã đăng nhập', css: 'ok'};
+            if (site.logged_in === false) return {text: 'Chưa đăng nhập', css: 'warn'};
+            return site.has_cookies ? {text: 'Có cookie, chưa rõ đăng nhập', css: ''} : {text: 'Chưa có cookie', css: 'warn'};
+        }
+
+        function renderSourceSessions(data) {
+            const list = byId('source-sessions');
+            list.replaceChildren();
+            const sites = (data && data.sites) || {};
+            const order = sourceSessionSites.length ? sourceSessionSites : Object.keys(sites).map(key => ({key, label: sites[key].label || key}));
+            order.forEach(({key, label}) => {
+                const site = sites[key] || {};
+                const row = document.createElement('div'); row.className = 'source-session-row';
+                const info = document.createElement('div');
+                const name = document.createElement('strong'); name.textContent = label || key;
+                const detail = document.createElement('small');
+                detail.textContent = site.manual_cookie || sourceCookiesSet[key] ? 'Đang dùng cookie thủ công' : '';
+                info.append(name, detail);
+                const state = sessionState(site, Boolean(data && data.edge_connected));
+                const pill = document.createElement('span'); pill.className = `session-pill ${state.css}`; pill.textContent = state.text;
+                const button = document.createElement('button'); button.type = 'button'; button.className = 'btn-ghost';
+                button.textContent = `Mở ${label || key} trên Edge`;
+                button.onclick = () => openSourceLogin(key, label || key);
+                row.append(info, pill, button);
+                list.appendChild(row);
+            });
+            byId('source-sessions-help').textContent = (data && data.error) || (data && data.edge_connected
+                ? 'Trạng thái đọc từ cookie của profile Edge riêng. Xiaohongshu cho khách cookie giống người đã đăng nhập nên app không phân biệt được.'
+                : 'Edge chưa mở. Bấm "Mở … trên Edge" để đăng nhập; app tự mở profile Edge riêng.');
+        }
+
+        async function loadSourceSessions() {
+            try {
+                renderSourceSessions(await fetchJson('/api/sources/sessions', {timeoutMs: 30000}));
+            } catch (error) {
+                byId('source-sessions-help').textContent = error.message;
+            }
+        }
+
+        async function openSourceLogin(key, label) {
+            await runOnce(`open-source-${key}`, async () => {
+                try {
+                    await fetchJson(`/api/sources/${encodeURIComponent(key)}/open`, {method: 'POST', timeoutMs: 90000});
+                    showToast(`Đã mở ${label} trên Edge. Đăng nhập xong, bấm "Kiểm tra lại đăng nhập".`);
+                } catch (error) { showToast(error.message, 'error'); }
+            });
+        }
+
+        function renderSourceCookieSites() {
+            const select = byId('setting-source-cookie-site');
+            const previous = select.value;
+            select.replaceChildren();
+            sourceSessionSites.forEach(({key, label}) => {
+                const option = document.createElement('option'); option.value = key; option.textContent = label;
+                select.appendChild(option);
+            });
+            if (previous && sourceSessionSites.some(site => site.key === previous)) select.value = previous;
+            else if (sourceSessionSites.length) select.value = sourceSessionSites[0].key;
+            updateSourceCookieHelp();
+        }
+
+        function updateSourceCookieHelp() {
+            const key = byId('setting-source-cookie-site').value;
+            const label = (sourceSessionSites.find(site => site.key === key) || {}).label || key || 'nền tảng';
+            const saved = Boolean(sourceCookiesSet[key]);
+            byId('clear-source-cookie-btn').disabled = !saved;
+            byId('setting-source-cookie').placeholder = saved
+                ? `Đã lưu cookie ${label}. Dán chuỗi mới rồi bấm Lưu để thay.`
+                : `Dán Cookie header của ${label}, ví dụ: name=value; name2=value2`;
+        }
+
+        async function saveSourceCookie(clear = false) {
+            const key = byId('setting-source-cookie-site').value;
+            if (!key) return;
+            const value = clear ? null : byId('setting-source-cookie').value.trim();
+            if (!clear && !value) { showToast('Hãy dán chuỗi cookie trước khi lưu.', 'error'); return; }
+            if (clear && !window.confirm('Xoá cookie thủ công đã lưu cho nền tảng này?')) return;
+            try {
+                const saved = await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({source_cookies: {[key]: value}})});
+                sourceCookiesSet = saved.source_cookies_set || sourceCookiesSet;
+                byId('setting-source-cookie').value = '';
+                updateSourceCookieHelp();
+                showToast(clear ? 'Đã xoá cookie thủ công.' : 'Đã lưu cookie, mã hoá trên máy này.');
+                loadSourceSessions();
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function saveCookiesFile(path) {
+            try {
+                const saved = await fetchJson('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cookies_file: path})});
+                byId('setting-cookies-file').value = saved.cookies_file ?? path;
+                showToast(path ? 'yt-dlp sẽ dùng file cookies.txt này.' : 'Đã bỏ file cookies.txt.');
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function chooseCookiesFile() {
+            const api = window.pywebview && window.pywebview.api;
+            if (!api || typeof api.choose_cookies_file !== 'function') {
+                showToast('Nút chọn file hoạt động trong cửa sổ app; ở trình duyệt hãy dán đường dẫn đầy đủ.', 'error');
+                return;
+            }
+            try {
+                const selected = await api.choose_cookies_file();
+                if (selected) await saveCookiesFile(selected);
+            } catch (error) { showToast(error.message || String(error), 'error'); }
         }
 
         async function loadHistory() {
+            const field = byId('history-field');
             const list = byId('history-list');
             try {
                 const data = await fetchJson('/api/history'); list.replaceChildren();
-                if (!data.length) { list.textContent = 'Chưa có video trong lịch sử Douzy.'; return; }
+                // Only shown to people who used Douzy before v1.6.0.
+                field.hidden = !data.length;
+                if (!data.length) return;
                 data.slice(0,8).forEach(item => { const row=document.createElement('div'); row.className='history-row'; const info=document.createElement('div'); const title=document.createElement('strong'); title.textContent=item.title||`Douyin ${item.aweme_id}`; const meta=document.createElement('small'); meta.textContent=`ID ${item.aweme_id}`; info.append(title,meta); const button=document.createElement('button'); button.className='btn-ghost'; button.textContent='Nạp'; button.onclick=()=>{invalidatePreview(); byId('url-input').value=`https://www.douyin.com/video/${item.aweme_id}`; byId('project-name').value=item.title||''; autoProjectName=item.title||''; byId('char-count').textContent=`${byId('url-input').value.length} ký tự`; updateNamePreview(); window.scrollTo({top:0,behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}; row.append(info,button); list.appendChild(row); });
-            } catch (error) { list.textContent = error.message; }
+            } catch (_) { field.hidden = true; }
         }
 
         function bootApp() {
-            loadSettings(); loadHealth(); loadHistory(); loadQueue(); checkEdge(); checkForUpdate();
+            loadSettings(); loadHealth(); loadHistory(); loadQueue(); checkEdge(); checkForUpdate(); loadSourceSessions();
             scheduleQueuePolling(); setInterval(checkEdge, 5000);
         }
 
         window.addEventListener('load', () => {
             byId('preview-form').addEventListener('submit', preparePreview);
-            byId('local-video-btn').onclick=()=>byId('local-video-input').click(); byId('local-video-input').addEventListener('change', prepareLocalPreview);
+            byId('local-video-btn').onclick=chooseLocalVideo; byId('local-video-input').addEventListener('change', prepareLocalPreview);
             byId('url-input').addEventListener('input', () => {
                 byId('char-count').textContent=`${byId('url-input').value.length} ký tự`;
                 setUrlError();
@@ -766,6 +967,12 @@
             byId('preview-player').addEventListener('error', () => {
                 const player = byId('preview-player');
                 if (!currentPreview || player.dataset.previewId !== currentPreview.id) return;
+                if (currentPreview.video_resolution) {
+                    // H.265 or some MKV files do not play in WebView2, but FFprobe already read the size.
+                    byId('preview-status').value = 'Không phát được trong app; vẫn chỉnh crop và thêm vào hàng đợi được';
+                    byId('add-queue-btn').disabled = false;
+                    return;
+                }
                 byId('preview-status').value = 'Không đọc được metadata video';
                 byId('add-queue-btn').disabled = true;
             });
@@ -789,6 +996,12 @@
             byId('setting-edge-background').addEventListener('change', saveSettings); byId('show-edge-btn').onclick=showEdgeLogin;
             byId('create-shortcut-btn').onclick=createDesktopShortcut;
             byId('health-btn').onclick=loadHealth;
+            byId('refresh-sessions-btn').onclick=loadSourceSessions;
+            byId('setting-source-cookie-site').addEventListener('change', updateSourceCookieHelp);
+            byId('save-source-cookie-btn').onclick=()=>saveSourceCookie(false);
+            byId('clear-source-cookie-btn').onclick=()=>saveSourceCookie(true);
+            byId('choose-cookies-file-btn').onclick=chooseCookiesFile;
+            byId('setting-cookies-file').addEventListener('change', () => saveCookiesFile(byId('setting-cookies-file').value.trim()));
             byId('update-btn').onclick=installUpdate;
             updateNamePreview(); bootApp();
         });

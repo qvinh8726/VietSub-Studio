@@ -22,18 +22,19 @@ function makeElement(id = '') {
         querySelector() { return makeElement(); },
         classList: { toggle() {}, add() {}, remove() {} },
         pause() {}, load() {}, focus() {}, scrollIntoView() {}, remove() {},
+        click() { this.clicked = (this.clicked || 0) + 1; },
         get firstChild() { return this.children[0]; },
     };
 }
 
-function loadApp({ fetch, confirm = () => true } = {}) {
+function loadApp({ fetch, confirm = () => true, pywebview } = {}) {
     const elements = {};
     const document = {
         getElementById(id) { return (elements[id] ??= makeElement(id)); },
-        querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.5.4' }; },
+        querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.6.0' }; },
         createElement(tag) { return makeElement(tag); },
     };
-    const window = { addEventListener() {}, matchMedia: () => ({ matches: true }), confirm, scrollTo() {} };
+    const window = { addEventListener() {}, matchMedia: () => ({ matches: true }), confirm, scrollTo() {}, pywebview };
     const context = vm.createContext({
         document, window, fetch, console, Headers, AbortController, FormData,
         setTimeout, clearTimeout, setInterval, clearInterval, JSON, Date, Math,
@@ -108,4 +109,78 @@ test('the progress caption names the configured translation provider', () => {
     const app = loadApp({ fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }) });
     app.run("translationProviderName = 'DeepSeek API'; updateSteps('translate', 'running');");
     assert.equal(app.elements['process-caption'].textContent, 'DeepSeek API đang dịch');
+});
+
+const okFetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+
+test('download progress shows percent, size, speed and the captcha notice', () => {
+    const app = loadApp({ fetch: okFetch });
+    app.run(`renderDownloadProgress({active: true, source: 'douyin', phase: 'download', downloaded: 52428800,
+        total: 104857600, percent: 50, speed: 3145728, notice: ''}, 'preview')`);
+    assert.equal(app.elements['preview-download'].hidden, false);
+    assert.equal(app.elements['preview-download-stats'].textContent, '50% · 50,0/100,0 MB · 3,0 MB/s');
+    assert.equal(app.elements['preview-download-fill'].style.width, '50%');
+    assert.equal(app.elements['preview-download-bar'].attributes['aria-valuenow'], '50');
+    assert.equal(app.elements['preview-download-notice'].hidden, true);
+
+    app.run(`renderDownloadProgress({active: true, source: 'douyin', phase: 'captcha', downloaded: 0, total: null,
+        percent: null, speed: null, notice: 'Vui lòng kéo captcha trên trình duyệt Edge để tiếp tục tải'}, 'preview')`);
+    assert.equal(app.elements['preview-download-notice'].hidden, false);
+    assert.match(app.elements['preview-download-notice'].textContent, /captcha/);
+    assert.match(app.elements['preview-download-label'].textContent, /Edge/);
+
+    app.run("renderDownloadProgress({active: false}, 'preview')");
+    assert.equal(app.elements['preview-download'].hidden, true);
+});
+
+test('choosing a video uses the native dialog instead of the upload input', async () => {
+    const picked = {
+        id: 'p1', source_url: 'local://p1', video_id: 'local-p1', video_title: 'clip', crop_coords: null,
+        source_type: 'local', video_url: '/api/previews/p1/video', video_resolution: { width: 1920, height: 1080 },
+    };
+    const app = loadApp({ fetch: okFetch, pywebview: { api: { choose_local_video: async () => picked } } });
+    await app.run('chooseLocalVideo()');
+    assert.equal(app.run('currentPreview.id'), 'p1');
+    assert.equal(app.run('currentPreview.video_resolution.width'), 1920);
+    // The upload input is never touched (elements are created lazily on first lookup).
+    assert.equal(app.elements['local-video-input']?.clicked, undefined);
+
+    const browserApp = loadApp({ fetch: okFetch });
+    await browserApp.run('chooseLocalVideo()');
+    assert.equal(browserApp.elements['local-video-input'].clicked, 1);
+});
+
+test('a queued source waits until its own downloader is ready', () => {
+    const app = loadApp({ fetch: okFetch });
+    app.run(`
+        healthReadiness = {local: true, douyin: true, sources: {local: true, douyin: true, youtube: false}};
+        queueJobs = [{id: 'a', status: 'queued', step: 'resolve', source_type: 'youtube', ocr_lang: 'en', result: {}}];
+        renderQueue();
+    `);
+    assert.equal(app.elements['start-queue-btn'].disabled, true);
+    assert.equal(app.elements['start-queue-btn'].textContent, 'Thiếu thành phần bắt buộc');
+    app.run('healthReadiness.sources.youtube = true; renderQueue();');
+    assert.equal(app.elements['start-queue-btn'].disabled, false);
+});
+
+test('platform sessions show the login state of each platform', () => {
+    const app = loadApp({ fetch: okFetch });
+    app.run(`
+        sourceSessionSites = [{key: 'douyin', label: 'Douyin'}, {key: 'xiaohongshu', label: 'Xiaohongshu'},
+            {key: 'kuaishou', label: 'Kuaishou'}];
+        renderSourceSessions({edge_connected: true, sites: {
+            douyin: {logged_in: true, has_cookies: true},
+            xiaohongshu: {logged_in: null, has_cookies: true},
+            kuaishou: {logged_in: false, has_cookies: false, manual_cookie: true}}});
+    `);
+    const rows = app.elements['source-sessions'].children;
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].children[1].textContent, 'Đã đăng nhập');
+    assert.equal(rows[1].children[1].textContent, 'Có cookie, chưa rõ đăng nhập');
+    assert.equal(rows[2].children[1].textContent, 'Chưa đăng nhập');
+    assert.equal(rows[2].children[2].textContent, 'Mở Kuaishou trên Edge');
+    assert.match(rows[2].children[0].children[1].textContent, /cookie thủ công/);
+
+    app.run("renderSourceSessions({edge_connected: false, sites: {}})");
+    assert.equal(app.elements['source-sessions'].children[0].children[1].textContent, 'Edge chưa mở');
 });

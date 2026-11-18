@@ -13,7 +13,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['webview'],
+    # yt-dlp is imported lazily; yt_dlp_ejs holds the YouTube challenge scripts.
+    hiddenimports=['webview', 'yt_dlp', 'yt_dlp_ejs'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

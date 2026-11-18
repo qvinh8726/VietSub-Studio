@@ -22,9 +22,14 @@ def configure_console_encoding():
 def main():
     configure_console_encoding()
     parser = argparse.ArgumentParser(
-        description="Tải một video Douyin, OCR phụ đề và dịch sang tiếng Việt."
+        description=(
+            "Tải một video (Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok hoặc YouTube), "
+            "OCR phụ đề và dịch sang tiếng Việt."
+        )
     )
-    parser.add_argument("-u", "--url", required=True, help="Link video Douyin")
+    parser.add_argument(
+        "-u", "--url", required=True, help="Link video hoặc nguyên đoạn chia sẻ từ app điện thoại"
+    )
     parser.add_argument(
         "-l", "--lang", default="ch", help="Ngôn ngữ OCR: ch, en, ja, ko hoặc vi"
     )

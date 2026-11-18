@@ -16,7 +16,7 @@ Thank you for helping improve VietSub Studio. Cảm ơn bạn đã muốn đóng
    node --test tests/frontend/app.test.mjs
    ```
 
-   The tests point `APPDATA`, `LOCALAPPDATA`, and `VIETSUB_STUDIO_CONFIG_DIR` at a temporary folder, so they never read or change your real settings, queue, logs, or Douzy and VideOCR files.
+   The tests point `APPDATA`, `LOCALAPPDATA`, `VIETSUB_STUDIO_CONFIG_DIR`, and `VIETSUB_STUDIO_DOWNLOAD_DIR` at a temporary folder, so they never read or change your real settings, queue, logs, downloads, Edge profile, old Douzy library, or VideOCR files. The download tests mock Edge and yt-dlp and only talk to a local test server on `127.0.0.1`.
 
 5. For UI changes, verify both desktop and a narrow mobile viewport.
 6. Explain what changed, why it changed, and how it was tested in the pull request.
@@ -39,7 +39,7 @@ Good first contributions include documentation fixes, clearer diagnostics, new u
    node --test tests/frontend/app.test.mjs
    ```
 
-   Bộ test trỏ `APPDATA`, `LOCALAPPDATA` và `VIETSUB_STUDIO_CONFIG_DIR` vào một thư mục tạm, nên không đọc hay sửa thiết lập, hàng đợi, log hoặc file Douzy, VideOCR thật của bạn.
+   Bộ test trỏ `APPDATA`, `LOCALAPPDATA`, `VIETSUB_STUDIO_CONFIG_DIR` và `VIETSUB_STUDIO_DOWNLOAD_DIR` vào một thư mục tạm, nên không đọc hay sửa thiết lập, hàng đợi, log, video tải về, profile Edge, thư viện Douzy cũ hoặc file VideOCR thật của bạn. Test tải video dùng mock cho Edge và yt-dlp, và chỉ kết nối tới server thử trên `127.0.0.1`.
 
 5. Nếu sửa giao diện, hãy kiểm tra cả desktop và màn hình mobile hẹp.
 6. Pull request cần mô tả thay đổi, lý do và cách đã kiểm thử.

@@ -28,6 +28,17 @@ from flask import Flask, render_template, request, jsonify, send_file, send_from
 from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
+from vietsub.sources import browser_capture
+from vietsub.sources import cookies as cookie_utils
+from vietsub.sources import douyin as douyin_source
+from vietsub.sources import http_download
+from vietsub.sources import local as local_source
+from vietsub.sources import registry as source_registry
+from vietsub.sources import sessions as session_sites
+from vietsub.sources import web as web_source
+from vietsub.sources import ytdlp_source
+from vietsub.sources.base import DownloadCancelledError, SourceError, find_urls, url_host
+
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", SOURCE_DIR)
 APP_HOME = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else SOURCE_DIR
@@ -95,6 +106,10 @@ QUEUE_PATH = os.path.join(CONFIG_DIR, "workflow_queue.json")
 LOCAL_VIDEO_DIR = os.path.join(CONFIG_DIR, "local_videos")
 INSTANCE_LOCK_PATH = os.path.join(CONFIG_DIR, "instance.lock")
 LOG_PATH = os.path.join(CONFIG_DIR, "vietsub-studio.log")
+# VIETSUB_STUDIO_DOWNLOAD_DIR moves the folder where videos wait before they are
+# moved into a project; by default it sits inside the output directory.
+DOWNLOAD_DIR_OVERRIDE = os.environ.get("VIETSUB_STUDIO_DOWNLOAD_DIR", "").strip()
+DOWNLOAD_CACHE_DIRNAME = ".vietsub-downloads"
 
 SUPPORTED_OCR_LANGS = {"ch", "en", "ja", "ko", "vi"}
 SUPPORTED_OCR_MODEL_MODES = {"auto", "fast", "accurate"}
@@ -160,10 +175,45 @@ JOB_ERROR_CODES = {"project_missing", "translation_invalid"}
 MAX_PERSISTED_JOBS = 500
 MAX_IN_MEMORY_JOBS = MAX_PERSISTED_JOBS
 ALLOWED_LOCAL_VIDEO_EXTENSIONS = {".mp4"}
+# Files picked in the native dialog are used in place, so MKV works there too.
+LOCAL_VIDEO_FILE_TYPES = ("Video (*.mp4;*.mkv)", "Tất cả file (*.*)")
+COOKIE_FILE_TYPES = ("Cookies (*.txt)", "Tất cả file (*.*)")
+DOWNLOAD_SOURCE_TYPES = source_registry.DOWNLOADABLE_SOURCE_TYPES
+WEB_SOURCE_TYPES = frozenset(web_source.WEB_SITES)
+SOURCE_LABELS = source_registry.SITE_LABELS
+DOUYIN_HOME_URL = "https://www.douyin.com/"
+DOUYIN_CAPTCHA_NOTICE = douyin_source.CAPTCHA_NOTICE
+BROWSER_ATTENTION_NOTICE = browser_capture.ATTENTION_NOTICE
+# Platforms whose login session lives in the dedicated Edge profile (Settings shows them).
+SESSION_SITES = session_sites.SESSION_SITES
+# Edge cookies are handed to yt-dlp for these sites only. YouTube is left out on
+# purpose: yt-dlp warns that using account cookies can get a Google account flagged,
+# and the debug profile is usually signed in to the user's Gemini account.
+SOURCE_COOKIE_URLS = {
+    "tiktok": ("https://www.tiktok.com/",),
+    **{key: site.cookie_urls for key, site in SESSION_SITES.items()},
+}
+# How each non-Douyin site is downloaded, in order of preference.
+WEB_DOWNLOAD_STRATEGY = {
+    "tiktok": ("ytdlp",),
+    "youtube": ("ytdlp",),
+    "bilibili": ("ytdlp",),
+    "xiaohongshu": ("ytdlp", "browser"),
+    "kuaishou": ("browser",),  # yt-dlp has no Kuaishou extractor
+}
+EDGE_SOURCE_TYPES = frozenset({"douyin", "kuaishou"})
+YTDLP_SOURCE_TYPES = frozenset(
+    site for site, tiers in WEB_DOWNLOAD_STRATEGY.items() if tiers[0] == "ytdlp"
+)
+NO_VIDEO_PATTERN = re.compile(r"No video formats found", re.IGNORECASE)
+DOWNLOAD_FOLDER_PATTERN = re.compile(
+    r"(?:douyin|tiktok|youtube|bilibili|xiaohongshu|kuaishou)-[A-Za-z0-9_-]{1,64}"
+)
+JS_RUNTIME_CACHE_SECONDS = 10 * 60
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.6.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -232,10 +282,18 @@ prefetch_thread = None
 prefetch_cancel_event = Event()
 prefetch_job_id = ""
 instance_lock_handle = None
+# Live progress of the visible download (preview or job); background prefetch never writes it.
+download_progress_lock = Lock()
+download_progress = {}
+js_runtime_cache = {"checked_at": 0.0, "value": None}
 
 
 class WorkflowCancelled(RuntimeError):
     pass
+
+
+class VideoDownloadError(RuntimeError):
+    """Every download method failed; the message lists each reason."""
 
 
 class EdgeLoginRequired(RuntimeError):
@@ -429,6 +487,91 @@ def update_progress(*, status=None, step=None, error=None, result=None, result_r
             raise mark_current_job_persistence_error(persist_error) from persist_error
 
 
+def idle_download_progress():
+    return {
+        "active": False,
+        "source": "",
+        "phase": "",
+        "downloaded": 0,
+        "total": None,
+        "percent": None,
+        "speed": None,
+        "notice": "",
+        "logged_bucket": -1,
+    }
+
+
+def download_progress_is_silent():
+    # The background prefetch must not overwrite what the visible job or preview shows.
+    return bool(getattr(workflow_context, "quiet", False))
+
+
+def reset_download_progress(source=""):
+    if download_progress_is_silent():
+        return
+    with download_progress_lock:
+        download_progress.clear()
+        download_progress.update(idle_download_progress())
+        download_progress.update({"active": True, "source": source, "phase": "start"})
+
+
+def clear_download_progress():
+    if download_progress_is_silent():
+        return
+    with download_progress_lock:
+        download_progress.clear()
+        download_progress.update(idle_download_progress())
+
+
+def set_download_progress(**values):
+    if download_progress_is_silent():
+        return
+    with download_progress_lock:
+        download_progress.update(values)
+
+
+def format_megabytes(value):
+    return f"{(value or 0) / (1024 * 1024):,.1f} MB"
+
+
+def report_download_progress(downloaded, total=None, speed=None):
+    """Progress callback for every downloader: updates /api/progress and logs each 10%."""
+    if download_progress_is_silent():
+        return
+    downloaded = max(0, int(downloaded or 0))
+    total = int(total) if total else None
+    percent = min(100, int(downloaded * 100 / total)) if total else None
+    with download_progress_lock:
+        download_progress.update({
+            "active": True,
+            "phase": "download",
+            "downloaded": downloaded,
+            "total": total,
+            "percent": percent,
+            "speed": float(speed) if speed else None,
+        })
+        bucket = percent // 10 if percent is not None else None
+        should_log = bucket is not None and bucket > download_progress.get("logged_bucket", -1)
+        if should_log:
+            download_progress["logged_bucket"] = bucket
+    if should_log:
+        speed_text = f", {format_megabytes(speed)}/s" if speed else ""
+        log_to_app(
+            f"Tải video: {percent}% ({format_megabytes(downloaded)}/{format_megabytes(total)}{speed_text})",
+            durable=False,
+        )
+
+
+def download_progress_snapshot():
+    with download_progress_lock:
+        snapshot = dict(download_progress) or idle_download_progress()
+    snapshot.pop("logged_bucket", None)
+    return snapshot
+
+
+download_progress.update(idle_download_progress())
+
+
 def progress_snapshot(after_log_index=0):
     with status_lock:
         after_log_index = max(after_log_index, progress_status["log_base_index"])
@@ -447,6 +590,7 @@ def progress_snapshot(after_log_index=0):
             "result_ready": bool(progress_status.get("result_ready")),
             "result": dict(progress_status["result"])
         }
+    snapshot["download"] = download_progress_snapshot()
     # Validation already ran when the job succeeded; polling only re-checks file presence.
     snapshot["result_ready"] = (
         snapshot["status"] == "success"
@@ -618,10 +762,23 @@ def sanitize_project_name(value, fallback="Du an Douyin"):
     return name
 
 
+def detect_video_source(text):
+    """SourceRequest for the first supported video link in pasted text; ValueError otherwise."""
+    return source_registry.detect_source(text)
+
+
+def source_type_for_url(url, default="douyin"):
+    try:
+        return detect_video_source(url).site
+    except ValueError:
+        return default
+
+
 def validate_douyin_url(value):
     if not isinstance(value, str):
         raise ValueError("Link Douyin không hợp lệ.")
-    candidates = URL_PATTERN.findall(value.strip()) or [value.strip()]
+    # ASCII-only URL matching: Chinese text glued to a share link is not part of it.
+    candidates = find_urls(value.strip()) or [value.strip()]
     for candidate in candidates:
         # Share messages commonly put Chinese punctuation immediately after the URL.
         candidate = candidate.rstrip(".,;:!?)]}，。！？、")
@@ -726,7 +883,9 @@ def request_workflow_cancel():
     # current_job_id is read without queue_state_lock: this runs from HTTP threads
     # while the worker may hold that lock, and the read of a str is atomic.
     job_starting = bool(current_job_id) and queue_worker_active()
-    if not workflow_lock.locked() and not job_starting:
+    # A preview download holds preview_lock; its downloader checks cancel_event too.
+    preview_downloading = preview_lock.locked()
+    if not workflow_lock.locked() and not job_starting and not preview_downloading:
         return False
     cancel_event.set()
     with active_process_lock:
@@ -813,6 +972,11 @@ def request_app_shutdown():
 
 def protect_config_secret(secret):
     secret = validate_translation_api_key(secret, allow_empty=True)
+    return protect_text_secret(secret)
+
+
+def protect_text_secret(secret):
+    """Encrypt any secret text (API key, Douyin cookie) for the current Windows user."""
     if not secret:
         return ""
     raw = secret.encode("utf-8")
@@ -1006,6 +1170,8 @@ def load_app_config(strict=False):
         "crop_coords": None,
         "edge_background": True,
         "desktop_shortcut_initialized": False,
+        "source_cookies_protected": {},
+        "cookies_file": "",
     }
     if not os.path.exists(CONFIG_PATH):
         return default_config
@@ -1816,7 +1982,9 @@ def show_edge_for_login(notebook_url):
             page.bring_to_front()
     return True
 
-# Sidecar & automation functions
+# Legacy Douzy sidecar integration (v1.5.x). Since v1.6.0 nothing calls the sidecar
+# functions below: downloads go through vietsub.sources. They stay for the existing
+# compatibility tests and for reading an old Douzy library, and can be removed later.
 def queue_process_output(stream, output_queue):
     try:
         for line in iter(stream.readline, ""):
@@ -2321,10 +2489,38 @@ def path_is_within(path, directory):
 
 
 def should_move_douzy_source(source_video):
+    """Legacy (v1.5.x) rule for Douzy downloads; v1.6 copies or links old Douzy files instead."""
     download_root = get_douzy_download_dir()
     source_dir = os.path.dirname(os.path.abspath(source_video))
     return (
         path_is_within(source_video, download_root)
+        and not os.path.isfile(os.path.join(source_dir, "project.json"))
+    )
+
+
+def get_download_cache_dir(config=None):
+    """Folder where downloaded videos wait until their project is finished.
+
+    It sits inside the output directory, so moving a finished video into its project
+    folder is a rename on the same drive rather than a multi-GB copy.
+    """
+    if DOWNLOAD_DIR_OVERRIDE:
+        return os.path.abspath(DOWNLOAD_DIR_OVERRIDE)
+    config = load_app_config() if config is None else config
+    try:
+        output_root = validate_output_dir(config.get("output_dir", ""))
+    except ValueError:
+        output_root = ""
+    return os.path.join(output_root or get_default_output_directory(), DOWNLOAD_CACHE_DIRNAME)
+
+
+def should_move_downloaded_source(source_video):
+    """True for a video VietSub Studio downloaded itself: it moves into the project at the end."""
+    if not source_video:
+        return False
+    source_dir = os.path.dirname(os.path.abspath(source_video))
+    return (
+        path_is_within(source_video, get_download_cache_dir())
         and not os.path.isfile(os.path.join(source_dir, "project.json"))
     )
 
@@ -2425,7 +2621,7 @@ def finalize_project_assets(project, video_id=""):
                 "move_source_video": False,
             })
             return project
-        raise FileNotFoundError("Video Douzy không còn tồn tại để chuyển vào thư mục dự án.")
+        raise FileNotFoundError("Video đã tải không còn tồn tại để chuyển vào thư mục dự án.")
 
     source_dir = os.path.dirname(source_video)
     source_stem = os.path.splitext(os.path.basename(source_video))[0]
@@ -2451,7 +2647,7 @@ def finalize_project_assets(project, video_id=""):
         destination_key = os.path.normcase(destination)
         previous = planned_destinations.get(destination_key)
         if previous and os.path.normcase(previous) != os.path.normcase(candidate):
-            raise FileExistsError(f"Hai asset Douzy cùng đích: {os.path.basename(candidate)}")
+            raise FileExistsError(f"Hai file đi kèm có cùng đích: {os.path.basename(candidate)}")
         planned_destinations[destination_key] = candidate
         if os.path.exists(destination) and os.path.normcase(destination) != os.path.normcase(candidate):
             if not files_have_same_content(candidate, destination):
@@ -2459,7 +2655,7 @@ def finalize_project_assets(project, video_id=""):
 
     # Move the large MP4 last so an ancillary-asset error leaves the retry source intact.
     candidates.sort(key=lambda path: os.path.normcase(path) == source_norm)
-    log_to_app("Đang chuyển video và asset Douzy vào thư mục dự án...")
+    log_to_app("Đang chuyển video và các file đi kèm vào thư mục dự án...")
     moved_video = ""
     for candidate in candidates:
         destination = os.path.abspath(project_asset_destination(candidate, source_video, project))
@@ -2484,9 +2680,11 @@ def finalize_project_assets(project, video_id=""):
     project["video"] = moved_video
     project["source_video"] = moved_video
     project["move_source_video"] = False
-    update_douzy_video_path(video_id, moved_video)
+    # Only a file that Douzy itself downloaded has a Douzy history record to update.
+    if path_is_within(source_video, get_douzy_download_dir()):
+        update_douzy_video_path(video_id, moved_video)
     replace_source_video_references(source_video, moved_video)
-    log_to_app(f"Đã gom toàn bộ file Douzy vào: {project['project_dir']}")
+    log_to_app(f"Đã gom video và các file đi kèm vào: {project['project_dir']}")
     return project
 
 
@@ -2507,7 +2705,11 @@ def prepare_project_files(
     default_root = get_default_output_directory()
     output_root = validate_output_dir(output_dir) or default_root
     project_name, project_dir = allocate_project_directory(output_root, sanitized_name)
-    video_destination = os.path.join(project_dir, project_name + ".mp4")
+    # Keep the container of the source: an MKV picked on this computer stays .mkv.
+    video_extension = os.path.splitext(source_video)[1].lower()
+    if video_extension not in local_source.LOCAL_VIDEO_EXTENSIONS:
+        video_extension = ".mp4"
+    video_destination = os.path.join(project_dir, project_name + video_extension)
     video_path = os.path.abspath(source_video) if defer_video_move else video_destination
     raw_srt_path = os.path.join(project_dir, project_name + ".raw.srt")
     translated_srt_path = os.path.join(project_dir, project_name + ".vi.srt")
@@ -2516,9 +2718,10 @@ def prepare_project_files(
     try:
         check_cancel_requested()
         if defer_video_move:
-            log_to_app("Dùng video tại Douzy trong lúc xử lý; sẽ chuyển vào dự án sau khi dịch xong.")
-        elif is_managed_local_video(source_video) and try_hardlink_video(source_video, video_path):
-            log_to_app("Đã liên kết video local vào thư mục kết quả, không cần sao chép lại.")
+            log_to_app("Dùng video vừa tải trong lúc xử lý; sẽ chuyển vào dự án sau khi dịch xong.")
+        elif try_hardlink_video(source_video, video_path):
+            # Same drive: the project gets a hard link, so no second copy of a large video.
+            log_to_app("Đã liên kết video vào thư mục kết quả (hard link), không cần sao chép lại.")
         else:
             log_to_app("Đang sao chép video vào thư mục kết quả...")
             copy_file_atomic(source_video, video_path)
@@ -4134,6 +4337,10 @@ def infer_translation_video_path(srt_path):
     base_name = os.path.splitext(os.path.basename(srt_path))[0]
     if base_name.endswith(".raw"):
         base_name = base_name[:-4]
+    for extension in local_source.LOCAL_VIDEO_EXTENSIONS:
+        candidate = os.path.join(directory, base_name + extension)
+        if os.path.isfile(candidate):
+            return candidate
     return os.path.join(directory, base_name + ".mp4")
 
 
@@ -4230,6 +4437,12 @@ def close_quietly(resource):
         pass
 
 
+def close_in_background(resource):
+    """Close without waiting: HTTPResponse.close() blocks while another thread is in read()."""
+    if resource is not None:
+        Thread(target=close_quietly, args=(resource,), daemon=True).start()
+
+
 def run_cancellable(func, *, deadline_seconds, timeout_message):
     """Run a blocking network call in a helper thread; stop waiting on cancel or deadline.
 
@@ -4260,7 +4473,7 @@ def run_cancellable(func, *, deadline_seconds, timeout_message):
         cancelled = cancel_requested()
         if cancelled or time.monotonic() >= deadline:
             state["aborted"] = True
-            close_quietly(state["response"])
+            close_in_background(state["response"])
             if cancelled:
                 check_cancel_requested()
                 raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.")
@@ -4497,53 +4710,631 @@ def translate_srt_via_gemini_edge(
     log_to_app(f"Đã tạo file phụ đề dịch thành công: {output_translated_srt}")
     return output_translated_srt
 
+def resolve_douyin_aweme_id(request, notebook_url=""):
+    """aweme ID of a Douyin SourceRequest: from the URL, over HTTP, or in Edge as a last resort."""
+    if request.video_id:
+        return request.video_id
+    try:
+        aweme_id = douyin_source.resolve_short_link(request.url)
+        log_to_app(f"Đã giải mã link share Douyin thành video {aweme_id}.")
+        return aweme_id
+    except SourceError as error:
+        log_to_app(f"Giải mã link share qua HTTP chưa được ({error}); thử lại bằng Edge.", "error")
+    resolved = resolve_url_via_edge(request.url, notebook_url)
+    found = douyin_source.extract_aweme_id(resolved or "")
+    if not found:
+        raise ValueError("Không thể giải mã link share Douyin thành link video.")
+    return found[1]
+
+
 def resolve_video_request(video_url, notebook_url):
-    source_url = validate_douyin_url(video_url)
-    is_short_url = (urlparse(source_url).hostname or "").lower() == "v.douyin.com"
-    video_url_for_id = source_url
-    if is_short_url:
-        video_url_for_id = resolve_url_via_edge(source_url, notebook_url)
-        if not video_url_for_id:
-            raise ValueError("Không thể giải mã link share Douyin thành link video.")
-        video_url_for_id = validate_douyin_url(video_url_for_id)
-    source_path = urlparse(video_url_for_id).path.lower()
-    if "/mix/" in source_path or "/user/" in source_path:
-        raise ValueError("Tool chỉ hỗ trợ link video riêng lẻ; không hỗ trợ mix hoặc user.")
-    return source_url, is_short_url, get_video_id(video_url_for_id)
+    """Compatibility wrapper (v1.5.x): (source_url, is_short_url, aweme_id) for a Douyin link."""
+    request = detect_video_source(video_url)
+    if request.site != "douyin":
+        raise ValueError("Link này không phải video Douyin.")
+    return request.url, request.short_link, resolve_douyin_aweme_id(request, notebook_url)
+
+
+def get_js_runtime():
+    """yt-dlp js_runtimes setting for Deno or Node 22+ in PATH (cached for 10 minutes)."""
+    now = time.monotonic()
+    if js_runtime_cache["checked_at"] and now - js_runtime_cache["checked_at"] < JS_RUNTIME_CACHE_SECONDS:
+        return js_runtime_cache["value"]
+    value = ytdlp_source.find_js_runtime(resolve_path_executable)
+    js_runtime_cache.update({"checked_at": now, "value": value})
+    return value
+
+
+def saved_source_cookies(config):
+    saved = config.get("source_cookies_protected")
+    return dict(saved) if isinstance(saved, dict) else {}
+
+
+def get_source_manual_cookie(site, config=None):
+    """Cookie header pasted in Settings for one platform, decrypted; "" when none or unreadable."""
+    config = load_app_config() if config is None else config
+    protected = saved_source_cookies(config).get(site) or ""
+    if not protected:
+        return ""
+    try:
+        return cookie_utils.normalize_cookie_header(unprotect_config_secret(protected))
+    except (OSError, UnicodeError, ValueError):
+        return ""
+
+
+def get_douyin_manual_cookie(config=None):
+    return get_source_manual_cookie("douyin", config)
+
+
+def source_cookies_set(config):
+    saved = saved_source_cookies(config)
+    return {key: bool(saved.get(key)) for key in SESSION_SITES}
+
+
+def apply_source_cookie_updates(config, updates):
+    """Encrypt the Cookie headers posted for each platform; None or "" removes one."""
+    if not isinstance(updates, dict):
+        raise ValueError("Cookie theo nền tảng phải là một JSON object.")
+    saved = saved_source_cookies(config)
+    for site, value in updates.items():
+        if site not in SESSION_SITES:
+            raise ValueError(f"Nền tảng không hỗ trợ cookie thủ công: {site}")
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"Cookie {SESSION_SITES[site].label} không hợp lệ.")
+        normalized = cookie_utils.normalize_cookie_header(value or "")
+        if normalized:
+            saved[site] = protect_text_secret(normalized)
+        else:
+            saved.pop(site, None)
+    config["source_cookies_protected"] = saved
+
+
+def validate_cookies_file_setting(value):
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str) or "\x00" in value:
+        raise ValueError("Đường dẫn cookies.txt không hợp lệ.")
+    expanded = os.path.expandvars(os.path.expanduser(value.strip()))
+    if not os.path.isabs(expanded):
+        raise ValueError("Đường dẫn cookies.txt phải là đường dẫn tuyệt đối.")
+    path = os.path.abspath(expanded)
+    cookie_utils.load_cookie_file(path)
+    return path
+
+
+def get_cookies_file(config=None):
+    config = load_app_config() if config is None else config
+    try:
+        return validate_cookies_file_setting(config.get("cookies_file") or "")
+    except ValueError as error:
+        log_to_app(f"Bỏ qua file cookies.txt trong Thiết lập: {error}", "error")
+        return ""
+
+
+def read_edge_cookies(urls):
+    """Cookies of the dedicated Edge profile for these URLs (Edge must already run)."""
+    with get_sync_playwright()() as playwright:
+        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
+        if not browser.contexts:
+            return []
+        return list(browser.contexts[0].cookies(list(urls)))
+
+
+def prepare_ytdlp_cookie_file(site, *, manual_cookie=""):
+    """(cookie file path or None, cleanup) for a yt-dlp download of this site.
+
+    A cookies.txt chosen in Settings wins. Otherwise the site's cookies are exported
+    from the running Edge profile into a temporary file, except for YouTube, and a
+    Cookie header pasted for the platform replaces the cookies with the same name.
+    yt-dlp writes its cookie jar back to the file when it closes, so it always gets
+    a temporary file and the user's cookies.txt is never modified.
+    """
+    configured = get_cookies_file()
+    if configured:
+        folder = tempfile.mkdtemp(prefix="vietsub-cookies-")
+        path = os.path.join(folder, "cookies.txt")
+        try:
+            shutil.copyfile(configured, path)
+            return path, lambda: shutil.rmtree(folder, ignore_errors=True)
+        except OSError as error:
+            # Same as an unreadable file in get_cookies_file: fall back to the Edge cookies.
+            shutil.rmtree(folder, ignore_errors=True)
+            log_to_app(f"Bỏ qua file cookies.txt trong Thiết lập: {error}", "error")
+    browser_cookies = []
+    if site in SOURCE_COOKIE_URLS and check_edge_status():
+        try:
+            browser_cookies = read_edge_cookies(list(SOURCE_COOKIE_URLS[site]))
+        except Exception as error:
+            log_to_app(f"Không đọc được cookie từ Edge, tải không kèm cookie: {error}", "error")
+    if manual_cookie and site in SESSION_SITES:
+        overrides = cookie_utils.browser_cookies_from_header(manual_cookie, SESSION_SITES[site].cookie_domain)
+        names = {item["name"] for item in overrides}
+        browser_cookies = [item for item in browser_cookies if item.get("name") not in names] + overrides
+    if not browser_cookies:
+        return None, lambda: None
+    folder = tempfile.mkdtemp(prefix="vietsub-cookies-")
+    path = os.path.join(folder, "cookies.txt")
+    cookie_utils.write_netscape_cookie_file(browser_cookies, path)
+    return path, lambda: shutil.rmtree(folder, ignore_errors=True)
+
+
+def find_cached_download(site, video_id, cache_dir=None):
+    """A finished download of this video in the download folder, with its saved title."""
+    if not video_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(video_id)):
+        return None
+    cache_dir = cache_dir or get_download_cache_dir()
+    stem = f"{site}-{video_id}"
+    folder = os.path.join(cache_dir, stem)
+    for extension in local_source.LOCAL_VIDEO_EXTENSIONS:
+        candidate = os.path.join(folder, stem + extension)
+        if os.path.isfile(candidate) and local_source.sniff_container(candidate) in ("mp4", "mkv"):
+            title = ""
+            try:
+                metadata = json.loads(read_text_file(os.path.join(folder, stem + "_data.json")))
+                title = str(metadata.get("title") or "") if isinstance(metadata, dict) else ""
+            except (OSError, ValueError):
+                pass
+            return {"source_video": candidate, "video_title": title}
+    return None
+
+
+def find_legacy_douzy_video(aweme_id):
+    """Path of this video in an old Douzy library, so it is reused instead of downloaded."""
+    if not aweme_id or not os.path.isfile(DOUZY_DB):
+        return ""
+    try:
+        connection = sqlite3.connect(DOUZY_DB, timeout=2)
+        try:
+            row = connection.execute(
+                "SELECT file_path FROM aweme WHERE aweme_id = ? ORDER BY download_time DESC LIMIT 1",
+                (aweme_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if not row:
+            return ""
+        path = resolve_video_file_path(row[0])
+        return path if os.path.isfile(path) else ""
+    except (OSError, sqlite3.Error):
+        return ""
+
+
+def save_douyin_assets(video, target_path, source_url):
+    """Write <stem>_data.json and <stem>_cover.<ext> next to the MP4; failures are only logged."""
+    stem = os.path.splitext(target_path)[0]
+    metadata = {
+        "site": "douyin",
+        "video_id": video.aweme_id,
+        "title": video.title,
+        "author": video.author,
+        "duration": video.duration_seconds,
+        "source_url": source_url,
+        "downloaded_at": int(time.time()),
+    }
+    try:
+        write_text_atomic(stem + "_data.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+    except OSError as error:
+        log_to_app(f"Chưa lưu được metadata video: {error}", "error")
+    for url in video.cover_urls:
+        if not validate_douzy_thumbnail_url(url):
+            continue
+        try:
+            download_thumbnail(url, stem + "_cover")
+            return
+        except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException) as error:
+            log_to_app(f"Chưa tải được ảnh bìa: {error}", "error")
+
+
+def raise_if_download_cancelled(error):
+    check_cancel_requested()
+    raise WorkflowCancelled("Đã huỷ quy trình theo yêu cầu.") from error
+
+
+def download_douyin_via_edge(aweme_id, target_path, notebook_url, *, quiet):
+    """Tier 1: let Douyin's own page sign its API call in Edge, then stream the clean MP4."""
+    config = load_app_config()
+    edge_background = bool(config.get("edge_background", True))
+    manual_cookie = get_douyin_manual_cookie(config)
+    canonical_url = douyin_source.canonical_video_url(aweme_id)
+    set_download_progress(phase="capture", notice="")
+    if not ensure_edge_running(notebook_url or DOUYIN_HOME_URL):
+        raise VideoDownloadError("Không mở được Microsoft Edge để tải video Douyin.")
+    log_to_app(f"Mở trang video trong Edge để đọc dữ liệu: {canonical_url}")
+    with get_sync_playwright()() as playwright:
+        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
+        if not browser.contexts:
+            raise VideoDownloadError("Không tìm thấy profile Edge đang hoạt động.")
+        context = browser.contexts[0]
+        if manual_cookie:
+            # The cookie pasted in Settings replaces the matching cookies of the debug profile.
+            context.add_cookies(cookie_utils.browser_cookies_from_header(manual_cookie))
+
+        def on_captcha(active, page):
+            if active:
+                if not set_edge_window_visibility(context, page, True):
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                set_download_progress(phase="captcha", notice=DOUYIN_CAPTCHA_NOTICE)
+                log_to_app(f"{DOUYIN_CAPTCHA_NOTICE} (app chờ tối đa 3 phút).", "error")
+            else:
+                set_download_progress(phase="capture", notice="")
+                log_to_app("Đã qua bước xác minh; tiếp tục đọc dữ liệu video.")
+                if edge_background:
+                    set_edge_window_visibility(context, page, False)
+
+        try:
+            capture = douyin_source.capture_video_from_page(
+                context,
+                aweme_id,
+                url=canonical_url,
+                is_cancelled=cancel_requested,
+                on_captcha=on_captcha,
+                allow_captcha_wait=not quiet,
+            )
+        except DownloadCancelledError as error:
+            raise_if_download_cancelled(error)
+        browser_cookies = context.cookies([DOUYIN_HOME_URL])
+
+    if capture.detail is not None:
+        video = douyin_source.parse_aweme_detail(capture.detail)
+    else:
+        video = douyin_source.DouyinVideo(
+            aweme_id=aweme_id,
+            title=douyin_source.title_from_page(capture.page_title, aweme_id),
+            play_urls=list(capture.dom_urls) + list(capture.network_urls),
+        )
+    cookie_jar = cookie_utils.jar_from_browser_cookies(browser_cookies)
+    if manual_cookie:
+        cookie_utils.add_header_cookies(cookie_jar, manual_cookie)
+    headers = {
+        "User-Agent": capture.user_agent or douyin_source.DEFAULT_USER_AGENT,
+        "Referer": douyin_source.DOUYIN_REFERER,
+        "Accept": "*/*",
+    }
+    log_to_app(f"Đã đọc dữ liệu video: {video.title}. Đang tải file MP4 không watermark...")
+    set_download_progress(phase="download", notice="")
+    try:
+        http_download.stream_download(
+            video.play_urls,
+            target_path,
+            headers=headers,
+            cookie_jar=cookie_jar,
+            on_progress=report_download_progress,
+            is_cancelled=cancel_requested,
+            validate=local_source.require_mp4_header,
+        )
+    except DownloadCancelledError as error:
+        raise_if_download_cancelled(error)
+    except SourceError as error:
+        raise VideoDownloadError(str(error)) from error
+    save_douyin_assets(video, target_path, canonical_url)
+    log_to_app(f"Đã tải xong video Douyin: {target_path}")
+    return {
+        "source_url": canonical_url,
+        "video_id": aweme_id,
+        "source_video": target_path,
+        "video_title": video.title,
+        "source_type": "douyin",
+    }
+
+
+def run_ytdlp_download(url, site, cache_dir, *, manual_cookie=""):
+    cookie_file, cleanup = prepare_ytdlp_cookie_file(site, manual_cookie=manual_cookie)
+    try:
+        return ytdlp_source.download_with_ytdlp(
+            url,
+            cache_dir,
+            site=site,
+            cookie_file=cookie_file,
+            ffmpeg_path=resolve_ffmpeg_executable(),
+            js_runtimes=get_js_runtime(),
+            on_progress=report_download_progress,
+            is_cancelled=cancel_requested,
+            log=lambda message: log_to_app(message, "error"),
+        )
+    except DownloadCancelledError as error:
+        raise_if_download_cancelled(error)
+    finally:
+        cleanup()
+
+
+def download_douyin_via_ytdlp(aweme_id, cache_dir):
+    """Tier 2 for Douyin: yt-dlp with the Edge profile cookies (or the pasted cookie)."""
+    canonical_url = douyin_source.canonical_video_url(aweme_id)
+    log_to_app("Thử tải Douyin bằng yt-dlp với cookie của profile Edge...")
+    try:
+        result = run_ytdlp_download(
+            canonical_url, "douyin", cache_dir, manual_cookie=get_douyin_manual_cookie()
+        )
+    except SourceError as error:
+        raise VideoDownloadError(str(error)) from error
+    return {
+        "source_url": canonical_url,
+        "video_id": result["video_id"] or aweme_id,
+        "source_video": result["path"],
+        "video_title": result["title"] or f"Douyin {aweme_id}",
+        "source_type": "douyin",
+    }
+
+
+def download_douyin_video(request, notebook_url):
+    aweme_id = resolve_douyin_aweme_id(request, notebook_url)
+    canonical_url = douyin_source.canonical_video_url(aweme_id)
+    cache_dir = get_download_cache_dir()
+    cached = find_cached_download("douyin", aweme_id, cache_dir)
+    if cached:
+        log_to_app("Video này đã có trong thư mục tải tạm; dùng lại, không tải lại.")
+        return {
+            "source_url": canonical_url,
+            "video_id": aweme_id,
+            "source_video": cached["source_video"],
+            "video_title": cached["video_title"] or f"Douyin {aweme_id}",
+            "source_type": "douyin",
+        }
+    legacy_video = find_legacy_douzy_video(aweme_id)
+    if legacy_video:
+        log_to_app("Tìm thấy video này trong thư viện Douzy cũ; dùng lại file đã có.")
+        return {
+            "source_url": canonical_url,
+            "video_id": aweme_id,
+            "source_video": legacy_video,
+            "video_title": get_video_title(aweme_id) or f"Douyin {aweme_id}",
+            "source_type": "douyin",
+        }
+    target_path = os.path.join(cache_dir, f"douyin-{aweme_id}", f"douyin-{aweme_id}.mp4")
+    quiet = bool(getattr(workflow_context, "quiet", False))
+    errors = []
+    try:
+        return download_douyin_via_edge(aweme_id, target_path, notebook_url, quiet=quiet)
+    except WorkflowCancelled:
+        raise
+    except Exception as error:
+        check_cancel_requested()
+        errors.append(f"Edge: {error}")
+        log_to_app(f"Chưa tải được qua Edge ({error}); chuyển sang yt-dlp.", "error")
+    try:
+        return download_douyin_via_ytdlp(aweme_id, cache_dir)
+    except WorkflowCancelled:
+        raise
+    except Exception as error:
+        check_cancel_requested()
+        errors.append(f"yt-dlp: {error}")
+    raise VideoDownloadError("Không tải được video Douyin. " + " | ".join(errors))
+
+
+def save_source_metadata(video_path, *, site, video_id, title, source_url, duration=None):
+    """<stem>_data.json next to a download: the title survives a cache hit and goes into the project."""
+    metadata = {
+        "site": site,
+        "video_id": video_id,
+        "title": title,
+        "duration": duration,
+        "source_url": source_url,
+        "downloaded_at": int(time.time()),
+    }
+    try:
+        write_text_atomic(
+            os.path.splitext(video_path)[0] + "_data.json",
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+        )
+    except OSError as error:
+        log_to_app(f"Chưa lưu được metadata video: {error}", "error")
+
+
+def download_via_browser_capture(request, target_path, notebook_url, *, quiet):
+    """Open the post in the dedicated Edge profile and stream the video file the page plays."""
+    site = SESSION_SITES.get(request.site)
+    label = SOURCE_LABELS.get(request.site, request.site)
+    home_url = site.home_url if site else request.url
+    edge_background = bool(load_app_config().get("edge_background", True))
+    manual_cookie = get_source_manual_cookie(request.site) if site else ""
+    set_download_progress(phase="capture", notice="")
+    if not ensure_edge_running(notebook_url or home_url):
+        raise VideoDownloadError(f"Không mở được Microsoft Edge để tải video {label}.")
+    log_to_app(f"Mở trang {label} trong Edge để tìm file video: {request.url}")
+    with get_sync_playwright()() as playwright:
+        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
+        if not browser.contexts:
+            raise VideoDownloadError("Không tìm thấy profile Edge đang hoạt động.")
+        context = browser.contexts[0]
+        if manual_cookie:
+            context.add_cookies(cookie_utils.browser_cookies_from_header(manual_cookie, site.cookie_domain))
+
+        def on_attention(active, page):
+            if active:
+                if not set_edge_window_visibility(context, page, True):
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                set_download_progress(phase="captcha", notice=BROWSER_ATTENTION_NOTICE)
+                log_to_app(f"{BROWSER_ATTENTION_NOTICE} (app chờ tối đa 3 phút).", "error")
+            else:
+                set_download_progress(phase="capture", notice="")
+                if edge_background:
+                    set_edge_window_visibility(context, page, False)
+
+        try:
+            capture = browser_capture.capture_media_from_page(
+                context,
+                request.url,
+                is_cancelled=cancel_requested,
+                on_attention=on_attention,
+                allow_attention_wait=not quiet,
+            )
+        except DownloadCancelledError as error:
+            raise_if_download_cancelled(error)
+        cookie_urls = list(site.cookie_urls) if site else [request.url]
+        browser_cookies = context.cookies(cookie_urls)
+
+    resolved = request
+    if request.short_link and capture.final_url:
+        try:
+            resolved = web_source.parse_web_url(capture.final_url)
+        except ValueError:
+            resolved = request
+    cookie_jar = cookie_utils.jar_from_browser_cookies(browser_cookies)
+    if manual_cookie:
+        cookie_utils.add_header_cookies(cookie_jar, manual_cookie, site.cookie_domain)
+    headers = {
+        "User-Agent": capture.user_agent or douyin_source.DEFAULT_USER_AGENT,
+        "Referer": home_url,
+        "Accept": "*/*",
+    }
+    log_to_app(f"Đã tìm thấy file video trên trang {label}. Đang tải...")
+    set_download_progress(phase="download", notice="")
+    try:
+        http_download.stream_download(
+            capture.media_urls,
+            target_path,
+            headers=headers,
+            cookie_jar=cookie_jar,
+            on_progress=report_download_progress,
+            is_cancelled=cancel_requested,
+            validate=local_source.require_mp4_header,
+        )
+    except DownloadCancelledError as error:
+        raise_if_download_cancelled(error)
+    except SourceError as error:
+        raise VideoDownloadError(str(error)) from error
+    video_id = resolved.video_id or request.video_id
+    title = capture.title or f"{label} {video_id}"
+    save_source_metadata(target_path, site=request.site, video_id=video_id, title=title, source_url=resolved.url)
+    log_to_app(f"Đã tải xong video {label}: {target_path}")
+    return {
+        "source_url": resolved.url,
+        "video_id": video_id,
+        "source_video": target_path,
+        "video_title": title,
+        "source_type": request.site,
+    }
+
+
+def short_link_code(url):
+    """Last path segment of a share link, used to name its download folder."""
+    code = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+    return code if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code or "") else uuid.uuid4().hex[:12]
+
+
+def download_web_video(request, notebook_url=""):
+    """TikTok, YouTube, Bilibili and Xiaohongshu through yt-dlp; Kuaishou (and the
+    Xiaohongshu fallback) through the post's page in Edge."""
+    label = SOURCE_LABELS.get(request.site, request.site)
+    if request.short_link:
+        try:
+            request = web_source.resolve_short_link(request)
+        except SourceError as error:
+            log_to_app(f"Giải mã link share {label} qua HTTP chưa được ({error}); mở thẳng link.", "error")
+    cache_dir = get_download_cache_dir()
+    if request.video_id:
+        cached = find_cached_download(request.site, request.video_id, cache_dir)
+        if cached:
+            log_to_app("Video này đã có trong thư mục tải tạm; dùng lại, không tải lại.")
+            return {
+                "source_url": request.url,
+                "video_id": request.video_id,
+                "source_video": cached["source_video"],
+                "video_title": cached["video_title"] or f"{label} {request.video_id}",
+                "source_type": request.site,
+            }
+    errors = []
+    for tier in WEB_DOWNLOAD_STRATEGY.get(request.site, ("ytdlp",)):
+        try:
+            if tier == "browser":
+                folder_id = request.video_id or short_link_code(request.url)
+                stem = f"{request.site}-{folder_id}"
+                target_path = os.path.join(cache_dir, stem, stem + ".mp4")
+                quiet = bool(getattr(workflow_context, "quiet", False))
+                return download_via_browser_capture(request, target_path, notebook_url, quiet=quiet)
+            log_to_app(f"Đang tải video {label} bằng yt-dlp: {request.url}")
+            result = run_ytdlp_download(
+                request.url,
+                request.site,
+                cache_dir,
+                manual_cookie=get_source_manual_cookie(request.site) if request.site in SESSION_SITES else "",
+            )
+            video_id = result["video_id"] or request.video_id
+            title = result["title"] or f"{label} {video_id}"
+            save_source_metadata(
+                result["path"], site=request.site, video_id=video_id, title=title,
+                source_url=request.url, duration=result.get("duration"),
+            )
+            return {
+                "source_url": request.url,
+                "video_id": video_id,
+                "source_video": result["path"],
+                "video_title": title,
+                "source_type": request.site,
+            }
+        except WorkflowCancelled:
+            raise
+        except Exception as error:
+            # Playwright errors are not RuntimeError subclasses; any failure moves to the next tier.
+            check_cancel_requested()
+            message = str(error)
+            if tier == "ytdlp" and request.site == "youtube" and not get_js_runtime():
+                message += " YouTube cần Deno 2.3+ hoặc Node 22+ trong PATH; hãy cài một trong hai rồi chạy lại."
+            if tier == "ytdlp" and request.site == "xiaohongshu" and NO_VIDEO_PATTERN.search(message):
+                raise VideoDownloadError(
+                    "Ghi chú Xiaohongshu này không có video (bài đăng ảnh); không có gì để OCR."
+                ) from error
+            errors.append(f"{'Edge' if tier == 'browser' else 'yt-dlp'}: {message}")
+            log_to_app(f"Chưa tải được bằng {'Edge' if tier == 'browser' else 'yt-dlp'}: {message}", "error")
+    if len(errors) == 1:
+        raise VideoDownloadError(errors[0].split(": ", 1)[1])
+    raise VideoDownloadError(f"Không tải được video {label}. " + " | ".join(errors))
 
 
 def download_video_source(video_url, notebook_url):
-    sidecar_proc = None
-    source_url, is_short_url, video_id = resolve_video_request(video_url, notebook_url)
-    try:
-        sidecar_proc, port, token = start_douzy_sidecar()
-        start_time_epoch = time.time()
-        if is_short_url:
-            log_to_app("Gửi link share ngắn trực tiếp cho Douzy để tải video.")
-        else:
-            log_to_app(f"Sử dụng link video: {source_url}")
-        download_job_id = trigger_download(port, token, source_url, scope="single")
-        download_job = poll_download_job(port, token, download_job_id)
-        if download_job.get("skipped"):
-            log_to_app("Douzy đã có sẵn video này, dùng lại file đã tải.")
-        video_file = wait_for_downloaded_video_file(
-            start_time_epoch,
-            video_id,
-            allow_existing=bool(download_job.get("skipped")),
+    """Prepare the video for a link: {source_url, video_id, source_video, video_title, source_type}.
+
+    Douyin uses the dedicated Edge profile (cache, old Douzy library, Edge capture,
+    then yt-dlp); Kuaishou is captured in Edge; TikTok, YouTube, Bilibili and
+    Xiaohongshu use yt-dlp, with Edge as the Xiaohongshu fallback.
+    """
+    request = detect_video_source(video_url)
+    if request.site == "douyin":
+        return download_douyin_video(request, notebook_url)
+    return download_web_video(request, notebook_url)
+
+
+def prune_download_cache(referenced_paths=None, cache_dir=None):
+    """Delete stale, unreferenced download folders; only folders this app names are touched."""
+    cache_dir = cache_dir or get_download_cache_dir()
+    if not os.path.isdir(cache_dir):
+        return 0
+    referenced = {
+        os.path.normcase(os.path.abspath(path))
+        for path in (referenced_paths or [])
+        if path
+    }
+    with preview_registry_lock:
+        referenced.update(
+            os.path.normcase(os.path.abspath(preview["source_video"]))
+            for preview in preview_registry.values()
+            if preview.get("source_video")
         )
-        return {
-            "source_url": source_url,
-            "video_id": video_id,
-            "source_video": video_file,
-            "video_title": get_video_title(video_id),
-        }
-    finally:
-        if sidecar_proc:
-            try:
-                stop_process(sidecar_proc, "sidecar Douzy")
-            except Exception:
-                pass
-            unregister_active_process("sidecar Douzy", sidecar_proc)
+    cutoff = time.time() - PREVIEW_TTL_SECONDS
+    removed = 0
+    for name in os.listdir(cache_dir):
+        folder = os.path.join(cache_dir, name)
+        if not os.path.isdir(folder) or not DOWNLOAD_FOLDER_PATTERN.fullmatch(name):
+            continue
+        try:
+            files = [os.path.join(folder, item) for item in os.listdir(folder)]
+            if any(os.path.normcase(os.path.abspath(path)) in referenced for path in files):
+                continue
+            newest = max((os.path.getmtime(path) for path in files), default=os.path.getmtime(folder))
+        except OSError:
+            continue
+        if newest >= cutoff:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        if not os.path.exists(folder):
+            removed += 1
+    return removed
 
 
 def prune_video_previews():
@@ -4571,7 +5362,7 @@ def ensure_preview_admission_locked():
 
     Between two jobs workflow_lock is free while the worker waits for the
     prefetch download, so the worker and prefetch threads are checked too.
-    Otherwise a preview could start a second Douzy sidecar and clear a cancel.
+    Otherwise a preview could start a second download and clear a cancel.
     """
     if shutdown_event.is_set():
         raise RuntimeError("Ứng dụng đang đóng; không thể tạo preview mới.")
@@ -4583,6 +5374,24 @@ def ensure_preview_admission_locked():
         raise RuntimeError("Một preview khác đang được chuẩn bị.")
 
 
+def preview_payload(preview, resolution=None):
+    payload = {
+        "id": preview["id"],
+        "source_url": preview["source_url"],
+        "video_id": preview["video_id"],
+        "video_title": preview["video_title"],
+        "crop_coords": preview["crop_coords"],
+        "source_type": preview["source_type"],
+        "video_url": f"/api/previews/{preview['id']}/video",
+    }
+    if preview.get("original_name"):
+        payload["original_name"] = preview["original_name"]
+    if resolution:
+        # Lets a video the WebView cannot play (H.265, some MKV) still join the queue.
+        payload["video_resolution"] = {"width": int(resolution[0]), "height": int(resolution[1])}
+    return payload
+
+
 def create_video_preview(video_url):
     with operation_admission_lock:
         ensure_preview_admission_locked()
@@ -4590,28 +5399,51 @@ def create_video_preview(video_url):
     try:
         config = load_app_config()
         notebook_url = get_translation_browser_url(config)
-        preview = download_video_source(video_url, notebook_url)
+        reset_download_progress(source_type_for_url(video_url))
+        try:
+            preview = download_video_source(video_url, notebook_url)
+        finally:
+            clear_download_progress()
         preview_id = uuid.uuid4().hex
         preview.update({
             "id": preview_id,
             "created_at": time.time(),
             "crop_coords": get_saved_crop_coords(),
-            "source_type": "douyin",
+            "source_type": preview.get("source_type", "douyin"),
             "managed_source": False,
         })
         with preview_registry_lock:
             preview_registry[preview_id] = preview
-        return {
-            "id": preview_id,
-            "source_url": preview["source_url"],
-            "video_id": preview["video_id"],
-            "video_title": preview["video_title"],
-            "crop_coords": preview["crop_coords"],
-            "source_type": preview["source_type"],
-            "video_url": f"/api/previews/{preview_id}/video",
-        }
+        return preview_payload(preview, get_video_resolution(preview["source_video"]))
     finally:
         cancel_event.clear()
+        preview_lock.release()
+
+
+def create_local_path_preview(path):
+    """Preview a video picked in the native file dialog. The file is used where it is:
+    nothing is uploaded or copied to %TEMP% or the app cache."""
+    info = local_source.validate_local_video_path(path)
+    with operation_admission_lock:
+        ensure_preview_admission_locked()
+    try:
+        preview_id = uuid.uuid4().hex
+        preview = {
+            "id": preview_id,
+            "created_at": time.time(),
+            "source_url": f"local://{preview_id}",
+            "video_id": f"local-{preview_id[:12]}",
+            "source_video": info["path"],
+            "video_title": info["title"],
+            "original_name": info["name"],
+            "crop_coords": get_saved_crop_coords(),
+            "source_type": "local",
+            "managed_source": False,
+        }
+        with preview_registry_lock:
+            preview_registry[preview_id] = preview
+        return preview_payload(preview, get_video_resolution(info["path"]))
+    finally:
         preview_lock.release()
 
 
@@ -4971,6 +5803,13 @@ def initialize_queue_state():
     removed = prune_orphaned_local_videos(referenced_paths)
     if removed:
         log_to_app(f"Đã dọn {removed} video cache mồ côi quá hạn.")
+    try:
+        removed_downloads = prune_download_cache(referenced_paths)
+    except OSError as error:
+        removed_downloads = 0
+        log_to_app(f"Chưa dọn được thư mục tải tạm: {error}", "error")
+    if removed_downloads:
+        log_to_app(f"Đã dọn {removed_downloads} video tải tạm không còn dùng.")
 
 
 def queue_snapshot():
@@ -5004,8 +5843,9 @@ def enqueue_workflow(
             raise ValueError("Preview không khớp với video đã chọn.")
         source_type = preview.get("source_type", "douyin")
     else:
-        source_url = validate_douyin_url(video_url)
-        source_type = "douyin"
+        request = detect_video_source(video_url)
+        source_url = request.url
+        source_type = request.site
     normalized_crop = validate_crop_coords(crop_coords)
     normalized_resolution = validate_video_resolution(video_resolution)
     job = {
@@ -5056,7 +5896,7 @@ def queue_workflow(video_url, ocr_lang, project_name=None):
 
 
 def run_single_workflow(video_url, ocr_lang, project_name=None):
-    source_url = validate_douyin_url(video_url)
+    source_url = detect_video_source(video_url).url
     validate_ocr_lang(ocr_lang)
     if project_name is not None and not isinstance(project_name, str):
         raise ValueError("Tên bộ file không hợp lệ.")
@@ -5077,8 +5917,8 @@ def run_prefetch_worker():
     workflow_context.detached = True
     workflow_context.cancel_event = prefetch_cancel_event
     try:
-        # Wait until the running job is past its download step so two Douzy
-        # sidecars never run at the same time.
+        # Wait until the running job is past its download step so two downloads
+        # never run at the same time.
         while not prefetch_cancel_event.is_set():
             with status_lock:
                 status = progress_status["status"]
@@ -5097,7 +5937,7 @@ def run_prefetch_worker():
                     dict(job) for job in workflow_jobs
                     if job["status"] == "queued"
                     and not job.get("source_video")
-                    and job.get("source_type", "douyin") == "douyin"
+                    and job.get("source_type", "douyin") in DOWNLOAD_SOURCE_TYPES
                 ),
                 None,
             )
@@ -5153,7 +5993,7 @@ def coordinate_prefetch_before_job(job):
         # The prefetch is fetching exactly this job; let it finish and reuse the file.
         thread.join()
     elif not job.get("source_video"):
-        # This job needs its own sidecar download; stop the unrelated prefetch first.
+        # This job needs its own download; stop the unrelated prefetch first.
         prefetch_cancel_event.set()
         thread.join()
 
@@ -5168,13 +6008,12 @@ def missing_runtime_dependencies(source_types):
     except (OSError, UnicodeError, ValueError):
         missing.append("cấu hình dịch")
         translation_config = {"provider": ""}
-    if translation_config.get("provider") == "notebook" and not resolve_edge_executable():
+    # Douyin and Kuaishou downloads run in the dedicated Edge profile, like Notebook translation.
+    needs_edge = translation_config.get("provider") == "notebook" or bool(source_types & EDGE_SOURCE_TYPES)
+    if needs_edge and not resolve_edge_executable():
         missing.append("Microsoft Edge")
-    if "douyin" in source_types:
-        if not os.path.isfile(SIDECAR_BIN):
-            missing.append("Douzy sidecar")
-        if not os.path.isfile(DOUZY_CONFIG):
-            missing.append("cấu hình Douzy")
+    if source_types & YTDLP_SOURCE_TYPES and not ytdlp_source.ytdlp_version():
+        missing.append("yt-dlp")
     return missing
 
 
@@ -5360,7 +6199,9 @@ def retry_queue_job(job_id):
         source_video = job.get("source_video") or ""
         if resume_step == "download" and source_video and not os.path.isfile(source_video):
             if job.get("source_type") == "local":
-                raise FileNotFoundError("Video local không còn tồn tại. Hãy chọn lại file MP4.")
+                raise FileNotFoundError(
+                    "Video trên máy không còn ở vị trí cũ. Hãy chọn lại file MP4 hoặc MKV."
+                )
             # A Douyin preview cache may have been cleaned externally; retry by downloading it again.
             job["source_video"] = ""
             job["preview_id"] = ""
@@ -5404,11 +6245,12 @@ def run_workflow_thread(
     resume_project=None,
     resume_step="download",
 ):
-    sidecar_proc = None
     project = None
     video_id = ""
     source_url = video_url
-    source_type = prepared_video.get("source_type", "douyin") if prepared_video else "douyin"
+    source_type = (
+        prepared_video.get("source_type", "douyin") if prepared_video else source_type_for_url(video_url)
+    )
     try:
         check_cancel_requested()
         config = load_app_config()
@@ -5450,11 +6292,16 @@ def run_workflow_thread(
                     raise FileNotFoundError("Video preview không còn tồn tại. Hãy tạo lại preview.")
                 log_to_app("Dùng video đã chuẩn bị từ preview, bỏ qua bước tải lại.")
             else:
-                downloaded = download_video_source(video_url, notebook_url)
+                reset_download_progress(source_type)
+                try:
+                    downloaded = download_video_source(video_url, notebook_url)
+                finally:
+                    clear_download_progress()
                 source_url = downloaded["source_url"]
                 video_id = downloaded["video_id"]
                 video_file = downloaded["source_video"]
                 video_title = downloaded.get("video_title", "")
+                source_type = downloaded.get("source_type", source_type)
             update_progress(result={"source_video": video_file})
             project = prepare_project_files(
                 video_file,
@@ -5463,9 +6310,9 @@ def run_workflow_thread(
                 video_title=video_title,
                 output_dir=output_dir,
                 defer_video_move=(
-                    source_type == "douyin" and should_move_douzy_source(video_file)
+                    source_type in DOWNLOAD_SOURCE_TYPES and should_move_downloaded_source(video_file)
                 ),
-                include_thumbnail=source_type == "douyin",
+                include_thumbnail=source_type in DOWNLOAD_SOURCE_TYPES,
             )
             update_progress(result=project)
         write_project_manifest(
@@ -5572,12 +6419,6 @@ def run_workflow_thread(
             except OSError:
                 pass
     finally:
-        if sidecar_proc:
-            try:
-                stop_process(sidecar_proc, "sidecar Douzy")
-            except Exception:
-                pass
-            unregister_active_process("sidecar Douzy", sidecar_proc)
         cancel_event.clear()
         if workflow_lock.locked():
             workflow_lock.release()
@@ -5810,22 +6651,11 @@ def health():
     except (OSError, UnicodeError, ValueError) as error:
         translation_ok = False
         translation_detail = str(error)
+    edge_available = bool(resolve_edge_executable())
+    ytdlp_version = ytdlp_source.ytdlp_version()
+    js_runtime = get_js_runtime()
+    js_runtime_name = next(iter(js_runtime), "") if js_runtime else ""
     checks = {
-        "douzy_sidecar": {
-            "ok": os.path.isfile(SIDECAR_BIN),
-            "required": False,
-            "detail": "Chỉ cần cho link Douyin; MP4 trên máy không dùng Douzy.",
-        },
-        "douzy_config": {
-            "ok": os.path.isfile(DOUZY_CONFIG),
-            "required": False,
-            "detail": "Chỉ cần cho link Douyin; mở Douzy và chọn thư mục tải để tạo cấu hình.",
-        },
-        "douzy_database": {
-            "ok": os.path.isfile(DOUZY_DB),
-            "required": False,
-            "detail": "Database sẽ xuất hiện sau khi Douzy tải hoặc ghi nhận video đầu tiên.",
-        },
         "videocr": {
             "ok": os.path.isfile(VIDEOCR_CLI),
             "required": True,
@@ -5856,22 +6686,58 @@ def health():
             ),
         },
         "edge": {
-            "ok": bool(resolve_edge_executable()),
+            "ok": edge_available,
             "required": translation_provider == "notebook",
             "connected": check_edge_status(),
             "detail": (
-                "Cần Microsoft Edge; app sẽ tự mở profile debug khi bắt đầu dịch."
+                "Cần Microsoft Edge để dịch bằng Notebook và để tải video Douyin."
                 if translation_provider == "notebook"
-                else "Chỉ dùng khi cần giải mã link share Douyin ngắn."
+                else "Cần để tải video Douyin; app tự mở profile Edge riêng khi tải."
+            ),
+        },
+        "douyin_source": {
+            "ok": edge_available,
+            "required": False,
+            "detail": (
+                "Douyin và Kuaishou tải qua profile Edge riêng của app. Đăng nhập một lần "
+                "trong Thiết lập để ít gặp captcha hơn."
+            ),
+        },
+        "ytdlp": {
+            "ok": bool(ytdlp_version),
+            "required": False,
+            "detail": (
+                f"yt-dlp {ytdlp_version} tải Xiaohongshu, Bilibili, TikTok và YouTube."
+                if ytdlp_version
+                else "Thiếu yt-dlp; link Xiaohongshu, Bilibili, TikTok và YouTube sẽ không tải được."
+            ),
+        },
+        "js_runtime": {
+            "ok": bool(js_runtime) and ytdlp_source.ejs_available(),
+            "required": False,
+            "detail": (
+                f"YouTube dùng {js_runtime_name} để giải thử thách JavaScript."
+                if js_runtime and ytdlp_source.ejs_available()
+                else (
+                    "Thiếu gói yt-dlp-ejs; hãy cài lại VietSub Studio."
+                    if js_runtime
+                    else "YouTube cần Deno 2.3+ hoặc Node 22+ trong PATH; nguồn khác không cần."
+                )
             ),
         },
     }
     ready_local = all(item["ok"] for item in checks.values() if item["required"])
-    ready_douyin = ready_local and checks["douzy_sidecar"]["ok"] and checks["douzy_config"]["ok"]
+    ready_edge = ready_local and edge_available
+    ready_ytdlp = ready_local and bool(ytdlp_version)
+    ready_sources = {"local": ready_local}
+    for source in source_registry.SUPPORTED_SITES:
+        ready_sources[source] = ready_edge if source in EDGE_SOURCE_TYPES else ready_ytdlp
     return jsonify({
         "ready": ready_local,
         "ready_local": ready_local,
-        "ready_douyin": ready_douyin,
+        "ready_douyin": ready_edge,
+        "ready_web": ready_ytdlp,
+        "ready_sources": ready_sources,
         "checks": checks,
     })
 
@@ -5911,7 +6777,9 @@ def stream_preview_video(preview_id):
     preview = get_video_preview(preview_id)
     if not preview or not os.path.isfile(preview.get("source_video", "")):
         return jsonify({"error": "Preview không còn tồn tại."}), 404
-    return send_file(preview["source_video"], conditional=True)
+    source_video = preview["source_video"]
+    mimetype = "video/x-matroska" if source_video.lower().endswith(".mkv") else "video/mp4"
+    return send_file(source_video, conditional=True, mimetype=mimetype)
 
 
 @app.route('/api/queue', methods=['GET', 'POST'])
@@ -6055,6 +6923,10 @@ def apply_settings_update(data):
             if not isinstance(data["edge_background"], bool):
                 raise ValueError("Tuỳ chọn chạy Edge ẩn không hợp lệ.")
             config["edge_background"] = data["edge_background"]
+        if "source_cookies" in data:
+            apply_source_cookie_updates(config, data["source_cookies"])
+        if "cookies_file" in data:
+            config["cookies_file"] = validate_cookies_file_setting(data["cookies_file"])
         save_app_config(config)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -6064,7 +6936,12 @@ def apply_settings_update(data):
         api_key_set = bool(get_translation_api_key(config))
     except (OSError, UnicodeError, ValueError):
         api_key_set = False
-    return jsonify({"ok": True, "translation_api_key_set": api_key_set})
+    return jsonify({
+        "ok": True,
+        "translation_api_key_set": api_key_set,
+        "source_cookies_set": source_cookies_set(config),
+        "cookies_file": config.get("cookies_file") or "",
+    })
 
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -6168,7 +7045,88 @@ def handle_settings():
             "edge_background": bool(config.get("edge_background", True)),
             "desktop_shortcut_supported": shortcut_supported,
             "desktop_shortcut_exists": shortcut_exists,
+            "source_cookies_set": source_cookies_set(config),
+            "source_session_sites": [
+                {"key": site.key, "label": site.label} for site in SESSION_SITES.values()
+            ],
+            "cookies_file": config.get("cookies_file") or "",
+            "download_cache_dir": get_download_cache_dir(config),
+            "ytdlp_version": ytdlp_source.ytdlp_version(),
         })
+
+
+def get_source_session_status():
+    """Login state of each platform in the dedicated Edge profile; cookie values never leave."""
+    config = load_app_config()
+    manual = source_cookies_set(config)
+    status = {
+        "edge_connected": False,
+        "cookies_file": bool(config.get("cookies_file")),
+        "sites": {
+            key: {"label": site.label, "logged_in": None, "has_cookies": False, "manual_cookie": manual[key]}
+            for key, site in SESSION_SITES.items()
+        },
+    }
+    if not check_edge_status():
+        return status
+    status["edge_connected"] = True
+    try:
+        browser_cookies = read_edge_cookies(session_sites.all_cookie_urls())
+    except Exception as error:
+        status["error"] = f"Không đọc được cookie từ Edge: {error}"
+        return status
+    for key in SESSION_SITES:
+        site_cookies = session_sites.cookies_of_site(key, browser_cookies)
+        status["sites"][key]["has_cookies"] = bool(site_cookies)
+        status["sites"][key]["logged_in"] = session_sites.login_state(key, site_cookies)
+    return status
+
+
+def open_source_in_edge(site_key):
+    """Show the platform in the dedicated Edge profile so the user can sign in once."""
+    site = SESSION_SITES[site_key]
+    if not ensure_edge_running(site.home_url, background=False):
+        raise RuntimeError("Không thể mở Microsoft Edge.")
+    domain = site.cookie_domain.lstrip(".")
+    with get_sync_playwright()() as playwright:
+        browser = playwright.chromium.connect_over_cdp(edge_debug_url())
+        if not browser.contexts:
+            raise RuntimeError("Không tìm thấy profile Edge đang hoạt động.")
+        context = browser.contexts[0]
+        page = next(
+            (
+                item for item in context.pages
+                if url_host(item.url) == domain or url_host(item.url).endswith("." + domain)
+            ),
+            None,
+        )
+        if page is None:
+            page = context.new_page()
+            try:
+                page.goto(site.home_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+        if not set_edge_window_visibility(context, page, True):
+            page.bring_to_front()
+    return True
+
+
+@app.route('/api/sources/sessions')
+def source_sessions():
+    return jsonify(get_source_session_status())
+
+
+@app.route('/api/sources/<site_key>/open', methods=['POST'])
+def open_source_login(site_key):
+    if site_key not in SESSION_SITES:
+        return jsonify({"error": "Nền tảng này không có phiên đăng nhập trong Edge."}), 404
+    try:
+        open_source_in_edge(site_key)
+    except (RuntimeError, OSError) as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": f"Không mở được Edge: {error}"}), 400
+    return jsonify({"ok": True})
 
 
 @app.route('/api/translation/test', methods=['POST'])
@@ -6345,6 +7303,35 @@ class DesktopApi:
             allow_multiple=False,
         )
         return os.path.abspath(selected[0]) if selected else ""
+
+    def choose_local_video(self):
+        """Native file dialog: the chosen MP4/MKV is previewed in place (no upload, no copy)."""
+        try:
+            selected = self._window.create_file_dialog(
+                self._webview.FileDialog.OPEN,
+                allow_multiple=False,
+                file_types=LOCAL_VIDEO_FILE_TYPES,
+            )
+        except Exception as error:
+            return {"error": f"Không mở được hộp thoại chọn file: {error}"}
+        if not selected:
+            return None
+        path = selected[0] if isinstance(selected, (list, tuple)) else selected
+        try:
+            return create_local_path_preview(str(path))
+        except (OSError, RuntimeError, ValueError) as error:
+            return {"error": str(error)}
+
+    def choose_cookies_file(self):
+        selected = self._window.create_file_dialog(
+            self._webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=COOKIE_FILE_TYPES,
+        )
+        if not selected:
+            return ""
+        path = selected[0] if isinstance(selected, (list, tuple)) else selected
+        return os.path.abspath(str(path))
 
 
 def run_desktop_app():

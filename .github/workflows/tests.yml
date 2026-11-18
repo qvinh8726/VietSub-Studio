@@ -28,7 +28,9 @@ jobs:
       - name: Validate dependencies
         run: python -m pip check
       - name: Compile
-        run: python -m py_compile app.py automate.py
+        run: |
+          python -m py_compile app.py automate.py tools/make_release.py
+          python -m compileall -q vietsub
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Check frontend syntax
@@ -90,6 +92,15 @@ jobs:
               if ($assetResponse.StatusCode -ne 200) {
                 throw "Packaged asset $asset was not served correctly."
               }
+            }
+            # yt-dlp and its YouTube scripts are imported lazily, so check they were bundled.
+            $token = [regex]::Match($response.Content, 'name="api-token" content="([^"]+)"').Groups[1].Value
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/health" -Headers @{ "X-VietSub-Token" = $token } -TimeoutSec 30
+            if (-not $health.checks.ytdlp.ok) {
+              throw "yt-dlp is missing from the packaged executable: $($health.checks.ytdlp.detail)"
+            }
+            if ($health.checks.js_runtime.detail -match "yt-dlp-ejs") {
+              throw "yt-dlp-ejs is missing from the packaged executable."
             }
             $second = Start-Process -FilePath $exe -ArgumentList "--server" -PassThru
             if (-not $second.WaitForExit(60000)) {

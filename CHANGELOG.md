@@ -4,6 +4,36 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-17
+
+This release also contains every fix listed under 1.5.4.
+
+### Added
+
+- Downloads no longer need Douzy. A Douyin video is captured in the dedicated Edge profile: the app opens the video page, reads the `aweme/detail` JSON that the page itself requests (the page's SSR data and its `<video>` element are fallbacks), and streams the watermark-free MP4 with the profile's cookies, User-Agent and `Referer`. H.264 renditions are preferred over H.265 so VideOCR, FFmpeg and the preview can decode them. yt-dlp with the same cookies is the second method.
+- New sources: Kuaishou (captured in Edge, since yt-dlp has no Kuaishou extractor), Xiaohongshu (yt-dlp, with Edge as the fallback), Bilibili, TikTok and YouTube (yt-dlp 2026.10.26 with the bundled yt-dlp-ejs scripts; YouTube also needs Deno 2.3+ or Node 22+ in `PATH`). One link is always one video: profiles, playlists, collections and livestreams are rejected.
+- Share text pasted from the Douyin, Kuaishou and Xiaohongshu phone apps is understood. `v.douyin.com`, `xhslink.com` and `v.kuaishou.com` links are resolved over HTTP, and every redirect must stay on the platform. Douyin feed links with `?modal_id=` become `https://www.douyin.com/video/<id>`.
+- When Douyin shows a captcha, or a Kuaishou/Xiaohongshu page shows nothing to download, the Edge window comes to the front and the app asks the user to solve the captcha or sign in there; it waits up to 3 minutes. A background prefetch never waits and leaves the download to the job.
+- Previews and queued jobs show live download progress (percent, MB and speed). Cancel stops a download within about a second.
+- A new Settings section shows whether the Edge profile is signed in to Douyin, Bilibili, Xiaohongshu and Kuaishou and opens each platform in Edge for a one-time login. An optional Cookie header per platform is stored encrypted with DPAPI and replaces the profile cookies with the same name; a Netscape `cookies.txt` can be used for the yt-dlp sources (yt-dlp gets a temporary copy, so the file itself is never modified). YouTube never receives the profile cookies, because yt-dlp warns that account cookies can get a Google account flagged.
+
+### Fixed
+
+- In the desktop window, an MP4 or MKV file is picked with the native file dialog and used where it is: no upload, no copy in `%TEMP%`, no copy in the app cache. A project gets a hard link on the same drive and a copy otherwise. Browser mode (`--browser`, `--server`) still uploads MP4 files through `%TEMP%`.
+- Cancelling an API translation request no longer waits for a stalled response: `HTTPResponse.close()` blocks while another thread is reading, so the response is now closed in the background.
+
+### Changed
+
+- Douzy is no longer used or checked. The health panel drops the Douzy items and adds Edge for Douyin/Kuaishou, yt-dlp, and the JavaScript runtime for YouTube. A video that is still in an old Douzy library is reused without downloading, and the old Douzy history list only appears when that library exists.
+- Downloaded videos wait in `<output folder>\.vietsub-downloads` and move into their project after translation; unused downloads older than 6 hours are removed at startup. `VIETSUB_STUDIO_DOWNLOAD_DIR` moves that folder.
+- The download code moved into the `vietsub/sources` package; `app.py` keeps the old function names. The CLI accepts the same links as the app.
+- CI checks that yt-dlp and yt-dlp-ejs are bundled in the packaged EXE.
+
+### Known issues
+
+- Douyin and Kuaishou change their web pages often, which can break downloads until the app is updated. For Douyin, the error lists the reason of each method (Edge, then yt-dlp); Kuaishou only has the Edge method.
+- Xiaohongshu gives guests the same cookies as signed-in users, so its login state shows as unknown.
+
 ## [1.5.4] - 2026-11-17
 
 ### Security

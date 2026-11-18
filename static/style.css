@@ -105,6 +105,15 @@
         textarea:focus, .text-input:focus, .select-input:focus, .number-input:focus { border-color: var(--forest-2); box-shadow: 0 0 0 4px rgba(36, 94, 79, .1); }
         textarea.invalid { border-color: var(--coral); box-shadow: 0 0 0 4px rgba(188, 89, 73, .1); }
         .field-error { min-height: 16px; margin-top: 5px; color: var(--coral); font-size: 11px; font-weight: 750; }
+        .field-help { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+        .download-progress { margin-top: 12px; padding: 10px 11px; border: 1px solid #b8d2c2; border-radius: 12px; background: #eef7f1; }
+        .download-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: var(--forest); font-size: 11px; }
+        .download-progress-head span { color: var(--muted); font: 10px var(--mono); white-space: nowrap; }
+        .download-bar { position: relative; height: 6px; overflow: hidden; margin-top: 8px; border-radius: 999px; background: #d9e6dd; }
+        .download-bar i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--forest-2); transition: width .25s ease; }
+        .download-bar.indeterminate i { width: 35% !important; animation: download-indeterminate 1.3s ease-in-out infinite; }
+        @keyframes download-indeterminate { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+        .download-notice { margin-top: 8px; padding: 8px 9px; border: 1px solid #c7892b; border-radius: 9px; background: #fff2d5; color: #744d14; font-size: 11px; font-weight: 800; line-height: 1.4; }
         .file-preview { display: grid; gap: 5px; margin-top: 6px; }
         .file-chip { overflow: hidden; padding: 6px 8px; border: 1px solid #ded4c5; border-radius: 8px; background: rgba(238, 232, 220, .8); color: #59645f; font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
         .inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
@@ -222,6 +231,18 @@
         .diagnostic-item.error { background: #f9e1dc; color: #873c31; }
         .diagnostic-item strong, .diagnostic-item small { display: block; }
         .diagnostic-item small { margin-top: 2px; opacity: .8; line-height: 1.35; }
+        .source-settings-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .source-settings-head label { margin-bottom: 0; }
+        .source-sessions { display: grid; gap: 6px; margin-top: 8px; }
+        .source-session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.5); }
+        .source-session-row strong { display: block; font-size: 11px; }
+        .source-session-row small { margin-top: 2px; }
+        .source-session-row .btn-ghost { white-space: nowrap; }
+        .session-pill { padding: 4px 7px; border-radius: 999px; background: #e9e2d5; color: #59645f; font-size: 9px; font-weight: 900; white-space: nowrap; }
+        .session-pill.ok { background: #d8eddf; color: #286044; }
+        .session-pill.warn { background: #fff2d5; color: #744d14; }
+        .cookie-input { min-height: 74px; margin-top: 7px; font: 10px/1.5 var(--mono); }
+        .cookie-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 7px; }
         .history-mini { display: grid; max-height: 210px; overflow: auto; gap: 6px; }
         .history-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.5); }
         .history-row strong { display: block; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -267,6 +288,8 @@
             .stepper { grid-template-columns: 1fr 1fr 1fr; }
             .result-path { grid-template-columns: 1fr; }
             .path-picker { grid-template-columns: 1fr; }
+            .source-session-row { grid-template-columns: 1fr; }
+            .download-progress-head { flex-direction: column; }
         }
         @media (prefers-reduced-motion: reduce) {
             html { scroll-behavior: auto !important; }

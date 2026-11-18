@@ -16,14 +16,31 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
 2. CAC THANH PHAN CAN CO TREN MAY
 - Windows 10/11.
 - VideOCR duoc cai tai: C:\Program Files\VideOCR\videocr-cli.exe
-- Neu dung link Douyin: cai Douzy o thu muc mac dinh, mo it nhat mot lan va chon thu muc tai video.
-- Neu dich bang Gemini Notebook hoac dung link Douyin ngan (v.douyin.com): Microsoft Edge.
+- Microsoft Edge: can khi dich bang Gemini Notebook va khi tai video Douyin, Kuaishou.
+  App mo trang video trong mot profile Edge rieng va tai video bang phien cua profile do.
+- yt-dlp da co san trong file EXE. No tai video Xiaohongshu, Bilibili, TikTok, YouTube
+  va la cach tai thu hai cho Douyin.
+- Chi khi tai YouTube: Deno 2.3+ (khuyen dung) hoac Node.js 22+, lenh "deno" hoac "node" co trong PATH.
 - Neu dich bang API: tai khoan DeepSeek, OpenRouter hoac dich vu OpenAI-compatible khac, kem API key.
 - Tuy chon: FFmpeg/FFprobe trong PATH de quy doi vung crop OCR chinh xac hon
   va tu sua loi khi video dai doi do phan giai giua chung.
+- Tu ban 1.6.0, app khong can Douzy nua.
 
 3. THIET LAP LAN DAU
 - Trong VietSub Studio, mo tab "Thiet lap".
+- Muc "Nguon tai video & dang nhap" (tuy chon, nen lam):
+  + Voi Douyin, Bilibili, Xiaohongshu va Kuaishou, bam "Mo ... tren Edge" (vi du "Mo Douyin tren Edge")
+    roi dang nhap mot lan trong cua so Edge do. Cookie o lai trong profile Edge rieng cua app.
+  + Bam "Kiem tra lai dang nhap" de xem trang thai tung nen tang.
+    Xiaohongshu cho khach cookie giong nguoi da dang nhap, nen app khong biet chac trang thai cua no.
+  + Khong dang nhap van tai duoc video Douyin cong khai, nhung de gap captcha hon.
+  + "Cookie thu cong (tuy chon)": chon nen tang, dan Cookie header (dang name=value; name2=value2)
+    roi bam "Luu cookie". Dung khi phien trong profile Edge bi hong. Cookie duoc ma hoa bang tai khoan
+    Windows hien tai va thay cac cookie cung ten cua profile. "Xoa cookie da luu" de bo cookie nay.
+  + "File cookies.txt (tuy chon)": file dinh dang Netscape cho cac nguon tai bang yt-dlp.
+    Khi co file nay, yt-dlp khong lay cookie tu Edge.
+  + YouTube khong bao gio nhan cookie cua Edge, vi yt-dlp canh bao cookie tai khoan
+    co the khien tai khoan Google bi gan co.
 - Chon "Cach dich phu de":
   + Gemini Notebook qua Edge: dan link Notebook cua ban, dang
     https://gemini.google.com/notebook/ID-CUA-BAN
@@ -36,51 +53,81 @@ VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
   Bam "Khoi phuc mac dinh" de quay ve prompt trung tinh.
 - Kiem tra cac muc bat buoc. Khi tat ca muc mau do da het, app san sang.
 - De bat "Chay Edge an" neu muon. Edge van render binh thuong nhung duoc thu nho.
-- App chi tu hien Edge khi thay man hinh dang nhap hoac khong tim thay khung chat sau khi cho Notebook tai xong.
+- App chi tu hien Edge khi thay man hinh dang nhap, captcha, hoac khong tim thay khung chat sau khi cho Notebook tai xong.
 - Khi app tu hien Edge, kiem tra tai khoan Google va Notebook roi bam chay lai job.
 
 4. XU LY VIDEO
-- Dan link/video share Douyin hoac bam "Chon MP4" de nhan video tren may.
-- Nhap ten bo file neu muon. Neu de trong, app dung ten video Douyin.
-- Bam "Tai preview", sau do keo va doi kich thuoc khung vang vao vung phu de.
+- Dan link video vao o chinh, hoac bam "Chon video" de chon file MP4/MKV tren may.
+  Link duoc nhan: Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube, va ca nguyen doan
+  chia se copy tu app dien thoai (vi du: 4.89 ... https://v.douyin.com/<ma>/).
+- Link ho so, playlist, collection, mix va livestream bi tu choi. Moi job la dung mot video.
+- File chon bang "Chon video" duoc dung ngay tai cho: khong upload, khong sao chep qua thu muc TEMP.
+  Neu app phai mo trong trinh duyet (vi du WebView2 khong chay), "Chon video" chi nhan MP4
+  va file duoc upload qua thu muc TEMP.
+- Nhap ten bo file neu muon. Neu de trong, app dung tieu de video hoac ten file.
+- Voi link, bam "Tai preview". Khung duoi cac nut hien phan tram, so MB va toc do tai.
+- Keo va doi kich thuoc khung vang vao vung phu de.
 - Bam "Them vao hang doi" va lap lai voi cac video khac.
-- Bam "Chay hang doi". App se tu xu ly tung video mot, khong chay song song.
+- Bam "Chay hang doi". App xu ly tung video mot, khong chay song song. Trong luc video hien tai
+  dang OCR hoac dich, app tai truoc video ke tiep.
+- Neu nut hien "Thieu thanh phan bat buoc", mo Thiet lap va xem bang kiem tra
+  (vi du thieu Edge cho Douyin/Kuaishou).
 - Hang doi duoc luu khi dong app. Job loi/da huy co the chay lai tu video, OCR hoac dich neu file trung gian con ton tai.
-- Bam "Huy job" se dung ca VideOCR, FFmpeg va Douzy dang chay cho job do.
+- Bam "Huy job" se dung VideOCR, FFmpeg va luot tai video dang chay cho job do (trong khoang mot giay).
   Dong app giua chung cung dung job hien tai; mo lai app roi bam chay lai.
-- Trong Thiet lap, bam "Chon thu muc..." de chon noi luu doc lap voi Douzy.
+- Trong Thiet lap, bam "Chon thu muc..." de chon noi luu ket qua.
   Neu de trong, app dung Documents\VietSub Studio.
+  Video tai ve nam cho trong thu muc con ".vietsub-downloads" cua thu muc luu cho toi khi project xong.
 - Ket qua duoc dat ten dong bo trong mot folder mang ten project:
-  Ten video.mp4 (MP4 Douyin duoc chuyen khoi Douzy sau khi dich thanh cong,
-    duong dan trong lich su Douzy duoc cap nhat theo)
-  Ten video.thumbnail.jpg/png/webp (neu nguon co thumbnail)
+  Ten video.mp4 (hoac .mkv neu file tren may la MKV)
+  Ten video.thumbnail.jpg/png/webp (neu nguon co anh bia)
   Ten video.raw.srt
   Ten video.vi.srt
-  Ten video.data.json, Ten video.music.mp3 va asset Douzy khac (neu co)
+  Ten video.data.json (voi video tai ve)
+  project.json
+- Video tai ve duoc chuyen tu ".vietsub-downloads" vao project sau khi dich thanh cong.
+  File tren may duoc hard-link vao project neu cung o dia, neu khong thi duoc sao chep; file goc giu nguyen.
+- Neu ban tung dung Douzy: video con trong thu vien Douzy duoc dung lai, khong tai lai.
+  Danh sach nam o muc "Video cu trong thu vien Douzy" trong Thiet lap.
 - App chi bao "da san sang" khi ca ba file ton tai va sub Viet vuot qua kiem tra timestamp/so doan.
 - Job loi van co nut mo thu muc lam do, nhung khong duoc gan nhan la ket qua hoan tat.
 - Neu ban da di chuyen hoac xoa thu muc project cua job da xong, app bao khong tim thay file du an.
   Bam chay lai se hoi xac nhan truoc khi lam lai tu dau.
 
 5. THOI GIAN CHO VA KHI APP KHONG PHAN HOI
-- Tai video Douyin: app cho Douzy bao lau cung duoc, mien trang thai tai con thay doi.
-  App chi bao loi khi trang thai dung yen 5 phut hoac tong thoi gian qua 6 gio.
+- Captcha Douyin: Edge duoc dua len truoc va app hien
+  "Vui long keo captcha tren trinh duyet Edge de tiep tuc tai".
+  Keo thanh truot trong Edge; app cho toi da 3 phut roi tu tai tiep.
+- Kuaishou va Xiaohongshu: neu trang chua hien video sau 30 giay, app dua Edge len de ban
+  dang nhap hoac keo captcha, roi cho toi da 3 phut. Bai dang anh Xiaohongshu khong co video.
+- Luot tai truoc chay nen khong cho captcha; job se tu tai video khi toi luot.
+- Tai video: moi lan doc du lieu cho toi da 30 giay. Mat ket noi thi app tai tiep tu byte cuoi
+  them toi da 2 lan, roi thu dia chi khac cua video.
+- YouTube bao thieu JavaScript: cai Deno 2.3+ hoac Node.js 22+, mo lai app
+  va xem muc "JavaScript cho YouTube" trong bang kiem tra.
 - OCR: moi lan chay VideOCR duoc phep chay toi da 3 lan do dai doan quet cong 10 phut,
   it nhat 30 phut (4 gio neu khong doc duoc do dai video). May chi co CPU nen chon model OCR nhanh
   hoac bo qua khung hinh trong Thiet lap neu hay bi qua thoi gian.
 - Dich bang API: moi lan gui co han chot 30 phut. Mat ket noi hoac loi 429/5xx se duoc thu toi da 3 lan.
 - Neu thanh do "Mat ket noi toi may chu cuc bo" hien o dau cua so, cho vai giay; thanh nay tu tat khi app tra loi lai.
   Neu khong tat, dong va mo lai app. Hang doi da duoc luu tren o dia.
-- Khi them MP4 tu may, o dia tam thoi can cho trong cho hai ban video vi file di qua thu muc TEMP truoc.
+- Chi khi app mo trong trinh duyet: them MP4 tu may can cho trong cho hai ban video
+  vi file upload di qua thu muc TEMP truoc.
 
 6. QUYEN RIENG TU
-- Video khong bi upload len may chu cua VietSub Studio. Douzy tai video va VideOCR xu ly ngay tren may.
+- Video khong bi upload len may chu cua VietSub Studio. Video duoc tai va VideOCR xu ly ngay tren may.
 - Chi noi dung phu de duoc gui di de dich: toi Gemini Notebook qua Edge, hoac toi dia chi API ban da nhap.
-- App con ket noi GitHub de kiem tra ban moi moi lan mo app, va Douyin de giai ma link ngan, tai thumbnail.
+- App ket noi GitHub de kiem tra ban moi moi lan mo app, va nen tang cua link video
+  (Douyin, Kuaishou, Xiaohongshu, Bilibili, TikTok, YouTube) de giai ma link, tai video va anh bia.
+- Cookie cua tung nen tang chi duoc gui toi chinh nen tang do. Cookie thu cong va API key
+  duoc ma hoa bang tai khoan Windows hien tai va khong bao gio hien lai tren giao dien.
+- Mat khau Google va mat khau cac nen tang video do Edge quan ly; app khong doc va khong luu.
 
 7. LUU Y KHI GUI CHO NGUOI KHAC
-- File EXE chua VietSub Studio, nhung khong kem Douzy, VideOCR, tai khoan Gemini hay API key.
+- File EXE chua VietSub Studio va yt-dlp, nhung khong kem VideOCR, Microsoft Edge, Deno/Node,
+  tai khoan Gemini hay API key. Khong can Douzy.
 - Moi nguoi dung phai tu cai cac thanh phan tren va dung Notebook Gemini hoac API key cua ho.
 - Cau hinh cua moi may duoc luu rieng trong %APPDATA%\VietSub Studio.
+- Khong gui cho nguoi khac file app_config.json, thu muc profile Edge, cookie hay cookies.txt cua ban.
 - Khi co phien ban moi, bam "Tai & cai ngay". App se tai ZIP chinh thuc, kiem tra SHA256, thay EXE va tu mo lai.
 - Neu khong the tu cai (vi du thu muc khong co quyen ghi), app se mo GitHub Releases de cap nhat thu cong.

@@ -3115,22 +3115,37 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Đã huỷ", snapshot["error"])
         self.assertFalse(app.workflow_lock.locked())
 
-    def test_short_share_link_is_sent_directly_to_douzy(self):
+    def test_short_share_link_is_resolved_and_downloaded_without_douzy(self):
+        # v1.6.0: the share link is resolved over HTTP and the video is captured in
+        # the dedicated Edge profile; the Douzy sidecar is never started.
         short_url = "https://v.douyin.com/AbCdEfG/"
-        sidecar = Mock()
+        downloads = {}
+
+        def fake_edge_download(aweme_id, target_path, notebook_url, *, quiet):
+            downloads.update({"aweme_id": aweme_id, "target": target_path, "quiet": quiet})
+            Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(target_path).write_bytes(b"\x00\x00\x00\x18ftypmp42video")
+            return {
+                "source_url": "https://www.douyin.com/video/123",
+                "video_id": aweme_id,
+                "source_video": target_path,
+                "video_title": "Test video",
+                "source_type": "douyin",
+            }
+
         self.assertTrue(app.workflow_lock.acquire(blocking=False))
         app.reset_progress()
         try:
             with (
+                tempfile.TemporaryDirectory() as cache_dir,
+                patch.object(app, "DOWNLOAD_DIR_OVERRIDE", cache_dir),
                 patch.object(app, "load_app_config", return_value={
                     "notebook_url": "https://gemini.google.com/notebook/test-id"
                 }),
-                patch.object(app, "get_douzy_download_dir", return_value=""),
-                patch.object(app, "start_douzy_sidecar", return_value=(sidecar, 1234, "token")),
-                patch.object(app, "trigger_download", return_value="job-id") as trigger,
-                patch.object(app, "poll_download_job", return_value={"skipped": 1}),
-                patch.object(app, "wait_for_downloaded_video_file", return_value="video.mp4") as wait_for_video,
-                patch.object(app, "get_video_title", return_value="Test video"),
+                patch.object(app, "start_douzy_sidecar", side_effect=AssertionError("Douzy must not run")),
+                patch.object(app.douyin_source, "resolve_short_link", return_value="123") as resolve,
+                patch.object(app, "resolve_url_via_edge") as edge_resolve,
+                patch.object(app, "download_douyin_via_edge", side_effect=fake_edge_download),
                 patch.object(app, "prepare_project_files", return_value={
                     "project_name": "Test video",
                     "project_dir": "project",
@@ -3143,24 +3158,21 @@ class ApiTests(unittest.TestCase):
                 patch.object(app, "validate_project_result", return_value=True),
                 patch.object(app, "run_videocr", return_value="raw.srt") as run_ocr,
                 patch.object(app, "translate_srt_via_gemini_edge", return_value="vi.srt") as translate,
-                patch.object(
-                    app,
-                    "resolve_url_via_edge",
-                    return_value="https://www.douyin.com/video/123",
-                ) as resolve,
             ):
                 app.run_workflow_thread(short_url, "ch")
+                expected_target = os.path.join(cache_dir, "douyin-123", "douyin-123.mp4")
 
-            trigger.assert_called_once_with(1234, "token", short_url, scope="single")
-            resolve.assert_called_once()
-            wait_for_video.assert_called_once_with(ANY, "123", allow_existing=True)
+            resolve.assert_called_once_with(short_url)
+            edge_resolve.assert_not_called()
+            self.assertEqual(downloads, {"aweme_id": "123", "target": expected_target, "quiet": False})
+            # The fresh download waits in the download folder and moves into the project at the end.
             prepare_project.assert_called_once_with(
-                "video.mp4",
+                expected_target,
                 None,
                 "123",
                 video_title="Test video",
                 output_dir="",
-                defer_video_move=False,
+                defer_video_move=True,
                 include_thumbnail=True,
             )
             run_ocr.assert_called_once_with(
@@ -3359,6 +3371,30 @@ class TranslationApiReliabilityTests(unittest.TestCase):
                     app.translate_api_chunk(dict(self.RUNTIME), SOURCE_SRT, 1, 1)
         finally:
             release.set()
+        self.assertLess(app.time.monotonic() - started, 3)
+
+    def test_cancel_does_not_wait_for_a_response_whose_close_blocks(self):
+        # A real HTTPResponse.close() blocks while another thread is inside read(),
+        # so cancelling a stalled stream must not close it on the waiting thread.
+        release = threading.Event()
+
+        class StalledResponse:
+            def close(self):
+                release.wait(10)
+
+        def stalled_stream(remember_response):
+            remember_response(StalledResponse())
+            release.wait(10)
+            raise OSError("connection closed")
+
+        threading.Timer(0.3, app.cancel_event.set).start()
+        started = app.time.monotonic()
+        try:
+            with self.assertRaises(app.WorkflowCancelled):
+                app.run_cancellable(stalled_stream, deadline_seconds=60, timeout_message="hết hạn")
+        finally:
+            release.set()
+            app.cancel_event.clear()
         self.assertLess(app.time.monotonic() - started, 3)
 
     def test_each_api_request_has_a_deadline(self):
