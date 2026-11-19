@@ -137,6 +137,32 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.snapshot()[0]['status'],'error')
         self.assertEqual(queue.snapshot()[1]['status'],'queued')
 
+    def test_browser_receives_private_snapshot_not_mutable_source(self):
+        completed=threading.Event();observed=[]
+        def execute(job,cancel,progress,checkpoint):
+            self.assertNotEqual(job['video'],str(self.video))
+            self.video.write_bytes(b'different-PRIVATE-video')
+            observed.append(Path(job['video']).read_bytes())
+            checkpoint();completed.set();return {'status':'success'}
+        queue=self.queue(execute)
+        queue.submit(self.source,self.profiles[:1],self.meta,'private',None,'snapshot-request')
+        self.assertTrue(completed.wait(3));queue.shutdown()
+        self.assertEqual(observed,[b'video'])
+        self.assertFalse(list((self.root/'input-snapshots').glob('*')))
+
+    def test_retry_cannot_duplicate_a_newer_successful_same_target(self):
+        completed=threading.Event()
+        def execute(job,cancel,progress,checkpoint):
+            checkpoint();completed.set();return {'status':'success'}
+        queue=self.queue(execute)
+        old=queue.submit(self.source,self.profiles[:1],self.meta,'private',queue.clock()+3600,'old-retry')[0]
+        queue.cancel(old['id'])
+        queue.submit(self.source,self.profiles[:1],self.meta,'private',None,'new-success')
+        self.assertTrue(completed.wait(3))
+        queue.shutdown()
+        with self.assertRaises(ValueError):queue.retry(old['id'])
+        self.assertEqual(sum(j['status']=='success' for j in queue.snapshot()),1)
+
     def test_corrupt_or_future_queue_not_overwritten(self):
         for raw in ('bad','[]','{"version":99,"jobs":[]}'):
             self.path.write_text(raw,encoding='utf-8')

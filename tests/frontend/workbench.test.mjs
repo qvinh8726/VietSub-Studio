@@ -7,6 +7,16 @@ const source = readFileSync(new URL('../../static/workbench.js', import.meta.url
 const appSource = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const template = readFileSync(new URL('../../templates/index.html', import.meta.url), 'utf8');
 const STORAGE_KEY = 'vietsub.studio.workbench.v1';
+test('existing progress tick reconciles reduced-motion without adding an animation loop', () => {
+    const app = harness(); app.init();
+    app.wb.applySettings({sakuga_vfx_enabled: true});
+    const before = app.motionCalls.length;
+    app.media.matches = true; // Simulate a delayed matchMedia change event.
+    app.wb.progressChanged({status: 'idle'});
+    assert.equal(app.motionCalls.length, before + 1);
+    assert.match(app.elements['motion-help'].textContent, /giảm chuyển động/);
+});
+
 const layout = (overrides = {}) => ({version: 1, sidebar_ratio: .25, console_ratio: .24, console_collapsed: false, ...overrides});
 const plain = value => JSON.parse(JSON.stringify(value));
 const approx = (actual, expected, message = '') => assert.ok(Math.abs(actual - expected) < 1e-8, `${message}: ${actual} != ${expected}`);

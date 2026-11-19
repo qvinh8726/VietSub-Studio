@@ -21,8 +21,8 @@ Publish Hub includes six platform adapters, independent private UUID account pro
 
 | Gate | Result |
 |---|---|
-| Python full suite |669 tests,663 pass,6 skips (four unavailable symlink privileges, real Chrome opt-in, published release-dir gate before packaging) |
-| Node frontend |143/143 pass,0fail |
+| Python full suite |673 tests,667 pass,6 skips (four unavailable symlink privileges, real Chrome opt-in, published release-dir gate before packaging) |
+| Node frontend |144/144 pass,0fail |
 | DOM115/local fonts/palette/VFX/API |Regression green; baseline fixture unchanged |
 | Compile |`py_compile`, `compileall vietsub`, Node syntax checks pass |
 | Publish Hub Playwright |1280×720,1440×900,1920×1080; real Flask profiles/metadata/queue persistence, mock external upload executor;0console/CSP/HTTP errors |

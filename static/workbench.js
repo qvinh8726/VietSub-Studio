@@ -384,6 +384,11 @@
     }
     function progressChanged(data) {
         if (!initialized) return;
+        // Reconcile the OS preference on the existing progress tick as well as
+        // its change event: Windows/headless browsers may defer that event while
+        // an offscreen settings drawer is closing. No new animation/poll loop.
+        if (!motionSaving) window.VietSubVFX?.setEnabled(motionSaved);
+        motionHelp();
         $('workflow-progress').dataset.status = data.status;
         if (data.status === 'idle') {
             if (data.download?.active) {

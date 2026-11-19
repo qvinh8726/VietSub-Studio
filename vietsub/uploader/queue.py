@@ -7,6 +7,8 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 from threading import Event, RLock, Thread
 import time
 import uuid
@@ -181,6 +183,11 @@ class UploadQueue:
             if job['status'] not in {'error','cancelled','needs_verification','uncertain'}:raise ValueError('Chỉ thử lại job lỗi/huỷ/xác minh/chưa rõ kết quả.')
             if job.get('commit_attempted') and not confirm_uncertain:raise ValueError('Có thể video đã đăng. Xác nhận đã kiểm tra nền tảng trước khi thử lại.')
             if self.profile_active(job['profile_id']):raise RuntimeError('Tài khoản còn job đang chờ/chạy.')
+            publication=self.publication_key(job,job['profile_id'],job['metadata'],job['visibility'])
+            if any(other['id']!=identifier and other['status'] in ACTIVE|{'success','uncertain'}
+                   and self.publication_key(other,other['profile_id'],other['metadata'],other['visibility'])==publication
+                   for other in self.jobs):
+                raise ValueError('Nội dung này đã được đăng hoặc có job chưa rõ kết quả; không retry bản cũ trùng lặp.')
             self._update(identifier,status='queued',phase='waiting',scheduled_at=None,error='',percent=0,commit_attempted=False)
             self.events[identifier]=Event()
         self.start();self.wake.set();return self.get(identifier)
@@ -189,12 +196,35 @@ class UploadQueue:
         identifier=job['id'];cancel=self.events[identifier]
         committed=False
         persistence_failed=False
+        snapshot_dir=None
         try:
             if cancel.is_set():raise RuntimeError('Đã huỷ upload.')
             if not storage.safe_regular(job['video']):raise ValueError('Video đã bị di chuyển/xóa.')
             info=os.stat(job['video'])
             if (info.st_size,info.st_mtime_ns)!=(job['video_size'],job['video_mtime_ns']):raise ValueError('Video đã đổi sau khi xếp lịch; không upload file khác.')
-            self._update(identifier,status='running',phase='prepare',started_at=self.clock())
+            self._update(identifier,status='running',phase='snapshot',started_at=self.clock())
+            # Upload an independent, task-private copy, never the mutable source
+            # pathname after navigation/auth waits. No hardlink (edits would leak).
+            private_root=self.path.parent/'input-snapshots'
+            manifest._safe_path(str(private_root));private_root.mkdir(mode=0o700,parents=True,exist_ok=True)
+            snapshot_dir=Path(tempfile.mkdtemp(prefix=identifier+'-',dir=private_root))
+            snapshot=snapshot_dir/'video.mp4'
+            with open(job['video'],'rb') as source, snapshot.open('xb') as target:
+                opened=os.fstat(source.fileno())
+                if (opened.st_size,opened.st_mtime_ns)!=(job['video_size'],job['video_mtime_ns']):
+                    raise ValueError('Video đã đổi trước khi tạo bản sao upload.')
+                while True:
+                    if cancel.is_set() or self.stop.is_set():raise RuntimeError('Đã huỷ sao chép video upload.')
+                    chunk=source.read(1024*1024)
+                    if not chunk:break
+                    target.write(chunk)
+                target.flush();os.fsync(target.fileno())
+                after=os.fstat(source.fileno())
+            named=os.stat(job['video'],follow_symlinks=False)
+            if ((opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns)
+                    or (opened.st_dev,opened.st_ino)!=(named.st_dev,named.st_ino)):
+                raise ValueError('Video thay đổi trong khi sao chép; không upload.')
+            self._update(identifier,phase='prepare')
             def checkpoint():
                 nonlocal committed,persistence_failed
                 if cancel.is_set() or self.stop.is_set():raise RuntimeError('Đã huỷ trước bước đăng cuối.')
@@ -211,7 +241,8 @@ class UploadQueue:
                 if 'percent' in allowed:
                     n=allowed['percent'];allowed['percent']=max(0,min(99,float(n))) if type(n) in (int,float) and math.isfinite(n) else 0
                 self._update(identifier,**allowed)
-            result=self.executor(copy.deepcopy(job),cancel,progress,checkpoint) or {}
+            task_input=copy.deepcopy(job);task_input['video']=str(snapshot)
+            result=self.executor(task_input,cancel,progress,checkpoint) or {}
             if result.get('status') not in {'success','draft'}:raise RuntimeError('Không có xác nhận upload/draft từ nền tảng.')
             if not committed:raise RuntimeError('Adapter thiếu checkpoint trước khi đăng; không công bố thành công.')
             self._update(identifier,status='success',phase='done',percent=100,result_url=result.get('url',''),message=result.get('message',''),finished_at=self.clock())
@@ -221,6 +252,10 @@ class UploadQueue:
             self._update(identifier,status=state,phase=state,error=('Lỗi lưu checkpoint; uploader đã dừng để tránh đăng thiếu xác nhận.' if persistence_failed else str(error)[:3000]),
                          screenshot_path=getattr(error,'screenshot_path',''),finished_at=self.clock())
         finally:
+            if snapshot_dir is not None:
+                # Exact random task-owned directory verified above; no project walk.
+                if snapshot_dir.parent == self.path.parent/'input-snapshots' and snapshot_dir.name.startswith(identifier+'-'):
+                    shutil.rmtree(snapshot_dir,ignore_errors=True)
             if self.on_finish:
                 try:self.on_finish(self.get(identifier))
                 except Exception:pass  # durable queue remains authoritative

@@ -129,6 +129,33 @@ class UploaderAPITests(unittest.TestCase):
         self.assertIsNot(first,second)
         self.assertFalse(second.stop.is_set())
 
+    def test_corrupt_account_registry_does_not_stop_vietsub_startup(self):
+        directory=self.root/'uploader';directory.mkdir()
+        target=directory/'accounts.json';target.write_text('{bad',encoding='utf-8')
+        app.initialize_uploader_state()
+        self.assertEqual(target.read_text(),'{bad')
+        self.assertEqual(self.client.get('/').status_code,200)
+        self.assertEqual(self.client.get('/api/uploader/profiles').status_code,409)
+
+    def test_ai_metadata_obeys_acknowledged_cancel(self):
+        entered=threading.Event();cancelled=threading.Event()
+        def request(*args,**kwargs):
+            entered.set()
+            if not app.cancel_event.wait(3):raise RuntimeError('cancel not signalled')
+            if app.cancel_requested():cancelled.set()
+            app.check_cancel_requested()
+        with (patch.object(app,'get_translation_runtime_config',return_value={'provider':'deepseek'}),
+              patch.object(app,'request_translation_completion',side_effect=request),
+              patch.object(app,'cancel_event',threading.Event()),
+              patch.object(app,'shutdown_event',threading.Event())):
+            response=self.client.post('/api/uploader/projects/project-1/metadata',json={})
+            self.assertEqual(response.status_code,202)
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(self.client.post('/api/cancel',json={}).status_code,202)
+            self.assertTrue(cancelled.wait(2))
+        task=app.uploader_api.meta_tasks[response.get_json()['id']]
+        self.assertNotEqual(task['status'],'success')
+
     def test_current_security_contract_still_required(self):
         with patch.dict(app.app.config,TESTING=False):
             self.assertEqual(self.client.get('/api/uploader/profiles').status_code,403)

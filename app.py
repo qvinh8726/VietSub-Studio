@@ -8449,7 +8449,7 @@ def initialize_uploader_state():
     if adapter:
         try:
             adapter.initialize()
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, RuntimeError) as error:
             log_to_app(f'Không nạp được Publish Hub; giữ nguyên dữ liệu: {error}', 'error')
 
 

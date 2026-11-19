@@ -30,7 +30,7 @@ Nếu form, category, audience, identity hoặc privacy không nhận diện đ�
 - Request ID ổn định ngăn duplicate khi mất phản hồi; payload khác cùng ID bị từ chối. Trước irreversible submit lưu checkpoint atomic; restart sau checkpoint không tự retry.
 - Profile khóa theo UUID giữa thread/process; registry và state atomic. Xóa record tài khoản không xóa đệ quy browser data; cần tự sao lưu/xoá config theo chủ ý nếu muốn giải phóng dung lượng.
 - Secrets/cookie/storage_state không nằm project manifest hoặc API public. Data directory nên ở tài khoản Windows riêng/ổ đĩa riêng tư, không commit/cloud-share profiles.
-- Queue source path/file identity được chụp khi gửi; file đổi/di chuyển thì dừng, không upload một video khác. Cleanup VietSub/editor bảo vệ input của queued/running uploads.
+- Queue source path/file identity được chụp khi gửi; file đổi/di chuyển thì dừng. Trước khi mở browser, mỗi upload tạo bản sao MP4 độc lập trong input-snapshots (cần thêm dung lượng bằng một video đang upload), không dùng hardlink/path nguồn có thể đổi trong lúc đăng. Bản sao được dọn sau tác vụ; cleanup VietSub/editor bảo vệ nguồn queued/running.
 - Session hết hạn/challenge/captcha không được giải hoặc bypass tự động. Login lại bằng nút thủ công rồi retry có kiểm tra.
 - Không có video/tài khoản production nào được đăng trong quá trình QA. Tests mock browser chứng minh contract/isolated state, không phải bằng chứng platform đã chấp nhận nội dung live.
 

@@ -242,7 +242,10 @@ class UploaderAPI:
                 admitted=self.app.workflow_lock.acquire(blocking=False)
                 try:
                     if not admitted:raise RuntimeError('VietSub vừa bắt đầu; hãy tạo metadata lại sau.')
-                    self.app.workflow_context.cancel_event=Event()
+                    # Share the legacy cancellation event while holding workflow_lock;
+                    # /api/cancel must stop this acknowledged workflow as well.
+                    self.app.cancel_event.clear()
+                    self.app.workflow_context.cancel_event=self.app.cancel_event
                     config=self.app.get_translation_runtime_config(require_ready=True)
                     prompt=publish.build_prompt(self.app.read_text_file(result['translated_srt']),result.get('project_name',''))
                     if config['provider']=='notebook':
