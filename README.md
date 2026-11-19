@@ -32,6 +32,17 @@
 >
 > Video tải về nằm chờ trong `.vietsub-downloads` bên trong thư mục xuất, rồi được chuyển vào folder project sau khi SRT tiếng Việt vượt qua kiểm tra; nhờ vậy chỉ có một bản video dung lượng lớn và mỗi project hoàn tất đều tự chứa đủ file. Trong cửa sổ app, file MP4/MKV trên máy được dùng tại chỗ và hard-link vào project nếu cùng ổ đĩa (khác ổ thì sao chép); không upload, không sao chép qua `%TEMP%`.
 
+## VietSub Studio v2.0.0 — 3-in-1 Creator Workbench
+
+**VietSub → Auto Edit → Publish Hub** share three instant-switch workspaces, versioned project sidecars, local fonts, Sakuga effects and the existing VietSub DOM/API contracts.
+
+- **VietSub:** preview/crop, sequential OCR/translation, source imports, recovery and safe bulk cleanup.
+- **Auto Edit:** FFmpeg masking/ASS/banner/PNG/vertical reframe, audio extract/mute, CapCut TTS cue alignment/ducking and cancellable render with NVENC/CPU fallback. Heavy stem-separation and Edge runtimes remain optional/external. [Auto Edit guide](<docs/AUTO_EDIT_GUIDE.md>).
+- **Publish Hub:** independent account profiles for TikTok, YouTube, Facebook Page/Meta Business Suite, Douyin, Bilibili and Xiaohongshu; explicit manual login/check, edited-video or MP4 selection, metadata/AI proposals, visibility capabilities and durable local-schedule queues. [Publish Hub guide and mode limitations](<docs/PUBLISH_HUB_GUIDE.md>).
+
+**Lưu ý xuất bản:** lịch là cục bộ, app/máy phải đang chạy; public cần xác nhận; sau submit chưa rõ kết quả phải kiểm tra nền tảng trước retry. Browser selectors và quyền tài khoản có thể thay đổi; QA không đăng video lên tài khoản production. Facebook hỗ trợ Page/Business Suite, không tự đoán profile cá nhân hay legal/audience/category defaults. Không giải CAPTCHA hoặc nhúng cookie/key. Core portable không đóng gói ONNX/Demucs/torch.
+
+
 ---
 
 # English
@@ -140,7 +151,8 @@ The project is designed around the parts of long-form subtitle work that become 
 - Tells the model the job's real OCR language; Vietnamese OCR text is proofread instead of translated.
 - Uses Google Chrome by default, or Microsoft Edge or another Chromium `.exe` chosen in Settings, always with the app's own profile (`--user-data-dir` in the config folder), so it runs next to the browser you work in and never uses your profile. Playwright connects to it over CDP on `127.0.0.1:9222` only.
 - Starts the browser only when it is needed (Gemini Notebook, a download that needs a page, or a login button), never when the app opens with an API provider. Only one request starts it at a time, and the start tab is reused, so no duplicate tabs open.
-- Starts the browser minimized by default while disabling background throttling that could stall automation.
+- Starts the browser in true Chromium `--headless=new` mode by default, with `--disable-blink-features=AutomationControlled`; normal automation has no visible/minimized window.
+- Reuses the initial tab and closes the app-owned browser after 60 idle seconds. Active downloads, translations and CAPTCHA waits hold a lease, so they are not interrupted.
 - Waits for the actual Notebook chat interface before deciding that login is required.
 - Shows the browser only when Google authentication expires or the Notebook needs manual inspection.
 - Provides an explicit sign-in action (**Mở Chrome đăng nhập**, named after the selected browser) for failed jobs.
@@ -170,7 +182,7 @@ The project is designed around the parts of long-form subtitle work that become 
 - Supports a native Windows folder picker and a configurable output directory.
 - Warns when the effective project output directory is inside OneDrive, where large exports may be slowed by cloud synchronization.
 - Creates or recreates a Desktop shortcut for the packaged EXE.
-- Keeps the browser window minimized during normal translation and downloads while retaining a reliable visible fallback.
+- Uses headless automation for normal translation/downloads and a same-profile visible fallback for manual authentication or CAPTCHA. No CAPTCHA solving/bypass is performed.
 - Ships as a portable one-file Windows EXE with a custom icon.
 
 ### Updates, openness, and safety

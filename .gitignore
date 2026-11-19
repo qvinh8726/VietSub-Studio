@@ -10,6 +10,15 @@ local_videos/
 /chrome_debug_profile/
 /edge_debug_profile/
 /custom_browser_profile/
+/uploader/
+/editor-previews/
+/editor-tts-cache/
+/phase1-qa/
+/phase2-qa/
+/phase3-qa/
+/workbench-qa/
+/hi.txt
+/plan_v2.txt
 
 # Release artifacts are uploaded to GitHub Releases, not committed to Git
 *.zip
@@ -40,6 +49,9 @@ VietSub Studio/
 
 # Series Studio is maintained as a separate standalone project
 /Series Studio/
+
+# Local QA screenshots/reports (regenerate with tools/*_qa.py)
+/artifacts/
 
 # Logs and temporary files
 *.log

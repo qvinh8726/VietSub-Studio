@@ -4,6 +4,69 @@ These steps publish a release that every portable build since v1.3.0 can install
 
 Các bước dưới đây phát hành một bản mà mọi bản portable từ v1.3.0 trở lên tự cài được. Ví dụ dùng `1.5.4`; hãy thay bằng phiên bản bạn phát hành.
 
+## v2.0.0 release gate — Creator Workbench
+
+The four-phase implementation is now integrated for v2.0.0. Historical Phase1/2 notes below describe those approval points, not the current release scope. Run all deterministic QA before publishing; no real account uploads are part of CI.
+
+```powershell
+python -m py_compile app.py automate.py tools/make_release.py tools/phase1_qa.py tools/phase2_qa.py tools/phase3_qa.py
+python -m compileall -q vietsub
+python -m unittest discover -s tests -v
+node --check static/app.js
+node --check static/workbench.js
+node --check static/editor.js
+node --check static/uploader.js
+node --check static/sakuga-vfx.js
+node --test tests/frontend/*.test.mjs
+python tools/phase3_qa.py --output "$env:TEMP\vietsub-publish-qa"
+```
+
+Publish Hub needs the selected local Chromium browser; Playwright remains bundled and lazy-loaded, Patchright is optional. Independent account directories/storage_state must never be committed or packaged. Local schedules need the app running; uncertain final submissions require user reconciliation, not auto retry. See [Publish Hub capabilities](<docs/PUBLISH_HUB_GUIDE.md>) for visibility/platform limitations and account preparation. Facebook targets Page/Business Suite, not personal profiles. No production platform upload has been performed for release QA; mock and local browser tests do not establish live account/platform acceptance.
+
+Commit only reviewed source/docs/tests; exclude scratch `hi.txt`/`plan_v2.txt`, profiles, cookies, media and artifacts. Push `main`, require the exact SHA's full **Tests and package smoke** workflow green, then tag/publish verified ZIP+SHA256 assets as v2.0.0. Keep release notes explicit about browser-selector drift, optional runtime/model setup and local scheduling.
+
+## Phase 1 Creator Workbench preview / Bản xem trước Phase 1
+
+The Phase 1 preview was implemented on the v1.8.0 baseline; Phase 2 is now added below. Keep `APP_VERSION` unchanged until all four phases are approved; do not publish the three-workspace shell as a complete v2.0.0 release. Phase 1 has no new runtime dependencies; editor AI libraries/models remain optional external runtimes, not portable defaults.
+
+Phần Phase 1 đã hoàn tất, hiện tiếp tục Phase 2 Auto Edit bên dưới, cùng baseline v1.8.0. Chưa đổi version/push/release v2.0.0. Không đóng gói model ONNX/Demucs/inpainting. Local portable build/smoke là kiểm tra kỹ thuật; phát hành và xác nhận GitHub Actions của SHA phát hành vẫn là cổng Phase 4, không được thay thế bằng `py_compile`.
+
+Additional local acceptance commands / Kiểm tra bổ sung:
+
+```powershell
+python -m py_compile vietsub/manifest.py vietsub/sources/browser.py vietsub/sources/browser_lifecycle.py tools/phase1_qa.py
+python tools/phase1_qa.py --output "$env:TEMP\vietsub-phase1-qa"
+# Opt-in isolated local Chrome lifecycle smoke (no platform/account traffic):
+$env:VIETSUB_BROWSER_SMOKE = "1"
+python -m unittest tests.test_browser_lifecycle.RealChromeLifecycleTests -v
+Remove-Item Env:VIETSUB_BROWSER_SMOKE
+```
+
+The Phase 1 runner uses real local project handoff/signed media/settings/cleanup in a temporary sandbox at 1280×720, 1440×900 and 1920×1080. It must preserve all 115 legacy DOM IDs, preview/crop/transport state, local fonts, Sakuga behavior and the existing CSP. It does not validate external CAPTCHA/account sessions, render edited videos or upload anything. Keep generated QA artifacts and local scratch files out of the release commit.
+
+## Phase 2 Auto Edit / Optional runtimes
+
+Phase 2 adds no mandatory Python dependency: core uses FFmpeg/FFprobe + stdlib. Do not add `torch`, `demucs`, `onnxruntime`, `audio_separator` or `edge_tts` to the default portable requirements. Both PyInstaller specs explicitly exclude them; optional providers run in an external interpreter.
+
+- Configure **Auto Edit → Runtime** (also linked from Settings) with an absolute external `python.exe` path. Commands are copy-only; app does not run pip or download models.
+- Edge fallback: `<python.exe> -m pip install edge-tts` in that interpreter. Account/network/voice availability is still provider-dependent.
+- Stem separation: `<python.exe> -m pip install "audio-separator[cpu]"`, separately obtain a compatible ONNX model and required metadata under its license, then set model directory + filename. The adapter defaults to offline mode; missing model/config fails explicitly, never returns original vocals as “instrumental”. BGM/SFX preservation is not guaranteed.
+- CapCut uses an internal common-task compatibility route. A fixed anonymous Vietnamese phrase and rendered MP4 were live-tested on 2026-11-19; this is not an entitlement/uptime guarantee. CapCut compatibility can be disabled in Runtime. No request is made at boot and text is sent only on explicit synthesis/render. Explicit operator auth, if needed, is read only from `VIETSUB_CAPCUT_COOKIE` / `VIETSUB_CAPCUT_BEARER`, kept in memory and never sent to artifact hosts.
+
+Additional acceptance (FFmpeg/Playwright Chromium required):
+
+```powershell
+python -m compileall -q vietsub
+node --check static/editor.js
+python -m unittest discover -s tests -v
+node --test tests/frontend/*.test.mjs
+python tools/phase2_qa.py --output "$env:TEMP\vietsub-phase2-qa"
+# Optional live external test, fixed public phrase only; empty output directory:
+python tools/editor_live_smoke.py --live --output "$env:TEMP\vietsub-capcut-live"
+```
+
+The deterministic UI runner uses a synthetic provider tone for audio alignment/mixing; it does not represent a live CapCut voice. Never run live TTS tests in CI automatically. Phase 2 local build smoke is validation only, not permission to tag/push/release v2.0.0. CapCut Draft export remains optional and is not included yet.
+
 ## English
 
 ### 1. Prepare the version

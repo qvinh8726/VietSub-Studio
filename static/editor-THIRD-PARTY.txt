@@ -1,0 +1,38 @@
+VietSub Studio Auto Edit — third-party protocol references
+
+CapCut common-task request field names, device defaults, public key material and
+curated voice identifiers were independently implemented/transcribed with reference
+to K07VN/capcut-tts-api revision 7ab87fbd12cbafa60bea4a48903eddf42a939b07:
+https://github.com/K07VN/capcut-tts-api/tree/7ab87fbd12cbafa60bea4a48903eddf42a939b07
+
+The inspected upstream pyproject.toml declares the MIT license; the inspected tree
+contains no separate LICENSE file/copyright notice. This project does not claim
+ownership of CapCut service/catalog assets and does not redistribute CapCut software,
+accounts, credentials or audio-separator models. Service/voice entitlement is decided
+by the provider. The RSA compatibility algorithm is not represented as an official
+CapCut API or guaranteed authentication mechanism.
+
+MIT License (for the repository's declared MIT-licensed protocol implementation)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this
+software and associated documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation the rights to use, copy,
+modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so, subject to the
+following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Optional runtimes are NOT distributed as part of the default portable application:
+- edge-tts: https://github.com/rany2/edge-tts
+- audio-separator: https://github.com/nomadkaraoke/python-audio-separator
+Users installing them or model weights are responsible for the corresponding licenses
+and provider terms. FFmpeg and fonts retain their respective license requirements.

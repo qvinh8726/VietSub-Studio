@@ -32,6 +32,13 @@
         let displayedLogCount = 0;
         let progressJobId = '';
         let resultOpenPath = '';
+        let visibleResult = null, resultJobId = '';
+        let handoffSequence = 0, activeHandoff = null;
+        const pendingHandoffs = new Set(), handoffStates = new Map();
+        let queueHandoffViews = [];
+        const workspaceProjects = {editor: '', uploader: ''}, projectReadSequence = {editor: 0, uploader: 0};
+        const workspaceLabels = {editor: 'Auto Edit', uploader: 'Đăng đa nền tảng'};
+        const handoffLabels = {editor: 'Chuyển sang Auto Edit →', uploader: 'Đẩy sang Đăng đa nền tảng →'};
         let toastTimer = null;
         let automaticUpdateSupported = false;
         let pollFailureCount = 0;
@@ -577,10 +584,10 @@
 
         function formatDiskBytes(value) {
             const bytes = Math.max(0, Number(value) || 0);
-            if (bytes < 1024) return `${Math.round(bytes)} B`;
-            const units = ['KiB', 'MiB', 'GiB', 'TiB'];
-            const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length);
-            return `${(bytes / 1024 ** power).toLocaleString('vi-VN', {maximumFractionDigits: 1})} ${units[power - 1]}`;
+            if (bytes < 1000) return `${Math.round(bytes)} B`;
+            const units = ['KB', 'MB', 'GB', 'TB'];
+            const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1000)), units.length);
+            return `${(bytes / 1000 ** power).toLocaleString('vi-VN', {maximumFractionDigits: 1})} ${units[power - 1]}`;
         }
 
         function isOlderFinished(job, now = Date.now()) {
@@ -615,6 +622,7 @@
             byId('queue-selection-count').textContent = `${count} đã chọn`;
             byId('bulk-delete-btn').disabled = bulkDeleteBusy || !count;
             byId('queue-clear-selection').disabled = bulkDeleteBusy || !count;
+            byId('queue-select-success').disabled = bulkDeleteBusy || !queueJobs.some(job => job.status === 'success');
             byId('queue-select-finished').disabled = bulkDeleteBusy || !queueJobs.some(job => finishedStatuses.has(job.status));
             byId('queue-select-old').disabled = bulkDeleteBusy || !queueJobs.some(job => isOlderFinished(job));
             byId('clear-finished-btn').disabled = byId('queue-select-finished').disabled;
@@ -671,7 +679,7 @@
             selectedQueueIds.clear();
             for (const job of queueJobs) {
                 if (job.status === 'running') continue;
-                if (mode === 'all' || (mode === 'finished' && finishedStatuses.has(job.status)) || (mode === 'old' && isOlderFinished(job))) selectedQueueIds.add(job.id);
+                if (mode === 'all' || (mode === 'success' && job.status === 'success') || (mode === 'finished' && finishedStatuses.has(job.status)) || (mode === 'old' && isOlderFinished(job))) selectedQueueIds.add(job.id);
             }
             renderQueue();
         }
@@ -725,6 +733,134 @@
             }
         }
 
+        function sameResult(left, right) {
+            if (!left || !right) return false;
+            if (left === right) return true;
+            for (const key of ['translated_srt', 'project_dir']) {
+                if (left[key] && right[key]) return left[key] === right[key];
+            }
+            return Boolean(left.video && left.raw_srt && left.video === right.video && left.raw_srt === right.raw_srt);
+        }
+
+        function findResultJobId(result, preferred = '') {
+            // Old queueResult objects have paths, not job IDs. Paths only identify a matching
+            // queue entry locally; the handoff API always receives that entry's ID, never paths.
+            if (preferred) return preferred;
+            const matches = queueJobs.filter(job => job.status === 'success' && sameResult(result, job.result));
+            return matches.length === 1 ? matches[0].id : '';
+        }
+
+        function updateHandoffView(view) {
+            const state = handoffStates.get(view.jobId);
+            for (const name of ['editor', 'uploader']) {
+                const button = view.buttons[name], pending = pendingHandoffs.has(`${view.jobId}:${name}`);
+                button.disabled = !view.jobId || view.deleted || pending || bulkDeleteBusy;
+                button.textContent = pending ? `Đang bàn giao sang ${workspaceLabels[name]}…` : handoffLabels[name];
+                button.setAttribute('aria-busy', String(pending));
+                button.dataset.handoffJob = view.jobId;
+                button.dataset.handoffWorkspace = name;
+            }
+            view.status.textContent = view.deleted ? 'Đã dọn video nguồn; không thể bàn giao sang Auto Edit / Đăng đa nền tảng.' :
+                !view.jobId ? 'Chưa xác định được job của kết quả; hãy mở từ lịch sử job thành công.' : state?.message || '';
+            view.status.dataset.state = view.deleted || !view.jobId ? 'error' : state?.state || '';
+        }
+
+        function refreshHandoffViews() {
+            if (visibleResult && !resultJobId) resultJobId = findResultJobId(visibleResult);
+            byId('result-handoff-actions').hidden = !visibleResult;
+            updateHandoffView({jobId: resultJobId, deleted: visibleResult?.source_video_deleted === true,
+                buttons: {editor: byId('result-editor-btn'), uploader: byId('result-uploader-btn')}, status: byId('result-handoff-status')});
+            for (const view of queueHandoffViews) updateHandoffView(view);
+        }
+
+        function queueHandoffActions(job) {
+            const group = document.createElement('div'); group.className = 'handoff-actions';
+            group.setAttribute('aria-label', `Bàn giao ${job.project_name || job.video_title || job.id}`);
+            const view = {jobId: job.id, deleted: job.result?.source_video_deleted === true, buttons: {}};
+            for (const name of ['editor', 'uploader']) {
+                const button = document.createElement('button'); button.type = 'button'; button.className = 'btn-ghost';
+                button.onclick = () => handoffProject(job.id, name);
+                view.buttons[name] = button; group.appendChild(button);
+            }
+            view.status = document.createElement('span'); view.status.className = 'handoff-status';
+            view.status.setAttribute('role', 'status'); view.status.setAttribute('aria-live', 'polite');
+            group.appendChild(view.status); queueHandoffViews.push(view); updateHandoffView(view);
+            return group;
+        }
+
+        function validateProjectSnapshot(data, jobId, workspace, requireReady = false) {
+            if (!data || data.job_id !== jobId || (requireReady && data.workspace !== workspace) ||
+                !data.manifest || data.manifest.schema_version !== 1 || typeof data.manifest.project_id !== 'string' ||
+                !data.availability || typeof data.availability.video !== 'boolean' || typeof data.availability.translated_srt !== 'boolean' ||
+                typeof data.ready !== 'boolean') throw new Error('Máy chủ trả về project không hợp lệ hoặc không đúng job.');
+            if (requireReady && (!data.ready || data.availability.video !== true || data.availability.translated_srt !== true)) {
+                throw new Error('Video nguồn hoặc phụ đề Việt không còn khả dụng; không thể bàn giao. Nếu đã dọn video, hãy khôi phục file trước.');
+            }
+            return data;
+        }
+
+        async function handoffProject(jobId, workspace) {
+            if (!jobId || !Object.hasOwn(workspaceLabels, workspace) || bulkDeleteBusy) return;
+            const key = `${jobId}:${workspace}`;
+            if (pendingHandoffs.has(key)) return;
+            const knownJob = queueJobs.find(job => job.id === jobId);
+            if (knownJob?.result?.source_video_deleted === true) return;
+            const request = {sequence: ++handoffSequence, jobId, workspace, epoch: queueEpoch,
+                navigation: window.VietSubWorkbench?.workspaceState().revision};
+            const previous = activeHandoff;
+            if (previous && previous.jobId !== jobId) handoffStates.delete(previous.jobId);
+            if (previous && previous.workspace !== workspace) window.VietSubWorkbench?.projectStatus(previous.workspace, '', '');
+            activeHandoff = request; pendingHandoffs.add(key); projectReadSequence[workspace]++;
+            handoffStates.set(jobId, {state: 'loading', message: `Đang kiểm tra file và bàn giao sang ${workspaceLabels[workspace]}…`});
+            window.VietSubWorkbench?.projectStatus(workspace, 'Đang kiểm tra video và phụ đề trên máy…', 'loading');
+            refreshHandoffViews();
+            try {
+                const data = await fetchJson(`/api/projects/${encodeURIComponent(jobId)}/handoff`, {
+                    method: 'POST', body: JSON.stringify({workspace}),
+                });
+                if (activeHandoff !== request || request.epoch !== queueEpoch) return;
+                validateProjectSnapshot(data, jobId, workspace, true);
+                workspaceProjects[workspace] = jobId;
+                window.VietSubWorkbench?.projectReceived(workspace, data);
+                handoffStates.set(jobId, {state: 'ready', message: `Đã bàn giao sang ${workspaceLabels[workspace]}${workspace === 'editor' ? ' · sẵn sàng Auto Edit.' : ' · chưa upload lên nền tảng.'}`});
+                const navigation = window.VietSubWorkbench?.workspaceState().revision;
+                // A late response may update staging data, but must not undo a user's tab/modal choice.
+                if (navigation === request.navigation && !byId('workbench-shell').inert && !bulkDialogOpen) window.VietSubWorkbench?.selectWorkspace(workspace, true);
+                showToast(`Đã nhận project trong ${workspaceLabels[workspace]}.${workspace === 'editor' ? ' Sẵn sàng chỉnh sửa và render.' : ' Chưa upload lên nền tảng.'}`);
+            } catch (error) {
+                if (activeHandoff !== request || request.epoch !== queueEpoch) return;
+                const message = error.status === 409 ? `${error.message} Video gốc đã bị dọn sẽ không thể dùng cho Auto Edit / Đăng đa nền tảng.` : error.message;
+                handoffStates.set(jobId, {state: 'error', message});
+                window.VietSubWorkbench?.projectStatus(workspace, message, 'error');
+                showToast(message, 'error');
+            } finally {
+                pendingHandoffs.delete(key);
+                if (activeHandoff === request) {
+                    activeHandoff = null;
+                    if (request.epoch !== queueEpoch) {
+                        handoffStates.delete(jobId);
+                        window.VietSubWorkbench?.projectStatus(workspace, 'Hàng đợi đã thay đổi; hãy thử bàn giao lại.', 'error');
+                    }
+                }
+                refreshHandoffViews();
+            }
+        }
+
+        async function refreshProject(workspace, jobId) {
+            if (!Object.hasOwn(workspaceProjects, workspace) || !jobId || workspaceProjects[workspace] !== jobId) return;
+            const sequence = ++projectReadSequence[workspace];
+            window.VietSubWorkbench?.projectStatus(workspace, 'Đang kiểm tra lại video và phụ đề…', 'loading');
+            try {
+                const data = await fetchJson(`/api/projects/${encodeURIComponent(jobId)}?workspace=${encodeURIComponent(workspace)}`);
+                if (sequence !== projectReadSequence[workspace] || workspaceProjects[workspace] !== jobId) return;
+                validateProjectSnapshot(data, jobId, workspace);
+                window.VietSubWorkbench?.projectReceived(workspace, data);
+            } catch (error) {
+                if (sequence !== projectReadSequence[workspace]) return;
+                window.VietSubWorkbench?.projectStatus(workspace, error.message, 'error');
+            }
+        }
+
         function renderQueue() {
             const list = byId('queue-list');
             for (const id of selectedQueueIds) {
@@ -747,9 +883,12 @@
                 cancelButton.disabled = false;
                 cancelButton.textContent = 'Huỷ job';
             }
+            queueHandoffViews = []; refreshHandoffViews();
             if (!queueJobs.length) { list.innerHTML = '<div class="queue-empty">Hàng đợi đang trống.<br>Chuẩn bị preview đầu tiên để bắt đầu.</div>'; return; }
-            const focusJobId = document.activeElement?.dataset.selectJob;
-            let focusCheckbox = null;
+            const active = document.activeElement;
+            const focusJobId = active?.dataset.selectJob, focusHandoffJob = active?.dataset.handoffJob, focusHandoffWorkspace = active?.dataset.handoffWorkspace;
+            const listIsVisible = !byId('workbench').hidden && !byId('workbench-shell').inert;
+            let focusCheckbox = null, focusHandoff = null;
             list.replaceChildren();
             queueJobs.forEach((job, index) => {
                 const row = document.createElement('article'); row.className = `queue-item ${job.status}${selectedQueueIds.has(job.id) ? ' is-selected' : ''}`; row.dataset.jobId = job.id;
@@ -782,12 +921,19 @@
                 if (job.status !== 'running') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = 'Xoá bản ghi'; remove.title = 'Chỉ xoá bản ghi; giữ nguyên tất cả file'; remove.disabled = bulkDeleteBusy; remove.onclick = () => removeQueueJob(job.id, job.status); actions.appendChild(remove); }
                 if (job.status === 'error' || job.status === 'cancelled') { const retry = document.createElement('button'); retry.className = 'btn-secondary'; retry.disabled = bulkDeleteBusy; retry.textContent = job.retry_step === 'translate' ? 'Chạy lại bước dịch' : job.retry_step === 'ocr' ? 'Chạy lại từ OCR' : 'Chạy lại từ video'; retry.onclick = () => retryQueueJob(job.id); actions.appendChild(retry); }
                 if (job.needs_edge_login) { const login = document.createElement('button'); login.className = 'btn-ghost'; login.textContent = `Mở ${browserName} đăng nhập`; login.onclick = showEdgeLogin; actions.appendChild(login); }
-                if (job.status === 'success' && job.result_ready) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true); actions.appendChild(open); }
+                if (job.status === 'success' && job.result_ready) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở kết quả'; open.onclick = () => showResult(job.result, true, job.id); actions.appendChild(open); }
                 else if ((job.status === 'error' || job.status === 'cancelled') && job.result?.project_dir) { const open = document.createElement('button'); open.className = 'btn-ghost'; open.textContent = 'Mở thư mục làm dở'; open.onclick = () => openResultPath(job.result.project_dir); actions.appendChild(open); }
+                if (job.status === 'success') {
+                    actions.appendChild(queueHandoffActions(job));
+                    if (job.id === focusHandoffJob) focusHandoff = queueHandoffViews[queueHandoffViews.length - 1].buttons[focusHandoffWorkspace];
+                }
                 if (actions.children.length) row.appendChild(actions);
                 list.appendChild(row);
             });
-            focusCheckbox?.focus({preventScroll: true});
+            if (listIsVisible) {
+                if (focusHandoff && !focusHandoff.disabled) focusHandoff.focus({preventScroll: true});
+                else focusCheckbox?.focus({preventScroll: true});
+            }
         }
 
         async function loadQueue() {
@@ -898,7 +1044,7 @@
                 // A preview download has its own panel; otherwise the live download belongs to the job.
                 if (!downloadWatchTimer) renderDownloadProgress(data.download, 'job');
                 if (data.status !== 'idle') updateSteps(data.step, data.status);
-                if (data.status === 'success' && data.result_ready) showResult(data.result, false);
+                if (data.status === 'success' && data.result_ready) showResult(data.result, false, data.job_id || progressJobId);
                 else if (['running', 'error', 'cancelled'].includes(data.status)) hideResult();
                 window.VietSubWorkbench?.progressChanged(data);
                 pollFailureCount = 0;
@@ -910,13 +1056,17 @@
         }
 
         function hideResult() {
-            resultOpenPath = '';
+            resultOpenPath = ''; visibleResult = null; resultJobId = '';
+            refreshHandoffViews();
             byId('res-video').textContent = ''; byId('res-thumbnail').textContent = ''; byId('res-thumbnail-row').hidden = true; byId('res-raw').textContent = ''; byId('res-vi').textContent = '';
             byId('result-box').hidden = true;
             window.VietSubWorkbench?.resultHidden();
         }
 
-        function showResult(result, scroll = false) {
+        function showResult(result, scroll = false, jobId = '') {
+            visibleResult = result;
+            resultJobId = findResultJobId(result, jobId || progressJobId);
+            refreshHandoffViews();
             resultOpenPath = result.project_dir || result.translated_srt || '';
             byId('result-title').textContent = `${result.project_name || 'Bộ file'} đã sẵn sàng`;
             byId('res-video').textContent = result.source_video_deleted === true ? 'Đã dọn video nguồn · phụ đề được giữ lại' : result.video || ''; byId('res-thumbnail').textContent = result.thumbnail || ''; byId('res-thumbnail-row').hidden = !result.thumbnail; byId('res-raw').textContent = result.raw_srt || ''; byId('res-vi').textContent = result.translated_srt || '';
@@ -1326,7 +1476,10 @@
         }
 
         window.addEventListener('load', () => {
-            window.VietSubWorkbench?.init({request: fetchJson, notify: showToast, endCropDrag, updateSteps});
+            window.VietSubWorkbench?.init({request: fetchJson, notify: showToast, endCropDrag, updateSteps, refreshProject,
+                projectReceived: (workspace, snapshot) => {
+                    if (Object.hasOwn(workspaceProjects, workspace) && snapshot?.job_id) workspaceProjects[workspace] = snapshot.job_id;
+                }});
             byId('preview-form').addEventListener('submit', preparePreview);
             byId('local-video-btn').onclick=chooseLocalVideo; byId('local-video-input').addEventListener('change', prepareLocalPreview);
             byId('batch-queue-btn').onclick = importShareLinks;
@@ -1346,6 +1499,7 @@
                 refreshComposerControls();
             });
             byId('queue-select-all').addEventListener('change', event => setQueueSelection(event.target.checked ? 'all' : 'none'));
+            byId('queue-select-success').onclick = () => setQueueSelection('success');
             byId('queue-select-finished').onclick = () => setQueueSelection('finished');
             byId('queue-select-old').onclick = () => setQueueSelection('old');
             byId('queue-clear-selection').onclick = () => setQueueSelection('none');
@@ -1387,6 +1541,7 @@
             byId('save-crop-btn').onclick=saveDefaultCrop;
             byId('start-queue-btn').onclick=startQueue; byId('cancel-btn').onclick=cancelJob; byId('clear-finished-btn').onclick=clearFinished;
             byId('open-result-btn').onclick=openResult;
+            for (const name of ['editor', 'uploader']) byId(`result-${name}-btn`).onclick = () => handoffProject(resultJobId, name);
             byId('setting-translation-provider').addEventListener('change', () => { updateTranslationProviderUI(true); saveSettings(); });
             byId('setting-translation-instructions').addEventListener('change', saveSettings);
             byId('reset-translation-instructions-btn').onclick=resetTranslationInstructions;

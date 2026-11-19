@@ -1,5 +1,24 @@
-VIETSUB STUDIO - HUONG DAN CAI DAT VA SU DUNG
+VIETSUB STUDIO v2.0.0 - 3-IN-1 CREATOR WORKBENCH
 ================================================
+
+0. BA WORKSPACE
+- Thanh ben trai: VietSub / Auto Edit / Dang da nen tang. Chuyen ngay, khong reload.
+- VietSub giu luong OCR/dich cu. Ket qua/hang doi co nut chuyen sang Auto Edit hoac Publish Hub.
+- Auto Edit can FFmpeg va FFprobe trong PATH: che chu boxblur/delogo/thanh mau, burn ASS,
+  font local, banner/logoPNG, khung doc nen mo, tach MP3/WAV/mute, CapCut TTS va render co %/fps/huy.
+  Preview nguon khong hien effect; ket qua render nam rieng, khong ghi de video/SRT goc.
+- CapCut TTS la HTTP noi bo, chi gui text khi ban yeu cau. Edge/audio-separator la runtime
+  Python ngoai tuy chon; app khong tu cai pip/model va khong dong goi ONNX/Demucs/torch.
+- Publish Hub: tao profile rieng tung tai khoan, dang nhap thu cong va bam da xong,
+  kiem tra phien, chon video da edit hoac MP4, duyet metadata, chon nhieu account va visibility.
+  Public can xac nhan. Lich la CUC BO Asia/Saigon UTC+07; app/may/mang phai dang hoat dong.
+- Neu sau submit chua ro ket qua (uncertain), kiem tra nen tang truoc retry de tranh dang trung.
+  Huy khong dam bao go video da dang. Khong giai/bypass CAPTCHA.
+- TikTok/Douyin: public/private/draft. YouTube/Xiaohongshu: public/private, khong explicit draft.
+  Facebook Page/Meta Business va Bilibili: public/draft, khong private. Facebook can Page da chon;
+  YouTube can audience, Bilibili can category/copyright da duoc nguoi dung chon truoc.
+- Browser UI co the thay doi; khi khong xac dinh duoc privacy/identity/confirmation app dung
+  de xac minh, khong tu chuyen sang public. QA release khong dang video tai khoan production.
 
 1. CHAY APP
 - Giai nen file ZIP vao mot thu muc rieng. ZIP co san thu muc "VietSub Studio"

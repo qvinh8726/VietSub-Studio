@@ -132,13 +132,28 @@ class FakeDebugPort:
     def ours(self, fresh=False):
         return bool(self.commands) and self.polls > self.polls_until_ready
 
+    def instance(self, config=None):
+        if not self.ours():
+            return None
+        command = self.commands[-1]
+        return {"pid": 42, "profile": app.browser_profile_dir("chrome"), "executable": CHROME,
+                "session": CHROME_PAYLOAD["webSocketDebuggerUrl"],
+                "headless": any(argument.startswith("--headless") for argument in command)}
+
 
 class EnsureBrowserTests(unittest.TestCase):
+    def setUp(self):
+        app.browser_lifecycle.forget()
+
+    def tearDown(self):
+        app.browser_lifecycle.forget()
+
     def patches(self, port, sleep=None):
         return (
             patch.object(app, "resolve_browser_executable", return_value=CHROME),
             patch.object(app, "read_debug_payload", side_effect=port.payload),
             patch.object(app, "check_browser_status", side_effect=port.ours),
+            patch.object(app, "owned_browser_instance", side_effect=port.instance),
             patch.object(app, "browser_profile_in_use", return_value=False),
             patch.object(app, "minimize_browser_window"),
             patch.object(app.subprocess, "Popen", side_effect=port.popen),
@@ -269,6 +284,7 @@ class EnsureBrowserTests(unittest.TestCase):
             patch.object(app, "resolve_browser_executable", return_value=CHROME),
             patch.object(app, "read_debug_payload", side_effect=payload),
             patch.object(app, "check_browser_status", side_effect=port.ours),
+            patch.object(app, "owned_browser_instance", side_effect=port.instance),
             patch.object(app, "get_debug_port_owner", return_value=old),
             patch.object(app, "close_debug_browser", side_effect=lambda owner: state.update(closed=True)) as close,
             patch.object(app, "browser_profile_in_use", return_value=False),

@@ -221,8 +221,13 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(app.resolve_edge_executable(), os.path.abspath(per_user_edge))
 
     def test_edge_start_reuses_an_existing_debug_endpoint(self):
+        self.addCleanup(app.browser_lifecycle.forget)
         with (
             patch.object(app, "check_browser_status", return_value=True),
+            patch.object(app, "owned_browser_instance", return_value={
+                "pid": 123, "headless": False, "session": "ws://127.0.0.1:9222/devtools/browser/test-reuse",
+                "profile": app.browser_profile_dir(), "executable": "chrome.exe",
+            }),
             patch.object(app.subprocess, "Popen") as popen,
         ):
             self.assertTrue(
@@ -259,8 +264,13 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(owner_check.call_count, 3)
 
     def test_automation_always_reverifies_the_edge_owner(self):
+        self.addCleanup(app.browser_lifecycle.forget)
         with (
             patch.object(app, "check_browser_status", return_value=True) as status,
+            patch.object(app, "owned_browser_instance", return_value={
+                "pid": 123, "headless": True, "session": "ws://127.0.0.1:9222/devtools/browser/test-verify",
+                "profile": app.browser_profile_dir(), "executable": "chrome.exe",
+            }),
             patch.object(app.subprocess, "Popen") as popen,
         ):
             self.assertTrue(app.ensure_browser_running())

@@ -17,6 +17,7 @@ import base64
 import http.client
 import webbrowser
 import hashlib
+import hmac
 import secrets
 import tempfile
 import zipfile
@@ -29,6 +30,7 @@ from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
 from vietsub import storage, publish
+from vietsub import manifest as project_manifest
 from vietsub.sources import browser as browser_source
 from vietsub.sources import browser_capture
 from vietsub.sources import cookies as cookie_utils
@@ -217,7 +219,7 @@ JS_RUNTIME_CACHE_SECONDS = 10 * 60
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "1.8.0"
+APP_VERSION = "2.0.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -1015,6 +1017,12 @@ def request_app_shutdown():
     shutdown_event.set()
     cancel_event.set()
     prefetch_cancel_event.set()
+    adapter = globals().get("editor_api")
+    if adapter:
+        adapter.jobs.shutdown()
+    upload = globals().get("uploader_api")
+    if upload:
+        upload.shutdown()
     with active_process_lock:
         processes = list(active_processes.items())
     for name, proc in processes:
@@ -1031,6 +1039,17 @@ def request_app_shutdown():
     worker = queue_worker_thread
     if worker and worker.is_alive() and worker is not current:
         worker.join(timeout=15)
+    # Ownership/PID/profile/CDP checks stay in the browser cleanup helper. CDP
+    # teardown can stall, so a closing GUI waits only a bounded extra interval.
+    def cleanup_browser():
+        if not shutdown_automation_browser():
+            log_to_app("Trình duyệt của app còn bận; bỏ qua đóng lúc thoát, không tác động trình duyệt cá nhân.", "error")
+
+    cleanup = Thread(target=cleanup_browser, name="browser-shutdown", daemon=True)
+    cleanup.start()
+    cleanup.join(timeout=2)
+    if cleanup.is_alive():
+        log_to_app("Đóng trình duyệt của app chưa phản hồi; không tiếp tục chờ khi thoát.", "error")
 
 
 def protect_config_secret(secret):
@@ -1751,13 +1770,23 @@ browser_operation_state = local()
 
 
 def browser_automation(function):
-    """Retry a challenge once visibly; the following operation starts headless again."""
+    """Retry visibly once, then restore headless at the outer successful boundary.
+
+    Nested decorators share the override and let the outermost call handle the
+    challenge: no browser restart can happen while an outer Playwright scope is
+    still live. A failed/cancelled/login-needed retry stays visible.
+    """
     from functools import wraps
 
     @wraps(function)
     def run(*args, **kwargs):
         with browser_lifecycle.lease():
+            if getattr(browser_operation_state, "operation", None) is not None:
+                return function(*args, **kwargs)
+            browser_lifecycle.clear_manual_login()
             previous = getattr(browser_operation_state, "headless", None)
+            operation = {"explicit_headed": previous is False, "opening_challenge": False}
+            browser_operation_state.operation = operation
             try:
                 try:
                     return function(*args, **kwargs)
@@ -1765,17 +1794,72 @@ def browser_automation(function):
                     check_cancel_requested()
                     log_to_app("Trang yêu cầu xác minh; mở lại cùng profile để bạn thao tác trong trình duyệt.")
                     browser_operation_state.headless = False
-                    ensure_browser_running(background=False, headless=False, start_url=challenge.url)
-                    return function(*args, **kwargs)
+                    operation["opening_challenge"] = True
+                    try:
+                        ensure_browser_running(background=False, headless=False, start_url=challenge.url)
+                    finally:
+                        operation["opening_challenge"] = False
+                    result = function(*args, **kwargs)
+                    # Function return unwound every page/context first. Do not hide
+                    # a login failure, a timeout/empty result, or a pending cancel.
+                    if result and not cancel_requested() and not operation["explicit_headed"]:
+                        browser_operation_state.headless = previous
+                        try:
+                            if bool(load_app_config().get("edge_background", True)) and browser_verification_finished():
+                                ensure_browser_running(headless=True)
+                        except Exception as error:
+                            # The captured/downloaded result remains valid even if
+                            # Chrome cannot restart; report it rather than retry it.
+                            log_to_app(f"Đã hoàn tất thao tác nhưng chưa trở lại headless: {error}", "error")
+                    return result
             finally:
                 browser_operation_state.headless = previous
+                browser_operation_state.operation = None
     return run
+
+
+def browser_verification_finished():
+    """Fail closed before hiding a successful retry that may still show login UI.
+
+    Some compatibility helpers return a URL even on a challenge timeout. A
+    truthy return alone therefore cannot prove that verification was completed.
+    This read-only check has its own short-lived Playwright scope, fully unwound
+    before the caller restarts the same persistent profile.
+    """
+    instance = browser_lifecycle.instance or {}
+    if instance.get("headless") or not instance.get("session"):
+        return False
+    with get_sync_playwright()() as playwright:
+        browser = playwright.chromium.connect_over_cdp(instance["session"])
+        if not browser.contexts or not browser.contexts[0].pages:
+            return False
+        for page in browser.contexts[0].pages:
+            if page.url in BLANK_PAGE_URLS:
+                continue
+            probe = page.evaluate(browser_capture.ATTENTION_PROBE_SCRIPT)
+            douyin_probe = page.evaluate(douyin_source.CAPTCHA_PROBE_SCRIPT)
+            host = (urlparse(page.url).hostname or "").lower()
+            google_login = (host == "gemini.google.com" or host == "accounts.google.com"
+                            or host.endswith(".accounts.google.com")) and edge_page_needs_login(page)
+            if (not isinstance(probe, dict) or not isinstance(douyin_probe, dict)
+                    or browser_capture.is_attention_probe(probe)
+                    or douyin_source.is_captcha_probe(douyin_probe)
+                    or douyin_source.is_login_probe(douyin_probe)
+                    or google_login):
+                return False
+    return True
 
 
 def require_visible_browser(context, page):
     """Unwind headless page work before a same-profile restart for manual input."""
     if (browser_lifecycle.instance or {}).get("headless"):
         raise HeadedBrowserRequired(page.url)
+    # Captures release their tab in finally, including login/error/timeouts.
+    # Keep the visible verification tab until the successful outer boundary.
+    try:
+        page._vietsub_manual_verification = True
+    except (AttributeError, TypeError):
+        pass  # Compatibility test doubles may not expose Playwright attributes.
     if not set_browser_window_visibility(context, page, True):
         try:
             page.bring_to_front()
@@ -2286,6 +2370,11 @@ def ensure_browser_running(background=None, config=None, *, headless=None, start
     Mode changes run under the operation lease and reuse the same profile.
     """
     check_cancel_requested()
+    browser_lifecycle.clear_manual_login()
+    operation = getattr(browser_operation_state, "operation", None)
+    if operation is not None and not operation["opening_challenge"]:
+        if headless is False or (headless is None and background is False):
+            operation["explicit_headed"] = True
     config = load_app_config() if config is None else config
     kind = get_browser_kind(config)
     label = browser_label(kind)
@@ -2295,13 +2384,16 @@ def ensure_browser_running(background=None, config=None, *, headless=None, start
         headless = override if override is not None else (
             bool(config.get("edge_background", True)) if background is None else bool(background)
         )
+    if operation is not None and not bool(config.get("edge_background", True)):
+        operation["explicit_headed"] = True
     with browser_launch_lock:
         if check_browser_status(fresh=True):
             instance = owned_browser_instance(config)
             if instance is None:
-                # Do not adopt or close a process if its identity cannot be read.
+                # A successful status probe is not an ownership snapshot: the
+                # port may have changed hands between the two reads. Fail closed.
                 browser_lifecycle.forget()
-                return True
+                raise BrowserStartError(f"Không thể xác minh chủ sở hữu {label} trên cổng {port}; giữ nguyên trình duyệt đó.")
             previous_instance = browser_lifecycle.instance or {}
             if previous_instance.get("session") == instance["session"]:
                 instance["initial_page_pending"] = previous_instance.get("initial_page_pending", False)
@@ -2342,10 +2434,12 @@ def ensure_browser_running(background=None, config=None, *, headless=None, start
         if not check_browser_status(fresh=True):
             raise BrowserStartError(f"Cổng {port} đã phản hồi nhưng không thuộc {label} của VietSub Studio.")
         instance = owned_browser_instance(config)
-        if instance:
-            instance["initial_page_pending"] = True
-            instance["process"] = process
-            browser_lifecycle.remember(instance)
+        if instance is None:
+            browser_lifecycle.forget()
+            raise BrowserStartError(f"Không thể xác minh chủ sở hữu {label} vừa mở trên cổng {port}.")
+        instance["initial_page_pending"] = True
+        instance["process"] = process
+        browser_lifecycle.remember(instance)
         if background and not headless:
             minimize_browser_window()
         log_to_app(f"Đã mở {label} và kết nối cổng điều khiển {port}.")
@@ -2353,6 +2447,12 @@ def ensure_browser_running(background=None, config=None, *, headless=None, start
 
 
 def set_browser_window_visibility(context, page, visible):
+    # Capture callbacks also run their "attention ended" cleanup on timeout or
+    # cancellation. Keep a headed retry visible until the successful outer
+    # boundary verifies it, rather than minimizing an unfinished login/challenge.
+    if (not visible and getattr(browser_operation_state, "operation", None) is not None
+            and getattr(browser_operation_state, "headless", None) is False):
+        return True
     try:
         session = context.new_cdp_session(page)
         window_id = session.send("Browser.getWindowForTarget")["windowId"]
@@ -2474,12 +2574,12 @@ def show_edge_for_login(notebook_url):
     """Show Gemini Notebook in the automation browser so the user can sign in to Google."""
     notebook_url = validate_notebook_url(notebook_url)
     ensure_browser_running(background=False, start_url=notebook_url)
+    browser_lifecycle.grant_manual_login()
     with get_sync_playwright()() as playwright:
         context = browser_context(playwright)
         notebook_id = urlparse(notebook_url).path.rstrip("/").rsplit("/", 1)[-1]
-        page = next((item for item in context.pages if notebook_id in item.url), None)
-        if page is None:
-            page = reuse_blank_page(context)
+        page = browser_source.reuse_page(context, notebook_url, matches=lambda item: notebook_id in item.url)
+        if notebook_id not in page.url:
             page.goto(notebook_url)
         if not set_browser_window_visibility(context, page, True):
             page.bring_to_front()
@@ -3272,6 +3372,8 @@ def write_project_manifest(project, *, video_id, source_url, status, error=""):
         "source_video_deleted": project.get("source_video_deleted", False),
         "source_cleanup_bytes": project.get("source_cleanup_bytes", 0),
         "source_cleanup_errors": project.get("source_cleanup_errors", []),
+        "crop_coords": project.get("crop_coords"),
+        "video_resolution": project.get("video_resolution"),
         "updated_at": int(time.time()),
     }
     temporary_path = f"{manifest_path}.{uuid.uuid4().hex}.tmp"
@@ -3282,6 +3384,15 @@ def write_project_manifest(project, *, video_id, source_url, status, error=""):
     finally:
         if os.path.exists(temporary_path):
             os.remove(temporary_path)
+    # Add the inter-workspace sidecar without changing the legacy export contract.
+    # A locked/corrupt newer sidecar must not turn a valid VietSub export into a failure.
+    try:
+        target, _ = project_manifest.save_project(
+            project, video_id=video_id, source_url=source_url, status=status, error=error,
+        )
+        project["project_manifest"] = target
+    except (OSError, ValueError) as manifest_error:
+        log_to_app(f"Bộ file VietSub được giữ nguyên; chưa lưu được manifest Workbench: {manifest_error}", "error")
 
 
 def read_videocr_gui_settings():
@@ -3811,6 +3922,12 @@ def run_videocr(
     log_to_app("Cấu hình toạ độ nhận diện chữ phụ đề...")
     coords = get_saved_crop_coords() if use_saved_crop else validate_crop_coords(crop_coords)
     res = validate_video_resolution(video_resolution) if video_resolution else get_video_resolution(video_path)
+    # Bind the exact geometry used by this OCR invocation to its workflow thread.
+    # Reading Settings again after OCR could pick a different default crop.
+    workflow_context.ocr_geometry = {
+        "crop_coords": copy.deepcopy(coords) if res else None,
+        "video_resolution": {"width": res[0], "height": res[1]} if res else None,
+    }
     video_dir = os.path.dirname(video_path)
     video_name_no_ext = os.path.splitext(os.path.basename(video_path))[0]
     output_srt = output_srt or os.path.join(video_dir, video_name_no_ext + ".raw.srt")
@@ -6204,6 +6321,19 @@ def job_disk_bytes(job, keep_srt=True):
         return 0
 
 
+def editor_uses_job(job_id):
+    adapter = globals().get("editor_api")
+    upload = globals().get("uploader_api")
+    return bool((adapter and adapter.jobs.active(job_id)) or (upload and upload.active(job_id)))
+
+
+def editor_protected_paths():
+    adapter = globals().get("editor_api")
+    paths = adapter.jobs.protected_paths() if adapter else set()
+    upload = globals().get("uploader_api")
+    return paths | (upload.protected_paths() if upload else set())
+
+
 def bulk_delete_jobs(ids, *, delete_files=False, keep_srt=True, dry_run=False):
     if not isinstance(ids, list) or not ids or len(ids) > MAX_IN_MEMORY_JOBS:
         raise ValueError("ids phải là danh sách ID không rỗng trong giới hạn hàng đợi.")
@@ -6220,13 +6350,14 @@ def bulk_delete_jobs(ids, *, delete_files=False, keep_srt=True, dry_run=False):
             job = jobs_by_id.get(job_id)
             if not job:
                 failures.append({"id": job_id, "error": "Không tìm thấy job."})
-            elif job.get("status") == "running" or job_id in {current_job_id, prefetch_job_id}:
-                failures.append({"id": job_id, "error": "Job đang được xử lý; chưa thể xoá."})
+            elif (job.get("status") == "running" or job_id in {current_job_id, prefetch_job_id}
+                  or editor_uses_job(job_id)):
+                failures.append({"id": job_id, "error": "Job đang được VietSub/Auto Edit xử lý; chưa thể xoá."})
             else:
                 selected.append(job)
         selected_ids = {job["id"] for job in selected}
-        plans = {}
-        protected = set()
+        plans, planned_items = {}, {}
+        protected = editor_protected_paths()
         if delete_files:
             if preview_lock.locked():
                 raise RuntimeError("Hãy chờ chuẩn bị preview xong trước khi xoá file.")
@@ -6234,20 +6365,29 @@ def bulk_delete_jobs(ids, *, delete_files=False, keep_srt=True, dry_run=False):
                 if job["id"] not in selected_ids:
                     protected.update(storage.candidates(job, keep_srt=False))
             for job in selected:
+                paths = set()
                 try:
-                    plans[job["id"]] = storage.candidates(job, keep_srt) - protected
+                    paths = storage.candidates(job, keep_srt) - protected
+                    planned_items[job["id"]] = storage.inventory(paths)
+                    plans[job["id"]] = paths
                 except OSError as error:
+                    protected.update(paths)
                     failures.append({"id": job["id"], "error": str(error)})
-            # A failed inventory must protect its files from a different selected job.
+            # A failed inventory protects all its recorded assets, including SRT,
+            # from a different selected job. Healthy jobs can still be cleaned.
             for job in selected:
                 if job["id"] not in plans:
                     protected.update(storage.video_paths(job))
+                    result = job.get("result") or {}
+                    protected.update(storage.canonical(result[key]) for key in ("raw_srt", "translated_srt")
+                                     if isinstance(result.get(key), str) and result[key])
             plans = {key: paths - protected for key, paths in plans.items()}
-        all_paths = set().union(*plans.values()) if plans else set()
-        items = storage.inventory(all_paths)
+        items = {path: info for key, inventory in planned_items.items()
+                 for path, info in inventory.items() if path in plans[key]}
         estimate = storage.reclaimable_bytes(items)
         if dry_run:
-            return {"selected_count": len(ids), "reclaimable_bytes": estimate,
+            eligible = sum(not delete_files or job["id"] in plans for job in selected)
+            return {"selected_count": eligible, "reclaimable_bytes": estimate,
                     "failures": failures, "deleted_ids": [], "freed_bytes": 0}
         # Fail before any unlink if durable queue state is unavailable. Records
         # with unlink failures remain retryable; missing files are idempotent.
@@ -6510,7 +6650,8 @@ def is_managed_local_video(path):
 
 
 def remove_managed_source_if_unused(path):
-    if not is_managed_local_video(path) or os.path.exists(path + ".vietsub-keep"):
+    if (not is_managed_local_video(path) or os.path.exists(path + ".vietsub-keep")
+            or storage.canonical(path) in editor_protected_paths()):
         return
     with queue_state_lock:
         in_use = any(job.get("source_video") == path for job in workflow_jobs)
@@ -6934,8 +7075,8 @@ def remove_queued_job(job_id):
         for index, job in enumerate(candidate_jobs):
             if job["id"] != job_id:
                 continue
-            if job["status"] == "running":
-                raise RuntimeError("Không thể xoá job đang chạy; hãy huỷ job trước.")
+            if job["status"] == "running" or editor_uses_job(job_id):
+                raise RuntimeError("Không thể xoá job đang chạy trong VietSub/Auto Edit; hãy huỷ job trước.")
             removed = candidate_jobs.pop(index)
             commit_queue_jobs_locked(candidate_jobs)
             break
@@ -6949,6 +7090,8 @@ def clear_finished_jobs():
     removed_sources = []
     with queue_state_lock:
         removable = {"success"}
+        if any(job["status"] in removable and editor_uses_job(job["id"]) for job in workflow_jobs):
+            raise RuntimeError("Có dự án đang dùng trong Auto Edit; chờ hoặc huỷ trước khi dọn lịch sử.")
         candidate_jobs = copy.deepcopy(workflow_jobs)
         removed_sources = [
             job.get("source_video") for job in candidate_jobs
@@ -6962,6 +7105,8 @@ def clear_finished_jobs():
 
 def retry_queue_job(job_id):
     with queue_state_lock:
+        if editor_uses_job(job_id):
+            raise RuntimeError("Dự án đang dùng trong Auto Edit; hãy chờ hoặc huỷ tác vụ editor.")
         candidate_jobs = copy.deepcopy(workflow_jobs)
         job = next((item for item in candidate_jobs if item["id"] == job_id), None)
         if not job:
@@ -7023,6 +7168,10 @@ def generate_publish_pack(project, translation_config):
     destination = os.path.join(project["project_dir"], project["project_name"] + ".publish.json")
     write_text_atomic(destination, json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
     project["publish_metadata"] = destination
+    try:
+        project_manifest.save_project(project, metadata=metadata, status="success")
+    except (OSError, ValueError) as manifest_error:
+        log_to_app(f"Publish pack đã lưu; chưa đồng bộ manifest Workbench: {manifest_error}", "error")
     log_to_app(f"Đã tạo gói dữ liệu xuất bản: {destination}")
     return destination
 
@@ -7034,7 +7183,7 @@ def auto_cleanup_source_video(project, config):
     # independently. A cleaned result keeps subtitle readiness across restarts.
     validate_project_result(project)
     with queue_state_lock:
-        protected = set()
+        protected = editor_protected_paths()
         for job in workflow_jobs:
             if job["id"] != current_job_id:
                 protected.update(storage.video_paths(job))
@@ -7133,6 +7282,11 @@ def run_workflow_thread(
                 include_thumbnail=source_type in DOWNLOAD_SOURCE_TYPES,
             )
             update_progress(result=project)
+        if "crop_coords" not in project and not use_saved_crop:
+            project["crop_coords"] = validate_crop_coords(crop_coords)
+        if "video_resolution" not in project and video_resolution:
+            resolution = validate_video_resolution(video_resolution)
+            project["video_resolution"] = {"width": resolution[0], "height": resolution[1]}
         write_project_manifest(
             project,
             video_id=video_id,
@@ -7146,6 +7300,7 @@ def run_workflow_thread(
                 raise FileNotFoundError("File sub OCR không còn tồn tại để chạy tiếp bước dịch.")
         else:
             update_progress(step="ocr")
+            workflow_context.ocr_geometry = None
             raw_srt = run_videocr(
                 project["video"],
                 ocr_lang=ocr_lang,
@@ -7154,7 +7309,10 @@ def run_workflow_thread(
                 use_saved_crop=use_saved_crop,
                 video_resolution=video_resolution,
             )
-            update_progress(result={"raw_srt": raw_srt})
+            geometry = getattr(workflow_context, "ocr_geometry", None)
+            if isinstance(geometry, dict):
+                project.update(copy.deepcopy(geometry))
+            update_progress(result={**project, "raw_srt": raw_srt})
 
         update_progress(step="translate")
         if translation_config["provider"] == "notebook":
@@ -7288,13 +7446,15 @@ def protect_local_control_plane():
         return jsonify({"error": "Host cục bộ không hợp lệ."}), 403
     if app.config.get("TESTING"):
         return None
-    if not request.path.startswith("/api/") or request.endpoint == "stream_preview_video":
+    if not request.path.startswith("/api/") or request.endpoint in {
+        "stream_preview_video", "stream_project_video", "editor.stream_output", "uploader.media_video", "uploader.screenshot",
+    }:
         return None
     if not api_request_authorized():
         return jsonify({"error": "Yêu cầu không được ứng dụng VietSub Studio xác thực."}), 403
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         content_type = (request.content_type or "").lower()
-        if request.endpoint != "prepare_local_preview" and "application/json" not in content_type:
+        if request.endpoint not in {"prepare_local_preview", "editor.upload_watermark", "uploader.upload_media"} and "application/json" not in content_type:
             return jsonify({"error": "API thay đổi trạng thái yêu cầu JSON body."}), 415
     return None
 
@@ -7352,7 +7512,7 @@ def index():
 @app.route('/static/<path:filename>')
 def static_asset(filename):
     if filename not in {
-        "app.js", "style.css", "sakuga-vfx.js", "workbench.js", "fonts.css", "sakuga-LICENSE.txt",
+        "app.js", "editor.js", "uploader.js", "uploader-THIRD-PARTY.txt", "editor-THIRD-PARTY.txt", "style.css", "sakuga-vfx.js", "workbench.js", "fonts.css", "sakuga-LICENSE.txt",
         "fonts/be-vietnam-pro-regular.ttf", "fonts/be-vietnam-pro-medium.ttf",
         "fonts/be-vietnam-pro-semibold.ttf", "fonts/be-vietnam-pro-bold.ttf",
         "fonts/noto-sans-sc.ttf", "fonts/jetbrains-mono.ttf",
@@ -7632,6 +7792,126 @@ def stream_preview_video(preview_id):
     return send_file(source_video, conditional=True, mimetype=mimetype)
 
 
+def project_for_job(job_id):
+    """Resolve only a known queue result; no filesystem paths are accepted from HTTP."""
+    job = next((item for item in workflow_jobs if item["id"] == job_id), None)
+    if job is None:
+        raise KeyError("Không tìm thấy dự án trong hàng đợi / lịch sử.")
+    result = copy.deepcopy(job.get("result") or {})
+    if not result.get("project_dir"):
+        raise RuntimeError("Job chưa tạo bộ file dự án.")
+    return job, result
+
+
+def project_geometry_fallback(job):
+    # Requested coordinates of use_saved_crop jobs may differ from what OCR used.
+    if job.get("use_saved_crop"):
+        return {}
+    return {key: copy.deepcopy(job[key]) for key in ("crop_coords", "video_resolution")
+            if job.get(key) is not None}
+
+
+def project_media_signature(job_id, path):
+    message = f"project-video|{job_id}|{os.path.normcase(os.path.abspath(path))}".encode("utf-8")
+    return hmac.new(API_TOKEN.encode("ascii"), message, hashlib.sha256).hexdigest()
+
+
+def project_handoff_payload(job, project, manifest, workspace=None):
+    video = manifest["assets"].get("edited_video") if workspace == "uploader" else ""
+    video = video or manifest["assets"]["video"]
+    available = {
+        "video": bool(video and storage.safe_regular(video) and os.path.getsize(video) > 0),
+        "translated_srt": bool(manifest["assets"]["translated_srt"]
+                               and storage.safe_regular(manifest["assets"]["translated_srt"])),
+    }
+    signature = project_media_signature(job["id"], video) if available["video"] else ""
+    return {
+        "workspace": workspace, "job_id": job["id"], "manifest": manifest,
+        "manifest_path": project_manifest.path_for(project), "availability": available,
+        "ready": (job.get("status") == "success" and bool(job.get("result_ready"))
+                  and job["id"] not in {current_job_id, prefetch_job_id} and all(available.values())),
+        "video_url": (f"/api/projects/{job['id']}/video?signature={signature}"
+                      f"&asset={'edited' if video == manifest['assets'].get('edited_video') else 'source'}") if signature else "",
+    }
+
+
+@app.route('/api/projects/<job_id>')
+def get_project(job_id):
+    try:
+        with operation_admission_lock, queue_state_lock:
+            job, project = project_for_job(job_id)
+            value = project_manifest.snapshot(project, video_id=job.get("video_id") or "",
+                                              source_url=job.get("source_url") or "",
+                                              status=job.get("status") or "error",
+                                              geometry_fallback=project_geometry_fallback(job))
+            asset = request.args.get("workspace")
+            if asset is not None and asset not in {"editor", "uploader"}:
+                raise ValueError("Workspace không hợp lệ.")
+            return jsonify(project_handoff_payload(job, project, value, asset))
+    except KeyError as error:
+        return jsonify({"error": error.args[0]}), 404
+    except (RuntimeError, ValueError, OSError) as error:
+        return jsonify({"error": str(error)}), 409
+
+
+@app.route('/api/projects/<job_id>/handoff', methods=['POST'])
+def handoff_project(job_id):
+    data = request.get_json(silent=True)
+    if (not isinstance(data, dict) or set(data) != {"workspace"}
+            or not isinstance(data.get("workspace"), str) or data["workspace"] not in {"editor", "uploader"}):
+        return jsonify({"error": "Chỉ nhận workspace editor hoặc uploader; không nhận đường dẫn file."}), 400
+    try:
+        # The same admission lock used by cleanup/retry makes readiness and saving
+        # one atomic operation relative to queue deletion or a new workflow.
+        with operation_admission_lock, queue_state_lock:
+            job, project = project_for_job(job_id)
+            if (job.get("status") != "success" or not job.get("result_ready")
+                    or job_id in {current_job_id, prefetch_job_id}):
+                raise RuntimeError("Chỉ có thể bàn giao job VietSub đã hoàn tất hợp lệ và không còn được xử lý.")
+            with project_manifest.LOCK:
+                value = project_manifest.snapshot(project, video_id=job.get("video_id") or "",
+                                                  source_url=job.get("source_url") or "", status="success",
+                                                  geometry_fallback=project_geometry_fallback(job))
+                payload = project_handoff_payload(job, project, value, data["workspace"])
+                if not payload["ready"]:
+                    raise RuntimeError("Video hoặc sub Việt đã bị dọn / di chuyển. Hãy khôi phục file trước khi chuyển workspace.")
+                validate_project_result(project)
+                # Persist precisely the validated snapshot; other modules' assets
+                # and metadata are retained, never reset by a legacy queue result.
+                value["updated_at"] = int(time.time())
+                project_manifest.write_atomic(payload["manifest_path"], value)
+                log_to_app(f"[Workbench] Đã bàn giao {value['project_name']} sang {data['workspace']}.")
+                return jsonify(payload)
+    except KeyError as error:
+        return jsonify({"error": error.args[0]}), 404
+    except (RuntimeError, ValueError, OSError) as error:
+        return jsonify({"error": str(error)}), 409
+
+
+@app.route('/api/projects/<job_id>/video')
+def stream_project_video(job_id):
+    try:
+        with queue_state_lock:
+            job, project = project_for_job(job_id)
+            value = project_manifest.snapshot(project, status=job.get("status") or "error")
+            asset = request.args.get("asset", "source")
+            if asset not in {"source", "edited"}:
+                raise KeyError("Video dự án không tồn tại.")
+            video = value["assets"]["edited_video" if asset == "edited" else "video"]
+            expected = project_media_signature(job_id, video)
+            supplied = request.args.get("signature", "").encode("utf-8")
+            if not secrets.compare_digest(supplied, expected.encode("ascii")):
+                return jsonify({"error": "Liên kết video không hợp lệ hoặc phiên ứng dụng đã thay đổi."}), 403
+            if not video or os.path.splitext(video)[1].lower() not in {".mp4", ".mkv"} or not storage.safe_regular(video):
+                raise KeyError("Video dự án không còn tồn tại.")
+            mimetype = "video/x-matroska" if video.lower().endswith(".mkv") else "video/mp4"
+            return send_file(video, conditional=True, mimetype=mimetype)
+    except KeyError as error:
+        return jsonify({"error": error.args[0]}), 404
+    except (RuntimeError, ValueError, OSError) as error:
+        return jsonify({"error": str(error)}), 409
+
+
 @app.route('/api/queue', methods=['GET', 'POST'])
 def handle_queue():
     if request.method == 'GET':
@@ -7720,7 +8000,10 @@ def retry_job(job_id):
 
 @app.route('/api/queue/finished', methods=['DELETE'])
 def clear_queue_finished():
-    clear_finished_jobs()
+    try:
+        clear_finished_jobs()
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 409
     return jsonify({"ok": True})
 
 def apply_browser_settings(config, data):
@@ -8015,18 +8298,15 @@ def open_source_in_browser(site_key):
     """Show the platform in the automation browser's own profile so the user can sign in once."""
     site = SESSION_SITES[site_key]
     ensure_browser_running(background=False, start_url=site.home_url)
+    browser_lifecycle.grant_manual_login()
     domain = site.cookie_domain.lstrip(".")
     with get_sync_playwright()() as playwright:
         context = browser_context(playwright)
-        page = next(
-            (
-                item for item in context.pages
-                if url_host(item.url) == domain or url_host(item.url).endswith("." + domain)
-            ),
-            None,
+        page = browser_source.reuse_page(
+            context, site.home_url,
+            matches=lambda item: url_host(item.url) == domain or url_host(item.url).endswith("." + domain),
         )
-        if page is None:
-            page = reuse_blank_page(context)
+        if url_host(page.url) != domain and not url_host(page.url).endswith("." + domain):
             try:
                 page.goto(site.home_url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
@@ -8164,8 +8444,18 @@ def open_folder():
             return jsonify({"error": str(e)}), 500
     return jsonify({"error": "Đường dẫn kết quả không còn tồn tại."}), 400
 
+def initialize_uploader_state():
+    adapter = globals().get('uploader_api')
+    if adapter:
+        try:
+            adapter.initialize()
+        except (OSError, ValueError) as error:
+            log_to_app(f'Không nạp được Publish Hub; giữ nguyên dữ liệu: {error}', 'error')
+
+
 def run_web_server():
     initialize_queue_state()
+    initialize_uploader_state()
     log_to_app("Mở local web server tại http://127.0.0.1:5000...")
     try:
         app.run(host="127.0.0.1", port=5000, debug=False)
@@ -8176,6 +8466,7 @@ def run_web_server():
 def run_browser_app():
     """Serve the UI in the user's browser when embedded WebView2 is unavailable."""
     initialize_queue_state()
+    initialize_uploader_state()
     server = make_server("127.0.0.1", 0, app, threaded=True)
     port = server.server_port
     url = f"http://127.0.0.1:{port}"
@@ -8274,6 +8565,7 @@ class DesktopApi:
 def run_desktop_app():
     ensure_initial_desktop_shortcut()
     initialize_queue_state()
+    initialize_uploader_state()
     try:
         import webview
     except ImportError as error:
@@ -8336,10 +8628,21 @@ def main():
                 shutdown_event.clear()
                 cancel_event.clear()
                 prefetch_cancel_event.clear()
+                # Desktop fallback reopens the local app session, not a permanently
+                # closed editor queue from the failed embedded window cleanup.
+                from vietsub.editor.jobs import EditorJobs
+                editor_api.jobs = EditorJobs()
                 run_browser_app()
     finally:
         release_instance_lock()
     return 0
+
+
+# Editor is a separate queue/blueprint; the import is stdlib/FFmpeg-only.
+from vietsub.editor.api import register as register_editor_api
+editor_api = register_editor_api(sys.modules[__name__])
+from vietsub.uploader.api import register as register_uploader_api
+uploader_api = register_uploader_api(sys.modules[__name__])
 
 
 if __name__ == '__main__':

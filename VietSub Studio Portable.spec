@@ -18,7 +18,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Heavy speech/separation runtimes execute in an external Python worker only.
+    excludes=['edge_tts', 'audio_separator', 'onnxruntime', 'torch', 'torchaudio', 'demucs'],
     noarchive=False,
     optimize=0,
 )

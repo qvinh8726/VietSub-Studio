@@ -41,6 +41,9 @@
     let sourceMode = 'link', consoleTab = 'log', preview = null, mediaFailed = false;
     let drawerOpen = false, drawerTimer = 0, drawerAnimation = null, restoreFocus = null;
     let splitDrag = null, motionSaved = true, motionSaving = false, lastResult = '';
+    let workspace = 'vietsub', workspaceRevision = 0;
+    const workspaceNames = ['vietsub', 'editor', 'uploader'];
+    const projects = {editor: null, uploader: null};
     const downloads = {preview: null, job: null};
     function dimensions() {
         const shell = $('workbench-shell');
@@ -95,19 +98,22 @@
     }
     function selectConsole(tab, expand = false) {
         consoleTab = tab === 'result' ? 'result' : 'log';
+        const moveFocus = ['log', 'result'].some(name => name !== consoleTab && $(`console-${name}-panel`).contains(document.activeElement));
         for (const name of ['log', 'result']) {
-            const selected = name === consoleTab, button = $(`console-${name}-tab`);
+            const selected = name === consoleTab, button = $(`console-${name}-tab`), panel = $(`console-${name}-panel`);
             button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
-            $(`console-${name}-panel`).hidden = !selected;
+            panel.hidden = !selected; panel.inert = !selected;
         }
+        if (moveFocus && !drawerOpen) $(`console-${consoleTab}-tab`).focus();
         if (expand) setCollapsed(false, false);
     }
     function selectSource(mode, animate = false) {
         sourceMode = mode === 'local' ? 'local' : 'link';
         for (const name of ['link', 'local']) {
-            const selected = name === sourceMode, button = $(`source-${name}-tab`);
+            const selected = name === sourceMode, button = $(`source-${name}-tab`), panel = $(`source-${name}-panel`);
+            if (!selected && panel.contains(document.activeElement) && workspace === 'vietsub' && !drawerOpen) $(`source-${sourceMode}-tab`).focus();
             button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
-            $(`source-${name}-panel`).hidden = !selected;
+            panel.hidden = !selected; panel.inert = !selected;
         }
         if (animate) window.VietSubVFX?.smoke($(`source-${sourceMode}-tab`));
     }
@@ -124,6 +130,113 @@
             });
         });
     }
+    function workspacePanel(name) { return $(name === 'vietsub' ? 'workbench' : `workspace-${name}`); }
+    function canFocus(element) {
+        if (!element?.isConnected || element.disabled || !element.getClientRects().length) return false;
+        for (let node = element; node; node = node.parentElement) if (node.hidden || node.inert) return false;
+        return true;
+    }
+    function selectWorkspace(name, focus = false) {
+        if (!initialized || !workspaceNames.includes(name)) return false;
+        const previous = workspacePanel(workspace), changed = name !== workspace;
+        const moveFocus = focus || (changed && previous.contains(document.activeElement));
+        if (changed || focus) workspaceRevision++;
+        if (changed) {
+            finishSplit(); adapter.endCropDrag();
+            // Do not touch VietSub's src, currentTime, crop or source mode. Only staging media pauses.
+            if (workspace !== 'vietsub') $(`${workspace}-video`).pause();
+        }
+        workspace = name;
+        $('workbench-shell').dataset.workspace = name;
+        for (const item of workspaceNames) {
+            const selected = item === name, panel = workspacePanel(item), button = $(`workspace-${item}-tab`);
+            panel.hidden = !selected; panel.inert = !selected;
+            button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
+        }
+        if (moveFocus && !drawerOpen) $(`workspace-${name}-tab`).focus({preventScroll: true});
+        scheduleFit();
+        return true;
+    }
+    function bindWorkspaces() {
+        workspaceNames.forEach((name, index) => {
+            const button = $(`workspace-${name}-tab`);
+            button.addEventListener('click', () => selectWorkspace(name, true));
+            button.addEventListener('keydown', event => {
+                if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? workspaceNames.length - 1 :
+                    (index + (event.key === 'ArrowDown' ? 1 : -1) + workspaceNames.length) % workspaceNames.length;
+                selectWorkspace(workspaceNames[next], true);
+            });
+        });
+        $('preview-skip-link').addEventListener('click', event => {
+            event.preventDefault(); selectWorkspace('vietsub'); $('preview-viewport').focus();
+        });
+        for (const name of ['editor', 'uploader']) {
+            $(`${name}-back-source`).addEventListener('click', () => selectWorkspace('vietsub', true));
+            $(`${name}-refresh-project`).addEventListener('click', () => adapter.refreshProject?.(name, projects[name]?.job_id));
+            $(`${name}-video`).addEventListener('error', () => {
+                $(`${name}-video-status`).textContent = 'Không phát được video trong trình duyệt này. File và thông tin project vẫn được giữ; thử kiểm tra lại file.';
+            });
+        }
+    }
+    function cropText(box) {
+        if (!box) return 'Chưa có vùng OCR trong manifest';
+        const {x, y, width, height} = box;
+        if (![x, y, width, height].every(Number.isFinite) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1.000001 || y + height > 1.000001) return 'Crop không hợp lệ (cần toạ độ nguồn 0–1)';
+        return `x ${x.toFixed(4)} · y ${y.toFixed(4)} · rộng ${width.toFixed(4)} · cao ${height.toFixed(4)}`;
+    }
+    function projectVideoUrl(value, jobId) {
+        if (typeof value !== 'string' || !value || !jobId) return '';
+        try {
+            const base = new URL(window.location?.href || 'http://localhost/'), url = new URL(value, base);
+            if (url.origin !== base.origin || url.username || url.password || url.hash ||
+                url.pathname !== `/api/projects/${encodeURIComponent(jobId)}/video`) return '';
+            return url.pathname + url.search;
+        } catch (_) { return ''; }
+    }
+    function projectStatus(name, message, state = '') {
+        if (!initialized || !projects.hasOwnProperty(name)) return;
+        const status = $(`${name}-project-status`);
+        status.textContent = message; status.dataset.state = state;
+        workspacePanel(name).setAttribute('aria-busy', String(state === 'loading'));
+        $(`${name}-refresh-project`).disabled = state === 'loading' || !projects[name];
+    }
+    function projectReceived(name, snapshot) {
+        if (!initialized || !projects.hasOwnProperty(name) || !snapshot?.manifest) return;
+        projects[name] = snapshot;
+        const manifest = snapshot.manifest, assets = manifest.assets || {}, metadata = manifest.metadata || {}, source = manifest.source || {};
+        const text = (field, value) => { $(`${name}-${field}`).textContent = typeof value === 'string' && value ? value : 'Chưa có'; };
+        text('project-name', manifest.project_name || manifest.project_id);
+        text('project-id', `${snapshot.job_id} / ${manifest.project_id || '—'}`);
+        text('source', [source.url, source.video_id, source.original_video].filter(value => typeof value === 'string' && value).join(' · '));
+        const selectedVideo = name === 'uploader' && assets.edited_video ? assets.edited_video : assets.video || assets.source_video;
+        text('video-path', snapshot.availability?.video === true ? selectedVideo : 'Video không còn khả dụng · không thể edit / upload');
+        text('srt', snapshot.availability?.translated_srt === true ? assets.translated_srt : 'Phụ đề Việt không còn khả dụng');
+        text('crop', cropText(manifest.crop_box));
+        const resolution = manifest.source_resolution;
+        text('resolution', positive(resolution?.width) && positive(resolution?.height) ? `${resolution.width} × ${resolution.height}` : 'Chưa có độ phân giải nguồn');
+        text('manifest', snapshot.manifest_path);
+        text('title', metadata.title); text('description', metadata.description);
+        text('hashtags', Array.isArray(metadata.hashtags) ? metadata.hashtags.filter(value => typeof value === 'string').join(' ') : metadata.hashtags);
+        const stageNames = {vietsub: 'VietSub', editor: 'Auto Edit', uploader: 'Đăng đa nền tảng'};
+        const statuses = {success: 'Hoàn tất', not_started: 'Chưa bắt đầu', ready: 'Sẵn sàng', queued: 'Đang chờ', running: 'Đang chạy', error: 'Lỗi', cancelled: 'Đã huỷ'};
+        text('stages', Object.entries(stageNames).map(([key, label]) => `${label}: ${statuses[manifest.stages?.[key]?.status] || manifest.stages?.[key]?.status || 'Chưa bắt đầu'}`).join(' · '));
+        const player = $(`${name}-video`), url = snapshot.availability?.video === true ? projectVideoUrl(snapshot.video_url, snapshot.job_id) : '';
+        if (player.dataset.projectUrl !== url) {
+            player.pause(); player.dataset.projectUrl = url;
+            if (url) player.src = url; else player.removeAttribute('src');
+            player.load();
+        }
+        player.hidden = !url; $(`${name}-video-placeholder`).hidden = Boolean(url);
+        $(`${name}-video-status`).textContent = url ? 'Preview video của đúng job; vùng OCR dùng toạ độ nguồn trong manifest, không lấy từ kích thước preview.' : 'Không có video preview khả dụng. Không tự mở đường dẫn file trong manifest.';
+        $(`${name}-empty`).hidden = true; $(`${name}-project`).hidden = false;
+        projectStatus(name, snapshot.ready === true ? 'Đã nhận project · chỉ chuẩn bị, chưa render / upload.' : 'Project thiếu video hoặc SRT; hãy khôi phục file trước khi tiếp tục.', snapshot.ready === true ? 'ready' : 'error');
+        // Auto Edit owns its draft and task state; never repaint its form from queue polling.
+        if (name === 'editor') window.VietSubEditor?.projectReceived(snapshot);
+        if (name === 'uploader') window.VietSubUploader?.projectReceived(snapshot);
+        adapter.projectReceived?.(name, snapshot);
+    }
     function setDrawer(open) {
         clearTimeout(drawerTimer); drawerAnimation?.cancel(); drawerOpen = open;
         const drawer = $('settings-drawer'), shell = $('workbench-shell');
@@ -133,7 +246,7 @@
             restoreFocus = document.activeElement; drawer.hidden = false;
             $('settings-close-btn').focus();
         } else {
-            (restoreFocus?.isConnected ? restoreFocus : $('settings-open-btn')).focus();
+            (canFocus(restoreFocus) ? restoreFocus : $(`workspace-${workspace}-tab`)).focus();
         }
         const motion = document.documentElement.dataset.motion === 'on';
         if (motion && drawer.animate) {
@@ -203,6 +316,7 @@
     }
     function fitVideo() {
         fitRaf = 0;
+        if (workspace !== 'vietsub') return;
         const viewport = $('preview-viewport'), stage = $('video-stage'), player = $('preview-player');
         const width = player.videoWidth || preview?.video_resolution?.width || 16;
         const height = player.videoHeight || preview?.video_resolution?.height || 9;
@@ -294,7 +408,7 @@
     function focusSource() {
         if (!initialized) return;
         if (drawerOpen) setDrawer(false);
-        selectSource('link'); $('url-input').focus();
+        selectWorkspace('vietsub'); selectSource('link'); $('url-input').focus();
     }
     function motionHelp() {
         const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -329,6 +443,7 @@
         window.VietSubVFX?.init();
         bindTabs(['link', 'local'], 'source', selectSource);
         bindTabs(['log', 'result'], 'console', selectConsole);
+        bindWorkspaces(); selectWorkspace('vietsub');
         selectSource('link'); selectConsole('log');
         $('preview-form').addEventListener('submit', event => {
             if (sourceMode === 'local') { event.preventDefault(); event.stopImmediatePropagation(); }
@@ -367,6 +482,7 @@
         applyLayout(); refreshTransport(); refreshMetrics(); motionHelp();
     }
     window.VietSubWorkbench = {init, applySettings, previewChanged, downloadChanged, progressChanged,
-        resultShown, resultHidden, focusSource, refreshTransport,
-        helpers: {validLayout, layoutPixels, fitRect, formatTime, frameTime}};
+        resultShown, resultHidden, focusSource, refreshTransport, selectWorkspace, projectReceived, projectStatus,
+        workspaceState: () => ({name: workspace, revision: workspaceRevision}),
+        helpers: {validLayout, layoutPixels, fitRect, formatTime, frameTime, cropText, projectVideoUrl}};
 })();

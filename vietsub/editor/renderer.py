@@ -1,0 +1,290 @@
+"""FFmpeg-only render pipeline. Optional TTS/separation imports happen on demand."""
+import json
+import math
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import threading
+import time
+
+from . import process
+from .options import normalize
+
+_ENCODERS = {}
+_ENCODER_LOCK = threading.Lock()
+
+
+def probe_media(path, ffprobe):
+    if not ffprobe:
+        raise RuntimeError("Auto Edit cần FFprobe để xác minh độ phân giải và thời lượng.")
+    raw = process.capture([ffprobe, "-v", "error", "-protocol_whitelist", "file,pipe",
+                           "-format_whitelist", "mov,matroska,webm,wav,mp3,flac,aac", "-show_streams", "-show_format", "-of", "json", str(path)])
+    payload = json.loads(raw)
+    streams = payload.get("streams", [])
+    video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
+    audio = any(stream.get("codec_type") == "audio" for stream in streams)
+    duration = video.get("duration") or payload.get("format", {}).get("duration")
+    try:
+        duration = float(duration)
+    except (ValueError, TypeError):
+        duration = 0
+    if not math.isfinite(duration) or duration <= 0 or duration > 12 * 3600:
+        raise ValueError("Media không có thời lượng hợp lệ (tối đa 12 giờ).")
+    width, height = int(video.get("width") or 0), int(video.get("height") or 0)
+    sar_text = video.get("sample_aspect_ratio") or "1:1"
+    try:
+        numerator, denominator = (int(number) for number in sar_text.split(":"))
+        sar = numerator / denominator
+        if not math.isfinite(sar) or not .1 <= sar <= 10:
+            sar = 1
+    except (ValueError, ZeroDivisionError):
+        sar = 1
+    square_width = max(2, round(width * sar)) if width else 0
+    rotation = next((side.get("rotation") for side in video.get("side_data_list", [])
+                     if isinstance(side, dict) and "rotation" in side), video.get("tags", {}).get("rotate", 0))
+    try:
+        rotation = round(float(rotation)) % 360
+    except (ValueError, TypeError):
+        rotation = 0
+    if rotation not in (0, 90, 180, 270):
+        raise ValueError("Góc xoay video chưa được hỗ trợ; hãy chuẩn hoá nguồn trước.")
+    display_width, display_height = (height, square_width) if rotation in (90, 270) else (square_width, height)
+    audio_stream = next((stream for stream in streams if stream.get('codec_type') == 'audio'), {})
+    try:
+        audio_offset = float(audio_stream.get('start_time') or 0) - float(video.get('start_time') or 0)
+        if not math.isfinite(audio_offset):
+            audio_offset = 0
+    except (TypeError, ValueError):
+        audio_offset = 0
+    return {"width": display_width, "height": display_height, "stored_width": width, "stored_height": height,
+            "square_width": square_width, "rotation": rotation, "duration": duration, "has_audio": audio,
+            "audio_offset": audio_offset}
+
+
+def detect_encoders(ffmpeg, *, refresh=False):
+    """A compiled-in encoder is not enough: verify actual hardware initialization."""
+    if not ffmpeg:
+        return {"h264_nvenc": False, "libx264": False}
+    key = (str(ffmpeg), os.path.getmtime(ffmpeg) if os.path.isfile(ffmpeg) else 0)
+    with _ENCODER_LOCK:
+        cached = _ENCODERS.get(key)
+        if cached and not refresh and time.monotonic() - cached[0] < 300:
+            return dict(cached[1])
+        found = {}
+        for encoder in ("libx264", "h264_nvenc"):
+            try:
+                process.capture([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                                 "color=c=black:s=128x128:r=1:d=1", "-frames:v", "1", "-an", "-c:v", encoder,
+                                 "-pix_fmt", "yuv420p", "-f", "null", "-"], timeout=12)
+                found[encoder] = True
+            except (OSError, RuntimeError, TimeoutError, subprocess.TimeoutExpired):
+                found[encoder] = False
+        _ENCODERS[key] = (time.monotonic(), found)
+        return dict(found)
+
+
+def progress_reader(duration, update, *, phase="render", offset=0, scale=100):
+    state = {"fps": 0.0, "percent": offset}
+    def read(line):
+        key, _, raw = line.partition("=")
+        try:
+            if key == "fps":
+                value = float(raw)
+                if math.isfinite(value):
+                    state["fps"] = max(0, value)
+            if key in {"out_time_us", "out_time_ms"}:
+                # FFmpeg's historical out_time_ms is also microseconds.
+                elapsed = max(0, float(raw) / 1_000_000)
+                state["percent"] = max(state["percent"], min(offset + scale * .999, offset + elapsed / duration * scale))
+            if key in {"progress", "out_time_us"}:
+                update(phase=phase, percent=round(state["percent"], 1), fps=round(state["fps"], 1))
+        except (ValueError, OverflowError):
+            pass
+    return read
+
+
+def _encoder_args(encoder):
+    return ["-c:v", encoder, "-preset", "p4", "-cq", "23"] if encoder == "h264_nvenc" else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+
+
+def _source_audio_timeline(metadata):
+    offset = metadata.get('audio_offset', 0)
+    chain = ['asetpts=PTS-STARTPTS']
+    if offset > .0001:
+        chain.append(f"adelay={round(offset * 1000)}:all=1")
+    elif offset < -.0001:
+        chain += [f"atrim=start={-offset}", 'asetpts=PTS-STARTPTS']
+    chain += ['apad', f"atrim=duration={metadata['duration']}"]
+    return ','.join(chain)
+
+
+def _audio_graph(has_audio, bg_index, tts_index, options, duration, source_timeline=None):
+    filters = []
+    background = f"{bg_index}:a:0" if bg_index is not None else "0:a:0" if has_audio else None
+    if background == '0:a:0' and source_timeline and options['audio_mode'] != 'mute':
+        filters.append(f'[0:a:0]{source_timeline}[sourceaudio]')
+        background = 'sourceaudio'
+    if options["audio_mode"] == "mute":
+        background = None
+    if tts_index is not None and background:
+        filters += [f"[{background}]aresample=48000,volume={options['bgm_volume']}[bgm]",
+                    f"[{tts_index}:a:0]aresample=48000,apad,atrim=duration={duration},asplit=2[side][voice]",
+                    "[bgm][side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=250[ducked]",
+                    f"[ducked][voice]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration={duration}[aout]"]
+    elif tts_index is not None:
+        filters += [f"[{tts_index}:a:0]aresample=48000,apad,atrim=duration={duration}[aout]"]
+    elif background:
+        volume = options["bgm_volume"] if options["audio_mode"] == "instrumental" else 1
+        filters += [f"[{background}]aresample=48000,volume={volume},apad,atrim=duration={duration}[aout]"]
+    return filters, "[aout]" if filters else None
+
+
+def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, cancel, update,
+            runtime_python=None, capcut_config=None):
+    if not ffmpeg:
+        raise RuntimeError("Chưa tìm thấy FFmpeg trong PATH. Cài FFmpeg trước khi Auto Edit.")
+    from .filters import build_video_graph
+    from .subtitles import write_ass
+    options = normalize(options, inherited_crop=project.get("crop_box"))
+    source = project["assets"]["video"]
+    srt = project["assets"]["translated_srt"]
+    root = Path(project["project_dir"])
+    work = root / ".vietsub-editor" / task_id
+    metadata = probe_media(source, ffprobe)
+    if not 2 <= metadata["width"] <= 16384 or not 2 <= metadata["height"] <= 16384:
+        raise ValueError("Độ phân giải video không được hỗ trợ.")
+    duration = metadata["duration"]
+    timeout = min(24 * 3600, max(300, duration * 10 + 120))
+    stem = Path(source).stem
+    warnings = []
+    tts_path = None
+    final_paths = []
+    from vietsub import manifest
+    manifest._safe_path(str(work))
+    work.mkdir(parents=True, exist_ok=False)
+    try:
+        process.check_cancel(cancel)
+        if action == "extract_audio":
+            if not metadata["has_audio"]:
+                raise ValueError("Video nguồn không có track âm thanh để tách.")
+            extension = options["audio_format"]
+            temporary = work / f"extracted.{extension}"
+            codec = ["-c:a", "pcm_s16le"] if extension == "wav" else ["-c:a", "libmp3lame", "-q:a", "2"]
+            process.run([ffmpeg, "-hide_banner", "-y", "-i", source, "-vn", "-af", _source_audio_timeline(metadata),
+                         *codec, "-progress", "pipe:1", "-nostats", str(temporary)],
+                        cancel=cancel, timeout=timeout, on_line=progress_reader(duration, update, phase="extract_audio"))
+            result = root / f"{stem}.extracted.{task_id[:10]}.{extension}"
+            probe_media(temporary, ffprobe)
+            process.check_cancel(cancel); os.replace(temporary, result)
+            return {"output_path": str(result), "output_kind": "audio", "assets": {"extracted_audio": str(result)}, "warnings": warnings}
+        if action == "tts" or options["tts_enabled"]:
+            from .providers import service as create_tts_service
+            update(phase="tts", percent=0, fps=0)
+            service = create_tts_service(ffmpeg, ffprobe, str(root / ".vietsub-tts-cache"), runtime_python=runtime_python,
+                                        config=capcut_config, cancel=cancel, progress=lambda values: update(
+                                            phase=values.get("stage", "tts"),
+                                            percent=round(100 * values.get("current", 0) / max(1, values.get("total", 1)), 1), fps=0))
+            tts_path = work / "voice.wav"
+            generated = service.synthesize_srt(srt, str(tts_path), voice=options["tts_voice"],
+                                               provider=options["tts_provider"], speed=options["tts_speed"],
+                                               pitch=options["tts_pitch"], allow_fallback=options["tts_fallback"])
+            warnings += generated.get("warnings", [])
+            if action == "tts":
+                result = root / f"{stem}.tts.{task_id[:10]}.wav"
+                probe_media(tts_path, ffprobe)
+                process.check_cancel(cancel); os.replace(tts_path, result)
+                return {"output_path": str(result), "output_kind": "audio", "assets": {"tts_audio": str(result)}, "warnings": warnings}
+        if action != "render":
+            raise ValueError("Tác vụ Auto Edit không được hỗ trợ.")
+        instrumental = None
+        if options["audio_mode"] == "instrumental":
+            if not metadata["has_audio"]:
+                raise ValueError("Video nguồn không có âm thanh để tách vocal/BGM.")
+            from . import separation
+            update(phase="separation", percent=0, fps=0)
+            extracted = work / "original.wav"
+            process.run([ffmpeg, "-hide_banner", "-y", "-i", source, "-vn", "-af", _source_audio_timeline(metadata),
+                         "-c:a", "pcm_s16le", str(extracted)],
+                        cancel=cancel, timeout=timeout)
+            separated = separation.separate(str(extracted), str(work / "stems"), runtime_python=runtime_python or None,
+                                            model_dir=(capcut_config or {}).get("separation_model_dir"),
+                                            model_filename=(capcut_config or {}).get("separation_model", "UVR-MDX-NET-Inst_HQ_3.onnx"),
+                                            cancel=cancel)
+            instrumental = separated.get("instrumental") if isinstance(separated, dict) else separated
+            if not instrumental or not Path(instrumental).is_file():
+                raise RuntimeError("Runtime không trả về instrumental hợp lệ; không trộn lại giọng gốc.")
+            warnings.append("Tách stem phụ thuộc model: BGM/SFX có thể bị suy giảm; hãy nghe kiểm tra.")
+        ass = None
+        if options["subtitle_enabled"] or options["banner_text"]:
+            # Use a local relative name in filtergraph to avoid Windows path parsing.
+            ass = write_ass(srt, str(work / "subtitles.ass"), metadata["width"], metadata["height"], options)
+        # FFmpeg autorotation handles the full display matrix, including selfie
+        # reflections; do not reduce that matrix to a scalar angle/manual flip.
+        inputs = ["-i", source]
+        input_count = 1
+        watermark_index = None
+        if options["watermark_enabled"]:
+            watermark_index = input_count; input_count += 1
+            inputs += ["-i", options["watermark_path"]]
+        background_index = None
+        if instrumental:
+            background_index = input_count; input_count += 1
+            inputs += ["-i", str(instrumental)]
+        tts_index = None
+        if tts_path:
+            tts_index = input_count; input_count += 1
+            inputs += ["-i", str(tts_path)]
+        graph = build_video_graph(metadata["width"], metadata["height"], options,
+                                  ass_path="subtitles.ass" if ass else None,
+                                  watermark_input=watermark_index, fonts_dir=fonts_dir)
+        # Input frames have already been display-matrix transformed by FFmpeg.
+        # Resize anamorphic frames to the same square-pixel geometry used by UI.
+        transform = [f"scale={metadata['width']}:{metadata['height']}", 'setsar=1', 'setpts=PTS-STARTPTS']
+        video_graph = '[0:v:0]' + ','.join(transform) + '[oriented];' + graph['filter_complex'].replace('[0:v:0]', '[oriented]', 1)
+        audio_filters, audio_label = _audio_graph(metadata["has_audio"], background_index, tts_index, options, duration,
+                                                  source_timeline=_source_audio_timeline(metadata))
+        full_graph = video_graph + (";" + ";".join(audio_filters) if audio_filters else "")
+        available = detect_encoders(ffmpeg)
+        requested = options["encoder"]
+        encoder = "h264_nvenc" if available["h264_nvenc"] and requested != "libx264" else "libx264"
+        if requested == "h264_nvenc" and not available["h264_nvenc"]:
+            warnings.append("NVENC không khả dụng; chuyển sang libx264.")
+        if not available.get(encoder):
+            raise RuntimeError("FFmpeg không có encoder H.264 hoạt động (NVENC/libx264).")
+        temporary = work / "render.mp4"
+        def render_with(selected):
+            command = [ffmpeg, "-hide_banner", "-y", "-filter_complex_threads", "1", *inputs,
+                       "-filter_complex", full_graph, "-map", graph["output_label"]]
+            command += ["-map", audio_label, "-c:a", "aac", "-b:a", "192k"] if audio_label else ["-an"]
+            command += [*_encoder_args(selected), "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-metadata:s:v:0", "rotate=0", "-t", str(duration),
+                        "-progress", "pipe:1", "-nostats", str(temporary)]
+            update(phase="render", percent=0, fps=0, encoder=selected)
+            process.run(command, cwd=str(work), cancel=cancel, timeout=timeout,
+                        on_line=progress_reader(duration, update))
+        try:
+            render_with(encoder)
+        except RuntimeError:
+            if encoder != "h264_nvenc" or (cancel and cancel.is_set()):
+                raise
+            warnings.append("Render NVENC thất bại; đã thử lại bằng libx264.")
+            encoder = "libx264"; render_with(encoder)
+        rendered = probe_media(temporary, ffprobe)
+        if (rendered['width'], rendered['height']) != (graph['width'], graph['height']):
+            raise RuntimeError("Kích thước video render không khớp cấu hình; không công bố output.")
+        if abs(rendered["duration"] - duration) > max(1, duration * .01):
+            raise RuntimeError("Video render bị thiếu thời lượng; không công bố output.")
+        output = root / f"{stem}.edited.{task_id[:10]}.mp4"
+        assets = {"edited_video": str(output)}
+        if tts_path:
+            voice_output = root / f"{stem}.tts.{task_id[:10]}.wav"
+            process.check_cancel(cancel); os.replace(tts_path, voice_output)
+            final_paths.append(voice_output); assets["tts_audio"] = str(voice_output)
+        process.check_cancel(cancel); os.replace(temporary, output); final_paths.append(output)
+        return {"output_path": str(output), "output_kind": "video", "assets": assets,
+                "warnings": list(dict.fromkeys(warnings)), "encoder": encoder,
+                "width": rendered["width"], "height": rendered["height"]}
+    finally:
+        # Only this verified task-owned temporary directory, never project/source.
+        if work.parent == root / ".vietsub-editor" and work.name == task_id:
+            shutil.rmtree(work, ignore_errors=True)

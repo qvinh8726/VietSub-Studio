@@ -31,14 +31,14 @@ function makeElement(id = '') {
     };
 }
 
-function loadApp({ fetch, confirm = () => true, pywebview } = {}) {
+function loadApp({ fetch, confirm = () => true, pywebview, workbench } = {}) {
     const elements = {};
     const document = {
         getElementById(id) { return (elements[id] ??= makeElement(id)); },
         querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.6.2' }; },
         createElement(tag) { return makeElement(tag); },
     };
-    const window = { addEventListener() {}, matchMedia: () => ({ matches: true }), confirm, scrollTo() {}, pywebview };
+    const window = { addEventListener() {}, matchMedia: () => ({ matches: true }), confirm, scrollTo() {}, pywebview, VietSubWorkbench: workbench };
     const context = vm.createContext({
         document, window, fetch, console, Headers, AbortController, FormData, URL, File,
         setTimeout, clearTimeout, setInterval, clearInterval, JSON, Date, Math,
@@ -357,6 +357,13 @@ test('selection survives polling and is pruned when a job starts or disappears',
     await flush();
 });
 
+test('disk badge uses decimal MB and GB with locale-stable numeric boundaries', () => {
+    const app = loadApp();
+    assert.equal(app.run('formatDiskBytes(1000000)'), '1 MB');
+    assert.equal(app.run('formatDiskBytes(2500000000)'), '2,5 GB');
+    assert.equal(app.run('formatDiskBytes(0)'), '0 B');
+});
+
 test('bulk disk badge uses authoritative dry-run bytes rather than summing shared job estimates', async () => {
     const calls = [];
     const app = loadApp({fetch: async (url, options) => {
@@ -366,7 +373,7 @@ test('bulk disk badge uses authoritative dry-run bytes rather than summing share
     app.run("queueJobs = [{id: 'a', status: 'success', disk_bytes: 99999}, {id: 'b', status: 'success', disk_bytes: 99999}]; selectedQueueIds.add('a'); selectedQueueIds.add('b');");
     await app.run('refreshBulkEstimate()');
     assert.deepEqual(calls, [['/api/queue/bulk-delete', {ids: ['a', 'b'], delete_files: true, keep_srt: true, dry_run: true}]]);
-    assert.equal(app.elements['queue-disk-badge'].textContent, '1 KiB có thể dọn');
+    assert.equal(app.elements['queue-disk-badge'].textContent, '1 KB có thể dọn');
 });
 
 test('out-of-order estimates cannot overwrite a changed selection or deletion mode', async () => {
@@ -378,7 +385,7 @@ test('out-of-order estimates cannot overwrite a changed selection or deletion mo
     const second = app.run('refreshBulkEstimate()');
     pending[1].resolve(jsonResponse({selected_count: 1, reclaimable_bytes: 2048, failures: []})); await second;
     pending[0].resolve(jsonResponse({selected_count: 1, reclaimable_bytes: 999999, failures: []})); await first;
-    assert.equal(app.elements['queue-disk-badge'].textContent, '2 KiB có thể dọn');
+    assert.equal(app.elements['queue-disk-badge'].textContent, '2 KB có thể dọn');
     app.run('openBulkDelete()'); // record-only dry run
     assert.equal(app.elements['bulk-delete-records'].checked, true);
     assert.equal(app.elements['bulk-keep-srt'].checked, true);
@@ -389,7 +396,7 @@ test('out-of-order estimates cannot overwrite a changed selection or deletion mo
     assert.equal(app.elements['bulk-delete-confirm'].disabled, true, 'old record-only estimate must not enable file deletion');
     pending[3].resolve(jsonResponse({selected_count: 1, reclaimable_bytes: 4096, failures: []})); await files;
     assert.equal(app.elements['bulk-delete-confirm'].disabled, false);
-    assert.match(app.elements['bulk-delete-estimate'].textContent, /4 KiB/);
+    assert.match(app.elements['bulk-delete-estimate'].textContent, /4,1 KB/);
     assert.equal(pending[3].payload.keep_srt, true);
 });
 
@@ -525,4 +532,147 @@ test('new settings default to false and persist as explicit booleans', async () 
     await app.run('saveSettingsNow({silent: true})');
     assert.equal(saved[1].auto_delete_source_video, true);
     assert.equal(saved[1].generate_publish_metadata, true);
+});
+
+function workbenchSpy() {
+    const received = [], switches = [], statuses = [];
+    return {received, switches, statuses, workspaceState: () => ({name: 'vietsub', revision: 0}),
+        projectReceived: (...args) => received.push(args), selectWorkspace: name => switches.push(name),
+        projectStatus: (...args) => statuses.push(args), resultShown() {}, resultHidden() {}};
+}
+const handoffSnapshot = (jobId, workspace, overrides = {}) => ({workspace, job_id: jobId, manifest_path: `${jobId}.project.json`,
+    manifest: {schema_version: 1, project_id: jobId, assets: {}}, video_url: `/api/projects/${jobId}/video`,
+    availability: {video: true, translated_srt: true}, ready: true, ...overrides});
+const descendants = element => [element, ...element.children.flatMap(descendants)];
+
+test('success-only selection is additive while the finished shortcut keeps legacy semantics', async () => {
+    const app = loadApp({fetch: async () => jsonResponse({selected_count: 1, reclaimable_bytes: 0, failures: []})});
+    app.run("queueJobs = [{id:'ok',status:'success'},{id:'bad',status:'error'},{id:'cancel',status:'cancelled'},{id:'wait',status:'queued'}]; setQueueSelection('success')");
+    assert.deepEqual(plain(app.run('[...selectedQueueIds]')), ['ok']);
+    assert.equal(app.elements['queue-select-success'].disabled, false);
+    app.run("setQueueSelection('finished')");
+    assert.deepEqual(plain(app.run('[...selectedQueueIds]')), ['ok', 'bad', 'cancel']);
+    await flush();
+});
+
+test('historical successful queue actions capture job ID even when old result_ready is missing', async () => {
+    const calls = [], wb = workbenchSpy();
+    const app = loadApp({workbench: wb, fetch: async (url, options) => {
+        calls.push([url, options]);
+        return jsonResponse(handoffSnapshot('historical', 'editor'));
+    }});
+    app.run("queueJobs = [{id:'historical',status:'success',result:{video:'clip.mp4',translated_srt:'clip.vi.srt'}},{id:'failed',status:'error',result:{}}]; progressJobId='different-current-job'; renderQueue()");
+    const rows = app.elements['queue-list'].children;
+    const editor = descendants(rows[0]).find(node => node.textContent === 'Chuyển sang Auto Edit →');
+    assert.ok(editor); assert.equal(editor.disabled, false);
+    assert.ok(descendants(rows[0]).some(node => node.textContent === 'Đẩy sang Đăng đa nền tảng →'));
+    assert.equal(descendants(rows[1]).some(node => node.textContent === 'Chuyển sang Auto Edit →'), false);
+    await editor.onclick();
+    assert.equal(calls[0][0], '/api/projects/historical/handoff');
+    assert.deepEqual(JSON.parse(calls[0][1].body), {workspace: 'editor'});
+    assert.equal(calls[0][1].headers.get('X-VietSub-Token'), 'token');
+    assert.deepEqual(wb.switches, ['editor']);
+});
+
+test('result handoff ID prefers captured job/progress identity and falls back to a unique matching old result', () => {
+    const app = loadApp();
+    app.run("queueJobs = [{id:'old',status:'success',result:{project_dir:'old',translated_srt:'old.vi.srt'}},{id:'live',status:'success',result:{project_dir:'live',translated_srt:'live.vi.srt'}}]; progressJobId='live'; showResult({project_dir:'old',translated_srt:'old.vi.srt'},true,'old')");
+    assert.equal(app.run('resultJobId'), 'old');
+    app.run("showResult({project_dir:'live',translated_srt:'live.vi.srt'})");
+    assert.equal(app.run('resultJobId'), 'live');
+    app.run("progressJobId=''; showResult({translated_srt:'old.vi.srt'})");
+    assert.equal(app.run('resultJobId'), 'old');
+    app.run("progressJobId='new-progress-job'; showResult({translated_srt:'old.vi.srt'})");
+    assert.equal(app.run('resultJobId'), 'new-progress-job', 'explicit progress identity takes priority over shared output paths');
+    app.run("progressJobId=''; showResult({translated_srt:'old.vi.srt'})");
+    assert.equal(app.elements['result-editor-btn'].disabled, false);
+    app.run("showResult({video:'unknown.mp4'})");
+    assert.equal(app.run('resultJobId'), '');
+    assert.equal(app.elements['result-editor-btn'].disabled, true);
+    assert.match(app.elements['result-handoff-status'].textContent, /Chưa xác định/);
+    app.run('hideResult()');
+    assert.equal(app.elements['result-handoff-actions'].hidden, true);
+});
+
+test('handoff loading is explicit, ignores duplicate clicks and only the latest response can switch staging', async () => {
+    const pending = [], wb = workbenchSpy();
+    const app = loadApp({workbench: wb, fetch: (url, options) => new Promise(resolve => pending.push({url, options, resolve}))});
+    app.run("showResult({translated_srt:'one.vi.srt'},false,'one')");
+    const first = app.run("handoffProject('one','editor')");
+    await app.run("handoffProject('one','editor')");
+    assert.equal(pending.length, 1);
+    assert.equal(app.elements['result-editor-btn'].disabled, true);
+    assert.match(app.elements['result-editor-btn'].textContent, /Đang bàn giao/);
+    assert.equal(app.elements['result-editor-btn'].attributes['aria-busy'], 'true');
+    const second = app.run("handoffProject('two','uploader')");
+    pending[1].resolve(jsonResponse(handoffSnapshot('two', 'uploader'))); await second;
+    pending[0].resolve(jsonResponse(handoffSnapshot('one', 'editor'))); await first;
+    assert.deepEqual(wb.switches, ['uploader']);
+    assert.equal(wb.received.length, 1); assert.equal(wb.received[0][1].job_id, 'two');
+    assert.equal(app.elements['result-editor-btn'].disabled, false);
+    assert.equal(app.elements['result-editor-btn'].textContent, 'Chuyển sang Auto Edit →');
+    assert.equal(app.run('pendingHandoffs.size'), 0);
+});
+
+test('handoff conflicts, wrong-job responses and missing media never switch workspace and stay retryable', async () => {
+    for (const response of [jsonResponse({error:'Video đã bị xoá'}, 409),
+        jsonResponse(handoffSnapshot('wrong', 'editor')),
+        jsonResponse(handoffSnapshot('one', 'editor', {ready: false, availability: {video: false, translated_srt: true}}))]) {
+        const wb = workbenchSpy(), app = loadApp({workbench: wb, fetch: async () => response});
+        app.run("showResult({translated_srt:'one.vi.srt'},false,'one')");
+        await app.run("handoffProject('one','editor')");
+        assert.deepEqual(wb.switches, []); assert.deepEqual(wb.received, []);
+        assert.equal(app.elements['result-handoff-status'].dataset.state, 'error');
+        assert.ok(app.elements['result-handoff-status'].textContent.length);
+        assert.equal(app.elements['result-editor-btn'].disabled, false);
+        assert.equal(app.elements['result-editor-btn'].attributes['aria-busy'], 'false');
+    }
+});
+
+test('cleaned video results keep quick action labels with a downstream warning and no request', async () => {
+    let calls = 0;
+    const app = loadApp({fetch: async () => { calls++; return jsonResponse({}); }});
+    app.run("queueJobs=[{id:'gone',status:'success',result:{source_video_deleted:true,translated_srt:'gone.vi.srt'}}]; renderQueue(); showResult(queueJobs[0].result,true,'gone')");
+    const action = descendants(app.elements['queue-list'].children[0]).find(node => node.textContent === 'Chuyển sang Auto Edit →');
+    assert.equal(action.disabled, true);
+    assert.equal(app.elements['result-editor-btn'].disabled, true);
+    assert.match(app.elements['result-handoff-status'].textContent, /không thể bàn giao/);
+    await action.onclick();
+    assert.equal(calls, 0);
+});
+
+test('project recheck uses read-only snapshot and ignores an earlier response after a new handoff', async () => {
+    const pending = [], wb = workbenchSpy();
+    const app = loadApp({workbench: wb, fetch: (url, options) => new Promise(resolve => pending.push({url, options, resolve}))});
+    const initial = app.run("handoffProject('one','editor')");
+    pending[0].resolve(jsonResponse(handoffSnapshot('one', 'editor'))); await initial;
+    const recheck = app.run("refreshProject('editor','one')");
+    assert.equal(pending[1].url, '/api/projects/one?workspace=editor'); assert.equal(pending[1].options.method, undefined);
+    const newer = app.run("handoffProject('two','editor')");
+    pending[2].resolve(jsonResponse(handoffSnapshot('two', 'editor'))); await newer;
+    pending[1].resolve(jsonResponse(handoffSnapshot('one', 'editor', {ready: false}))); await recheck;
+    assert.deepEqual(wb.received.map(([, data]) => data.job_id), ['one', 'two']);
+});
+
+test('stale handoff errors are ignored after a newer successful request', async () => {
+    const pending = [], wb = workbenchSpy();
+    const app = loadApp({workbench: wb, fetch: () => new Promise(resolve => pending.push(resolve))});
+    const older = app.run("handoffProject('old','editor')");
+    const newer = app.run("handoffProject('new','uploader')");
+    pending[1](jsonResponse(handoffSnapshot('new', 'uploader'))); await newer;
+    pending[0](jsonResponse({error:'stale failure'}, 409)); await older;
+    assert.deepEqual(wb.switches, ['uploader']);
+    assert.equal(wb.statuses.some(([, message]) => message.includes('stale failure')), false);
+    assert.equal(app.run('handoffStates.has("old")'), false);
+});
+
+test('queue mutation invalidates an in-flight handoff without switching to removed media', async () => {
+    let release;
+    const wb = workbenchSpy(), app = loadApp({workbench: wb, fetch: () => new Promise(resolve => { release = resolve; })});
+    const pending = app.run("handoffProject('old','editor')");
+    app.run('queueEpoch++');
+    release(jsonResponse(handoffSnapshot('old', 'editor'))); await pending;
+    assert.deepEqual(wb.switches, []); assert.deepEqual(wb.received, []);
+    assert.equal(app.run('pendingHandoffs.size'), 0);
+    assert.match(wb.statuses.at(-1)[1], /Hàng đợi đã thay đổi/);
 });

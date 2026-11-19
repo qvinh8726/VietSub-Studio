@@ -151,6 +151,43 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(len(result["failures"]), 2)
         self.assertTrue(Path(self.job["source_video"]).exists())
 
+    def test_dry_run_counts_only_eligible_jobs_not_running_or_missing_ids(self):
+        other = self.make_job("running")
+        other["status"] = "running"
+        result = self.post(ids=["one", "running", "missing"], delete_files=True, dry_run=True)
+        self.assertEqual(result["selected_count"], 1)
+        self.assertEqual(len(result["failures"]), 2)
+        self.assertTrue(Path(self.job["source_video"]).exists())
+
+    def test_one_inaccessible_inventory_does_not_block_other_jobs(self):
+        other = self.make_job("two")
+        inventory = storage.inventory
+        bad_path = storage.canonical(self.job["source_video"])
+        def checked(paths):
+            if bad_path in paths:
+                raise PermissionError("inaccessible one")
+            return inventory(paths)
+        with patch.object(storage, "inventory", side_effect=checked):
+            result = self.post(ids=["one", "two"], delete_files=True)
+        self.assertEqual(result["deleted_ids"], ["two"])
+        self.assertEqual(result["failures"][0]["id"], "one")
+        self.assertTrue(Path(self.job["source_video"]).exists())
+        self.assertFalse(Path(other["source_video"]).exists())
+
+    def test_failed_inventory_protects_its_shared_subtitles(self):
+        other = self.make_job("two")
+        other["result"]["translated_srt"] = self.job["result"]["translated_srt"]
+        original = storage.inventory
+        bad_path = storage.canonical(self.job["source_video"])
+        def checked(paths):
+            if bad_path in paths:
+                raise PermissionError("locked one")
+            return original(paths)
+        with patch.object(storage, "inventory", side_effect=checked):
+            result = self.post(ids=["one", "two"], delete_files=True, keep_srt=False)
+        self.assertEqual(result["deleted_ids"], ["two"])
+        self.assertTrue(Path(self.job["result"]["translated_srt"]).exists())
+
     def test_unlink_failure_retains_record_for_retry(self):
         with patch.object(storage.os, "unlink", side_effect=PermissionError("locked video")):
             result = self.post(delete_files=True)

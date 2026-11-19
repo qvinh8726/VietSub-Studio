@@ -517,7 +517,7 @@ class WorkbenchStaticSecurityTests(unittest.TestCase):
 
     def test_scripts_fonts_and_licenses_are_served_locally_with_the_existing_csp(self):
         assets = (
-            "app.js", "style.css", "sakuga-vfx.js", "workbench.js", "fonts.css", "sakuga-LICENSE.txt",
+            "app.js", "editor.js", "editor-THIRD-PARTY.txt", "style.css", "sakuga-vfx.js", "workbench.js", "fonts.css", "sakuga-LICENSE.txt",
             "fonts/be-vietnam-pro-regular.ttf", "fonts/be-vietnam-pro-medium.ttf",
             "fonts/be-vietnam-pro-semibold.ttf", "fonts/be-vietnam-pro-bold.ttf",
             "fonts/noto-sans-sc.ttf", "fonts/jetbrains-mono.ttf",

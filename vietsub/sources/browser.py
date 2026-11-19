@@ -137,18 +137,38 @@ def launch_command(executable, profile, *, port=DEBUG_PORT, background=False, st
 BLANK_PAGE_URLS = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/", "edge://newtab/")
 
 
-def reuse_page(context, url=None):
-    """Reuse the initial tab (or the requested page), without touching other tabs."""
+def reuse_page(context, url=None, *, matches=None):
+    """Prefer the requested target, then the app's initial tab, then a blank tab.
+
+    Only the marked, app-created blank start tab may be discarded when another
+    target already matches. Unmarked blanks and all unrelated tabs are retained.
+    """
     pages = getattr(context, "pages", ())
     if not isinstance(pages, (list, tuple)):
         pages = ()
     initial = getattr(context, "_vietsub_initial_page", None)
-    if initial is not None and initial in pages:
+    if initial is not None:
         context._vietsub_initial_page = None
+    if initial not in pages:
+        initial = None
+    for page in pages:
+        try:
+            requested = (url and page.url == url) or (matches is not None and matches(page))
+        except Exception:
+            continue
+        if requested:
+            if initial is not None and initial is not page:
+                try:
+                    if initial.url in BLANK_PAGE_URLS:
+                        initial.close()
+                except Exception:
+                    pass
+            return page
+    if initial is not None:
         return initial
     for page in pages:
         try:
-            if page.url in BLANK_PAGE_URLS or (url and page.url == url):
+            if page.url in BLANK_PAGE_URLS:
                 return page
         except Exception:
             continue
@@ -156,7 +176,9 @@ def reuse_page(context, url=None):
 
 
 def release_page(context, page):
-    """Keep the last tab alive so closing a capture cannot discard session cookies."""
+    """Keep verification and the last tab alive, preserving login UI and cookies."""
+    if getattr(page, "_vietsub_manual_verification", False) is True:
+        return
     pages = getattr(context, "pages", ())
     if isinstance(pages, (list, tuple)) and len(pages) == 1 and pages[0] is page:
         return

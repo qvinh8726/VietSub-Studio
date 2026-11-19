@@ -5,6 +5,7 @@ import {test} from 'node:test';
 
 const baseline = JSON.parse(readFileSync(new URL('./dom-contract.json', import.meta.url), 'utf8'));
 const html = readFileSync(new URL('../../templates/index.html', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../../static/style.css', import.meta.url), 'utf8');
 const voidTags = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '));
 
 // Tokenize this static template, including quoted attributes containing >. No DOM/npm dependency.
@@ -83,7 +84,7 @@ test('legacy data handles and token/version metadata keep their exact values', (
 test('workbench loads local deferred scripts in dependency order without inline event handlers', () => {
     const scripts = nodes.filter(node => node.tag === 'script');
     assert.deepEqual(scripts.map(node => node.attrs.src), [
-        '/static/sakuga-vfx.js', '/static/workbench.js', '/static/app.js',
+        '/static/sakuga-vfx.js', '/static/workbench.js', '/static/editor.js', '/static/uploader.js', '/static/app.js',
     ]);
     for (const script of scripts) assert.ok(Object.hasOwn(script.attrs, 'defer'), script.attrs.src);
     for (const [, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) assert.equal(body.trim(), '');
@@ -113,4 +114,98 @@ test('new tabs, splitters, drawer and numeric crop alternatives are connected to
         assert.equal(byId(id)[0].attrs.type, 'number');
         assert.ok(byId(id)[0].ancestors.some(node => node.tag === 'label'), id);
     }
+});
+
+test('activity rail owns exactly three accessible workspace tabs with mounted inactive staging', () => {
+    const tabs = nodes.filter(node => node.attrs.role === 'tab' && node.ancestors.some(parent => parent.attrs.id === 'workspace-tabs'));
+    assert.deepEqual(tabs.map(node => node.attrs.id), ['workspace-vietsub-tab', 'workspace-editor-tab', 'workspace-uploader-tab']);
+    assert.equal(byId('workspace-tabs')[0].attrs['aria-orientation'], 'vertical');
+    for (const [index, tab] of tabs.entries()) {
+        const panel = byId(tab.attrs['aria-controls'])[0];
+        assert.equal(panel.attrs.role, 'tabpanel');
+        assert.equal(tab.attrs['aria-selected'], String(index === 0));
+        assert.equal(tab.attrs.tabindex, index === 0 ? '0' : '-1');
+        assert.equal(Object.hasOwn(panel.attrs, 'hidden'), index !== 0);
+        assert.equal(Object.hasOwn(panel.attrs, 'inert'), index !== 0);
+    }
+    for (const id of ['sidebar', 'preview-form', 'queue-list', 'preview-player', 'video-stage', 'crop-box', 'transport-bar']) {
+        assert.ok(byId(id)[0].ancestors.some(node => node.attrs.id === 'workbench'), id);
+    }
+    for (const id of ['console-dock', 'settings-drawer']) {
+        assert.equal(byId(id)[0].ancestors.some(node => ['workbench', 'workspace-editor', 'workspace-uploader'].includes(node.attrs.id)), false, `${id} stays shared`);
+    }
+});
+
+test('Auto Edit and Publish Hub retain expanded phase1 facts and add real explicit actions', () => {
+    for (const name of ['editor', 'uploader']) {
+        for (const field of ['project-name', 'project-id', 'source', 'video-path', 'srt', 'crop', 'resolution', 'manifest', 'stages', 'title', 'description', 'hashtags']) {
+            assert.equal(byId(`${name}-${field}`).length, 1, `${name}-${field}`);
+        }
+        assert.equal(byId(`${name}-video`)[0].attrs.preload, 'metadata');
+    }
+    const uploaderButtons = nodes.filter(node => node.tag === 'button' && node.ancestors.some(parent => parent.attrs.id === 'workspace-uploader'));
+    assert.deepEqual(uploaderButtons.map(node => node.attrs.id), ['uploader-media-upload', 'uploader-use-project',
+        'uploader-save-metadata', 'uploader-generate-metadata', 'uploader-queue-submit', 'uploader-profiles-refresh', 'uploader-profile-create', 'uploader-queue-refresh',
+        'uploader-back-source', 'uploader-refresh-project']);
+    assert.ok(Object.hasOwn(byId('uploader-project-facts')[0].attrs, 'open'), 'old QA can see mounted project facts');
+    for (const field of ['title', 'description', 'hashtags']) {
+        const control = byId(`uploader-${field}-input`)[0];
+        assert.ok(control.ancestors.some(parent => parent.attrs.id === 'uploader-publish-form'));
+        assert.ok(nodes.some(label => label.tag === 'label' && label.attrs.for === control.attrs.id));
+    }
+    for (const id of ['uploader-media-upload', 'uploader-save-metadata', 'uploader-generate-metadata', 'uploader-queue-submit', 'uploader-profile-create']) {
+        assert.ok(Object.hasOwn(byId(id)[0].attrs, 'disabled'), `${id} waits for actual readiness`);
+    }
+    assert.equal(byId('uploader-media-file')[0].attrs.accept, 'video/mp4,.mp4');
+    assert.equal(byId('uploader-confirm-public')[0].attrs.type, 'checkbox');
+    assert.equal(byId('uploader-source-ack')[0].attrs.type, 'checkbox');
+    assert.equal(byId('uploader-scheduled-at')[0].attrs.type, 'datetime-local');
+    assert.ok(Object.hasOwn(byId('uploader-scheduled-at')[0].attrs, 'disabled'));
+    const platforms = nodes.filter(node => node.tag === 'option' && node.ancestors.some(parent => parent.attrs.id === 'uploader-profile-platform')).map(node => node.attrs.value);
+    assert.deepEqual(platforms, ['tiktok', 'youtube', 'facebook', 'douyin', 'bilibili', 'xiaohongshu']);
+    assert.equal(byId('uploader-publish-jobs')[0].attrs['aria-live'], 'polite');
+    assert.match(html, /Asia\/Saigon \(UTC\+07:00\)/);
+    assert.match(html, /app và máy tính phải đang chạy/);
+    assert.match(html, /thử lại có nguy cơ đăng trùng/);
+    for (const id of ['editor-save-btn', 'editor-render-btn', 'editor-extract-btn', 'editor-tts-generate-btn', 'editor-tts-preview-btn',
+        'editor-load-voices-btn', 'editor-cancel-btn', 'editor-send-publish-btn']) {
+        assert.equal(byId(id).length, 1, id);
+        assert.ok(Object.hasOwn(byId(id)[0].attrs, 'disabled'), `${id} must wait for actual runtime/project readiness`);
+    }
+    const optionNames = nodes.filter(node => node.attrs['data-editor-option']).map(node => node.attrs['data-editor-option']);
+    assert.deepEqual([...optionNames].sort(), ['mask_mode', 'blur_strength', 'padding_px', 'solid_color', 'solid_opacity',
+        'subtitle_enabled', 'subtitle_preset', 'font', 'font_size', 'text_color', 'outline', 'shadow', 'back_color', 'subtitle_position',
+        'banner_text', 'banner_position', 'watermark_enabled', 'watermark_path', 'watermark_opacity', 'watermark_corner', 'reframe',
+        'output_height', 'encoder', 'audio_mode', 'audio_format', 'bgm_volume', 'tts_enabled', 'tts_provider', 'tts_voice', 'tts_speed',
+        'tts_pitch', 'tts_fallback'].sort());
+    for (const node of nodes.filter(node => node.attrs['data-editor-option'])) {
+        assert.ok(node.ancestors.some(parent => parent.attrs.id === 'editor-options-form'), node.attrs.id);
+        assert.ok(nodes.some(label => label.tag === 'label' && (label.attrs.for === node.attrs.id || node.ancestors.includes(label))), node.attrs.id);
+    }
+    for (const field of ['x', 'y', 'width', 'height']) {
+        const node = byId(`editor-crop-${field}`)[0];
+        assert.equal(node.attrs.type, 'number');
+        assert.equal(node.attrs['aria-invalid'], 'false');
+        for (const id of node.attrs['aria-describedby'].split(' ')) assert.equal(byId(id).length, 1, id);
+    }
+    assert.equal(byId('editor-crop-box')[0].attrs.tabindex, '0');
+    assert.equal(byId('editor-task-progress')[0].attrs.role, 'progressbar');
+    assert.equal(byId('editor-status')[0].attrs['aria-live'], 'polite');
+    assert.equal(byId('editor-watermark-file')[0].attrs.accept, 'image/png,.png');
+    assert.notEqual(byId('editor-output-video')[0], byId('editor-video')[0], 'render output must not replace source media');
+    assert.match(html, /Upload · Phase 3/);
+    assert.match(html, /Chuyển sang Auto Edit →/); assert.match(html, /Đẩy sang Đăng đa nền tảng →/);
+    assert.match(html, /ngăn bàn giao sang Auto Edit \/ Đăng đa nền tảng/);
+    assert.match(html, /Chạy headless, không có cửa sổ/);
+});
+
+test('48px activity rail is a grid track inside the fixed-height shell with shared console track', () => {
+    assert.match(css, /--activity-rail-width:\s*48px/);
+    const rule = selector => css.split(`${selector} {`)[1]?.split('}')[0] || '';
+    assert.match(rule('.shell'), /grid-template-columns:\s*var\(--activity-rail-width\) minmax\(0, 1fr\)/);
+    assert.match(rule('.shell'), /height:\s*100vh/);
+    assert.match(rule('.activity-rail'), /grid-column:\s*1/);
+    assert.doesNotMatch(rule('.activity-rail'), /position:\s*(fixed|absolute)/);
+    for (const selector of ['.workbench', '.staging-workspace', '.console-dock']) assert.match(rule(selector), /grid-column:\s*2/, selector);
+    for (const color of ['#07110e', '#111318', '#f5c542', '#7ee0b8', '#ff6b3d']) assert.ok(css.includes(color));
 });

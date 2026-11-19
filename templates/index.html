@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body data-motion="off">
-    <a class="skip-link" href="#preview-viewport">Đến màn hình preview</a>
+    <a id="preview-skip-link" class="skip-link" href="#preview-viewport">Đến màn hình preview</a>
     <main id="workbench-shell" class="shell">
         <header class="topbar">
             <div class="brand">
@@ -40,7 +40,22 @@
             <button id="update-btn" class="update-button" type="button">Cập nhật ngay →</button>
         </section>
 
-        <section id="workbench" class="workbench" aria-label="Không gian làm việc">
+        <nav class="activity-rail" aria-label="Phân hệ Creator Workbench">
+            <div id="workspace-tabs" class="activity-tabs" role="tablist" aria-label="Không gian làm việc" aria-orientation="vertical">
+                <button id="workspace-vietsub-tab" class="workspace-tab" type="button" role="tab" aria-label="VietSub" aria-selected="true" aria-controls="workbench" tabindex="0" title="VietSub · Nhận diện và dịch phụ đề">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M6 13h5m2 0h5M6 16h7m2 0h3M8 8h8"/></svg><span>VietSub</span>
+                </button>
+                <button id="workspace-editor-tab" class="workspace-tab" type="button" role="tab" aria-label="Auto Edit" aria-selected="false" aria-controls="workspace-editor" tabindex="-1" title="Auto Edit · Bàn giao project">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m5 4 14 16M5 20 19 4"/><circle cx="5" cy="6" r="3"/><circle cx="5" cy="18" r="3"/></svg><span>Edit</span>
+                </button>
+                <button id="workspace-uploader-tab" class="workspace-tab" type="button" role="tab" aria-label="Đăng đa nền tảng" aria-selected="false" aria-controls="workspace-uploader" tabindex="-1" title="Đăng đa nền tảng · Bàn giao project">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg><span>Đăng</span>
+                </button>
+            </div>
+            <span class="rail-phase" title="Phase 1 · Chuẩn bị project">P1</span>
+        </nav>
+
+        <section id="workbench" class="workbench" role="tabpanel" aria-labelledby="workspace-vietsub-tab" aria-label="Không gian VietSub">
             <aside id="sidebar" class="source-sidebar">
                 <section class="source-card" aria-labelledby="source-title">
                     <div class="source-heading">
@@ -134,6 +149,7 @@
                     <div class="queue-bulk-tools" aria-label="Chọn và dọn hàng đợi, lịch sử">
                         <div class="queue-selection-shortcuts">
                             <label class="queue-select-all"><input id="queue-select-all" type="checkbox">Tất cả</label>
+                            <button id="queue-select-success" class="btn-ghost" type="button" title="Chỉ chọn job thành công">Đã xong</button>
                             <button id="queue-select-finished" class="btn-ghost" type="button" title="Chọn job thành công, lỗi và đã huỷ">Đã kết thúc</button>
                             <button id="queue-select-old" class="btn-ghost" type="button" title="Chọn job đã kết thúc hơn 3 ngày trước">&gt; 3 ngày</button>
                         </div>
@@ -203,6 +219,186 @@
             </section>
         </section>
 
+        <section id="workspace-editor" class="staging-workspace editor-workspace" role="tabpanel" aria-labelledby="workspace-editor-tab" hidden inert>
+            <header class="staging-header editor-header">
+                <div><span class="staging-eyebrow">CREATOR WORKBENCH · AUTO EDIT</span><h2 id="editor-heading" tabindex="-1">Auto Edit</h2><p>Che phụ đề gốc, tạo giọng đọc và xuất video từ project VietSub.</p></div>
+                <div class="editor-header-actions"><span id="editor-dirty" class="editor-save-state">Chưa có project</span><button id="editor-save-btn" class="btn-secondary" type="button" disabled>Lưu cấu hình</button><button id="editor-render-btn" class="btn-primary" type="button" disabled>Render video →</button></div>
+            </header>
+            <div class="staging-scroll editor-scroll">
+                <div id="editor-empty" class="staging-empty"><strong>Chưa nhận project</strong><p>Trong Kết quả hoặc lịch sử job thành công, chọn “Chuyển sang Auto Edit →”. Video gốc và phụ đề Việt phải còn trên máy.</p></div>
+                <div id="editor-project" class="staging-project editor-project" hidden>
+                    <div class="editor-preview-column">
+                        <section class="handoff-preview" aria-label="Video nguồn và vùng che phụ đề">
+                            <div class="editor-section-heading"><h3>Video nguồn</h3><span class="editor-source-label">Giữ nguyên file gốc</span></div>
+                            <div id="editor-source-surface" class="editor-source-surface">
+                                <video id="editor-video" controls preload="metadata" aria-label="Video project Auto Edit" hidden></video><p id="editor-video-placeholder">Chưa có URL xem video an toàn.</p>
+                                <div id="editor-crop-layer" class="editor-crop-layer" hidden><div id="editor-crop-box" class="editor-crop-box" role="group" tabindex="0" aria-label="Vùng che phụ đề trên video nguồn" aria-describedby="editor-crop-help editor-crop-error" aria-disabled="true"><span class="editor-crop-label" aria-hidden="true">Vùng che</span><button class="editor-crop-handle nw" data-editor-handle="nw" type="button" aria-label="Đổi góc trên trái vùng che" tabindex="-1"></button><button class="editor-crop-handle ne" data-editor-handle="ne" type="button" aria-label="Đổi góc trên phải vùng che" tabindex="-1"></button><button class="editor-crop-handle sw" data-editor-handle="sw" type="button" aria-label="Đổi góc dưới trái vùng che" tabindex="-1"></button><button class="editor-crop-handle se" data-editor-handle="se" type="button" aria-label="Đổi góc dưới phải vùng che" tabindex="-1"></button></div></div>
+                            </div>
+                            <p id="editor-video-status" class="field-help" role="status"></p>
+                            <div class="editor-crop-tools">
+                                <label class="editor-check"><input id="editor-crop-enabled" type="checkbox" disabled> Dùng vùng che phụ đề</label>
+                                <div class="editor-crop-values">
+                                    <label for="editor-crop-x">X (%)<input id="editor-crop-x" class="number-input" type="number" min="0" max="99.9" step="0.1" value="0" aria-describedby="editor-crop-help editor-crop-error" aria-invalid="false" disabled></label>
+                                    <label for="editor-crop-y">Y (%)<input id="editor-crop-y" class="number-input" type="number" min="0" max="99.9" step="0.1" value="0" aria-describedby="editor-crop-help editor-crop-error" aria-invalid="false" disabled></label>
+                                    <label for="editor-crop-width">Rộng (%)<input id="editor-crop-width" class="number-input" type="number" min="0.1" max="100" step="0.1" value="100" aria-describedby="editor-crop-help editor-crop-error" aria-invalid="false" disabled></label>
+                                    <label for="editor-crop-height">Cao (%)<input id="editor-crop-height" class="number-input" type="number" min="0.1" max="100" step="0.1" value="100" aria-describedby="editor-crop-help editor-crop-error" aria-invalid="false" disabled></label>
+                                </div>
+                                <div class="editor-inline-actions"><button id="editor-crop-reset" class="btn-ghost" type="button" disabled>Vùng OCR gốc</button><button id="editor-crop-lower" class="btn-ghost" type="button" disabled>1/3 phía dưới</button></div>
+                                <p id="editor-crop-help" class="field-help">Kéo để di chuyển, kéo góc để đổi cỡ; hoặc nhập số. Phím mũi tên di chuyển, Shift + mũi tên đổi cỡ. Toạ độ theo nội dung nguồn, không tính viền đen của preview.</p>
+                                <p id="editor-crop-error" class="field-error" role="alert"></p>
+                            </div>
+                        </section>
+                        <section id="editor-output" class="editor-output handoff-card" aria-labelledby="editor-output-title" hidden><div class="editor-section-heading"><h3 id="editor-output-title">Kết quả Auto Edit</h3><a id="editor-output-link" class="editor-output-link" target="_blank" rel="noopener" hidden>Mở kết quả ↗</a></div><video id="editor-output-video" controls preload="metadata" aria-label="Video đã render" hidden></video><audio id="editor-output-audio" controls preload="metadata" aria-label="Âm thanh Auto Edit" hidden></audio><p id="editor-output-path" class="field-help"></p><button id="editor-send-publish-btn" class="btn-secondary" type="button" disabled>Chuyển sang Đăng đa nền tảng →</button></section>
+                        <details class="editor-project-summary" open><summary>Project, phụ đề &amp; metadata</summary><div class="handoff-details">
+                            <section class="handoff-card" aria-labelledby="editor-project-title"><h3 id="editor-project-title">Project đã nhận</h3><strong id="editor-project-name" class="handoff-name"></strong><dl class="handoff-facts"><dt>Job / Project ID</dt><dd id="editor-project-id"></dd><dt>Nguồn</dt><dd id="editor-source"></dd><dt>Video</dt><dd id="editor-video-path"></dd><dt>Sub Việt SRT</dt><dd id="editor-srt"></dd><dt>Crop chuẩn hoá (0–1)</dt><dd id="editor-crop"></dd><dt>Độ phân giải nguồn</dt><dd id="editor-resolution"></dd><dt>Manifest</dt><dd id="editor-manifest"></dd><dt>Trạng thái các bước</dt><dd id="editor-stages"></dd></dl></section>
+                            <section class="handoff-card" aria-labelledby="editor-metadata-title"><h3 id="editor-metadata-title">Metadata đăng video</h3><dl class="handoff-facts"><dt>Tiêu đề</dt><dd id="editor-title"></dd><dt>Mô tả</dt><dd id="editor-description" class="handoff-description"></dd><dt>Hashtag</dt><dd id="editor-hashtags"></dd></dl></section>
+                        </div></details>
+                    </div>
+                    <form id="editor-options-form" class="editor-options-form" novalidate aria-label="Cấu hình Auto Edit" aria-describedby="editor-form-error">
+                        <fieldset id="editor-options-fieldset" class="editor-options-fieldset" disabled><legend class="editor-sr-only">Tuỳ chọn xử lý video và âm thanh</legend>
+                            <details class="editor-option-section" open><summary><span>01 · Che phụ đề gốc</span><small>Mask</small></summary><div class="editor-fields">
+                                <label for="editor-mask-mode">Cách che<select id="editor-mask-mode" data-editor-option="mask_mode" class="select-input"><option value="none">Không che</option><option value="boxblur" selected>Làm mờ (Box blur)</option><option value="delogo">Xoá logo (Delogo)</option><option value="solid_bar">Thanh màu</option></select></label>
+                                <label for="editor-blur-strength">Độ mờ<input id="editor-blur-strength" data-editor-option="blur_strength" class="number-input" type="number" min="1" max="40" step="1" value="8"></label>
+                                <label for="editor-padding-px">Đệm vùng che (px)<input id="editor-padding-px" data-editor-option="padding_px" class="number-input" type="number" min="0" max="100" step="1" value="8"></label>
+                                <label for="editor-solid-color">Màu thanh<input id="editor-solid-color" data-editor-option="solid_color" class="editor-color" type="color" value="#111318"></label>
+                                <label for="editor-solid-opacity">Độ đậm thanh (0–1)<input id="editor-solid-opacity" data-editor-option="solid_opacity" class="number-input" type="number" min="0" max="1" step="0.05" value="0.75"></label>
+                            </div></details>
+                            <details class="editor-option-section" open><summary><span>02 · Phụ đề Việt</span><small>ASS</small></summary><div class="editor-fields">
+                                <label class="editor-check editor-wide"><input id="editor-subtitle-enabled" data-editor-option="subtitle_enabled" type="checkbox" checked> Gắn phụ đề Việt vào video</label>
+                                <label for="editor-subtitle-preset">Mẫu phụ đề<select id="editor-subtitle-preset" data-editor-option="subtitle_preset" class="select-input"><option value="standard">Standard · rõ nét</option><option value="anime">Anime · nổi bật</option><option value="social">Social · ngắn gọn</option></select></label>
+                                <label for="editor-font">Font cục bộ<select id="editor-font" data-editor-option="font" class="select-input"><option value="Be Vietnam Pro">Be Vietnam Pro</option><option value="Noto Sans SC">Noto Sans SC</option><option value="JetBrains Mono">JetBrains Mono</option></select></label>
+                                <label for="editor-font-size">Cỡ chữ nguồn (px)<input id="editor-font-size" data-editor-option="font_size" class="number-input" type="number" min="12" max="120" step="1" value="48"></label>
+                                <label for="editor-text-color">Màu chữ<input id="editor-text-color" data-editor-option="text_color" class="editor-color" type="color" value="#ffffff"></label>
+                                <label for="editor-outline">Viền chữ<input id="editor-outline" data-editor-option="outline" class="number-input" type="number" min="0" max="10" step="0.5" value="2"></label>
+                                <label for="editor-shadow">Bóng chữ<input id="editor-shadow" data-editor-option="shadow" class="number-input" type="number" min="0" max="10" step="0.5" value="1"></label>
+                                <label for="editor-back-color">Màu nền chữ<input id="editor-back-color" data-editor-option="back_color" class="editor-color" type="color" value="#000000"></label>
+                                <label for="editor-subtitle-position">Vị trí phụ đề<select id="editor-subtitle-position" data-editor-option="subtitle_position" class="select-input"><option value="crop">Theo vùng che</option><option value="bottom">Dưới</option><option value="top">Trên</option></select></label>
+                            </div></details>
+                            <details class="editor-option-section"><summary><span>03 · Banner &amp; logo PNG</span><small>Brand</small></summary><div class="editor-fields">
+                                <label class="editor-wide" for="editor-banner-text">Nội dung banner (tối đa 200 ký tự)<input id="editor-banner-text" data-editor-option="banner_text" class="text-input" maxlength="200" placeholder="Để trống nếu không dùng banner"></label>
+                                <label for="editor-banner-position">Vị trí banner<select id="editor-banner-position" data-editor-option="banner_position" class="select-input"><option value="top">Trên</option><option value="bottom">Dưới</option></select></label>
+                                <label class="editor-check"><input id="editor-watermark-enabled" data-editor-option="watermark_enabled" type="checkbox"> Hiện logo PNG</label>
+                                <label class="editor-wide" for="editor-watermark-file">Chọn logo PNG<input id="editor-watermark-file" class="editor-file" type="file" accept="image/png,.png" aria-describedby="editor-watermark-help"></label>
+                                <label class="editor-wide" for="editor-watermark-path">Logo của project<input id="editor-watermark-path" data-editor-option="watermark_path" class="text-input readonly" readonly placeholder="Chưa chọn logo PNG"></label>
+                                <p id="editor-watermark-help" class="field-help editor-wide">Chỉ tải logo vào project này; máy chủ kiểm tra nội dung PNG. Không nhập đường dẫn file tuỳ ý.</p>
+                                <label for="editor-watermark-opacity">Độ đậm logo (0–1)<input id="editor-watermark-opacity" data-editor-option="watermark_opacity" class="number-input" type="number" min="0" max="1" step="0.05" value="0.7"></label>
+                                <label for="editor-watermark-corner">Góc đặt logo<select id="editor-watermark-corner" data-editor-option="watermark_corner" class="select-input"><option value="top_right">Trên phải</option><option value="top_left">Trên trái</option><option value="bottom_right">Dưới phải</option><option value="bottom_left">Dưới trái</option></select></label>
+                            </div></details>
+                            <details class="editor-option-section"><summary><span>04 · Âm thanh &amp; giọng đọc</span><small>Audio / TTS</small></summary><div class="editor-fields">
+                                <label for="editor-audio-mode">Âm thanh nền<select id="editor-audio-mode" data-editor-option="audio_mode" class="select-input"><option value="original">Giữ âm thanh gốc</option><option value="mute">Tắt âm thanh gốc</option><option value="instrumental">Tách giọng, giữ nhạc / hiệu ứng</option></select></label>
+                                <label for="editor-bgm-volume">Âm lượng nền (0–2)<input id="editor-bgm-volume" data-editor-option="bgm_volume" class="number-input" type="number" min="0" max="2" step="0.05" value="0.35"></label>
+                                <label for="editor-audio-format">Định dạng tách audio<select id="editor-audio-format" data-editor-option="audio_format" class="select-input"><option value="wav">WAV</option><option value="mp3">MP3</option></select></label>
+                                <div class="editor-field-action"><button id="editor-extract-btn" class="btn-secondary" type="button" disabled>Tách audio</button></div>
+                                <label class="editor-check editor-wide"><input id="editor-tts-enabled" data-editor-option="tts_enabled" type="checkbox"> Dùng TTS đọc phụ đề khi render</label>
+                                <label for="editor-tts-provider">Nhà cung cấp giọng<select id="editor-tts-provider" data-editor-option="tts_provider" class="select-input"><option value="capcut_internal">CapCut (HTTP nội bộ)</option><option value="edge_tts">Edge TTS (tuỳ chọn)</option></select></label>
+                                <label for="editor-tts-language">Ngôn ngữ giọng<select id="editor-tts-language" class="select-input"><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="zh">中文</option><option value="ja">日本語</option><option value="*">Tất cả ngôn ngữ</option></select></label>
+                                <label for="editor-tts-voice">Giọng đọc<select id="editor-tts-voice" data-editor-option="tts_voice" class="select-input"><option value="">Bấm nạp danh sách giọng</option></select></label>
+                                <div class="editor-inline-actions editor-wide"><button id="editor-load-voices-btn" class="btn-ghost" type="button" disabled>Nạp danh sách giọng</button><span id="editor-voices-status" class="field-help" role="status" aria-live="polite">Chỉ kết nối dịch vụ khi bạn bấm nạp hoặc tạo giọng.</span></div>
+                                <label for="editor-tts-speed">Tốc độ (0.5–2×)<input id="editor-tts-speed" data-editor-option="tts_speed" class="number-input" type="number" min="0.5" max="2" step="0.05" value="1"></label>
+                                <label for="editor-tts-pitch">Cao độ (−12–12)<input id="editor-tts-pitch" data-editor-option="tts_pitch" class="number-input" type="number" min="-12" max="12" step="1" value="0"></label>
+                                <label class="editor-check editor-wide"><input id="editor-tts-fallback" data-editor-option="tts_fallback" type="checkbox" checked> Cho phép chuyển sang Edge khi CapCut lỗi (sẽ có cảnh báo)</label>
+                                <label class="editor-wide" for="editor-tts-preview-text">Nội dung nghe thử<textarea id="editor-tts-preview-text" rows="2" maxlength="250" aria-describedby="editor-form-error">Xin chào, đây là giọng đọc tiếng Việt.</textarea></label>
+                                <div class="editor-inline-actions editor-wide"><button id="editor-tts-preview-btn" class="btn-secondary" type="button" disabled>Nghe thử giọng</button><button id="editor-tts-generate-btn" class="btn-secondary" type="button" disabled>Tạo TTS từ phụ đề</button></div>
+                            </div></details>
+                            <details class="editor-option-section"><summary><span>05 · Khung hình &amp; xuất video</span><small>Export</small></summary><div class="editor-fields">
+                                <label for="editor-reframe">Khung hình<select id="editor-reframe" data-editor-option="reframe" class="select-input"><option value="original">Giữ tỷ lệ gốc</option><option value="vertical">Dọc 9:16 · nền mờ</option></select></label>
+                                <label for="editor-output-height">Chiều cao đầu ra<select id="editor-output-height" data-editor-option="output_height" class="select-input"><option value="720">720 px</option><option value="1280" selected>1280 px</option><option value="1920">1920 px</option></select></label>
+                                <label class="editor-wide" for="editor-encoder">Bộ mã hoá<select id="editor-encoder" data-editor-option="encoder" class="select-input"><option value="auto">Tự động · NVENC nếu khả dụng, dự phòng CPU</option><option value="libx264">CPU · libx264</option><option value="h264_nvenc">NVIDIA · h264_nvenc</option></select></label>
+                                <p class="field-help editor-wide">Preview luôn là video nguồn. Hiệu ứng, phụ đề và giọng đọc được áp dụng trong kết quả render riêng ở bên trái.</p>
+                            </div></details>
+                        </fieldset>
+                        <p id="editor-action-help" class="field-help" role="status" aria-live="polite"></p>
+                        <p id="editor-form-error" class="field-error" role="alert"></p>
+                    </form>
+                </div>
+                <details id="editor-runtime" class="editor-runtime"><summary>Runtime &amp; khả năng xử lý <span id="editor-capabilities-summary">Đang kiểm tra…</span></summary><div class="editor-runtime-body"><div class="editor-runtime-config"><label for="editor-runtime-python">Python runtime ngoài (portable)<input id="editor-runtime-python" class="text-input" placeholder="C:\\Python\\python.exe" spellcheck="false"></label><label for="editor-model-dir">Thư mục model tách giọng đã cài<input id="editor-model-dir" class="text-input" placeholder="D:\\Models\\audio-separator" spellcheck="false"></label><label for="editor-model-filename">Tên model ONNX<input id="editor-model-filename" class="text-input" value="UVR-MDX-NET-Inst_HQ_3.onnx" spellcheck="false"></label><label class="editor-check"><input id="editor-capcut-compat" type="checkbox"> Bật giao thức CapCut tương thích thử nghiệm</label><p id="editor-capcut-detail" class="field-help">Chữ ký payload CapCut upstream chưa chứng minh ổn định. Chỉ bật nếu chấp nhận dịch vụ có thể từ chối; không có cookie/key được nhúng và không bỏ qua xác minh. Fallback Edge cần runtime riêng. TTS gửi văn bản tới provider khi bạn bấm tạo/nghe thử.</p><button id="editor-runtime-save" class="btn-secondary" type="button">Lưu runtime / chế độ CapCut</button></div><div class="editor-inline-actions"><button id="editor-runtime-refresh" class="btn-ghost" type="button">Kiểm tra lại runtime</button><span id="editor-runtime-core" class="field-help" role="status"></span></div><p class="field-help">FFmpeg là lõi; Edge TTS và tách giọng là tuỳ chọn, không tự cài gói hoặc tải model khi mở app. Lệnh bên dưới chỉ để sao chép và tự chạy trong runtime bạn chọn.</p><div class="editor-runtime-grid"><section class="handoff-card"><h3>Edge TTS</h3><p id="editor-runtime-edge-detail" class="field-help"></p><div class="editor-command-row"><input id="editor-runtime-edge-command" class="text-input readonly" readonly aria-label="Lệnh cài Edge TTS để tự chạy"><button id="editor-runtime-edge-copy" class="btn-ghost" type="button" disabled>Sao chép</button></div></section><section class="handoff-card"><h3>Tách giọng / nhạc</h3><p id="editor-runtime-separator-detail" class="field-help"></p><div class="editor-command-row"><input id="editor-runtime-separator-command" class="text-input readonly" readonly aria-label="Lệnh cài audio separator để tự chạy"><button id="editor-runtime-separator-copy" class="btn-ghost" type="button" disabled>Sao chép</button></div></section></div></div></details>
+            </div>
+            <footer class="editor-footer">
+                <section id="editor-task-panel" class="editor-task-panel" aria-label="Tiến độ Auto Edit" aria-busy="false"><div class="editor-task-caption"><strong id="editor-task-stage">Chưa có tác vụ</strong><span id="editor-task-percent">0%</span><span id="editor-task-fps">— fps</span><button id="editor-task-retry" class="btn-ghost" type="button" hidden>Theo dõi lại</button><button id="editor-cancel-btn" class="btn-danger" type="button" disabled>Huỷ tác vụ</button></div><div id="editor-task-progress" class="editor-task-progress" role="progressbar" aria-label="Tiến độ tác vụ Auto Edit" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="editor-task-fill"></i></div><ul id="editor-task-warnings" class="editor-task-warnings" aria-label="Cảnh báo Auto Edit" hidden></ul></section>
+                <p id="editor-status" class="editor-status" role="status" aria-live="polite">Nhận project từ VietSub để bắt đầu.</p>
+                <div class="staging-actions"><button id="editor-back-source" class="btn-secondary" type="button">← Về VietSub</button><button id="editor-refresh-project" class="btn-ghost" type="button" disabled>Kiểm tra lại file</button><span id="editor-project-status" class="project-status" role="status" aria-live="polite"></span></div>
+            </footer>
+        </section>
+
+        <section id="workspace-uploader" class="staging-workspace uploader-workspace" role="tabpanel" aria-labelledby="workspace-uploader-tab" hidden inert>
+            <header class="staging-header uploader-header">
+                <div><span class="staging-eyebrow">CREATOR WORKBENCH · PUBLISH HUB</span><h2 id="uploader-heading" tabindex="-1">Đăng đa nền tảng</h2><p>Chọn video, kiểm tra tài khoản, duyệt nội dung. Chỉ đăng khi bạn xác nhận.</p></div>
+                <span class="phase-badge">Upload · Phase 3</span>
+            </header>
+            <div class="staging-scroll uploader-scroll">
+                <p id="uploader-runtime-status" class="uploader-notice" role="status" aria-live="polite">Đang đọc khả năng trình duyệt cục bộ. Chưa mở đăng nhập hay gửi video.</p>
+                <div class="uploader-grid">
+                    <section class="uploader-asset-column" aria-labelledby="uploader-asset-heading">
+                        <div class="uploader-section-head"><h3 id="uploader-asset-heading">01 · Video đăng</h3><span id="uploader-asset-badge" class="uploader-badge">Chưa chọn</span></div>
+                        <form id="uploader-media-form" class="uploader-import" novalidate>
+                            <label class="field-label" for="uploader-media-file">Hoặc chọn MP4 bất kỳ trên máy</label>
+                            <input id="uploader-media-file" class="text-input" type="file" accept="video/mp4,.mp4" aria-describedby="uploader-media-help">
+                            <small id="uploader-media-help" class="field-help">Chỉ tải vào app trên máy này, chưa đăng lên nền tảng. MP4 riêng không có SRT để tạo metadata AI.</small>
+                            <button id="uploader-media-upload" class="btn-secondary" type="submit" disabled>Tải MP4 vào Publish Hub</button>
+                            <button id="uploader-use-project" class="btn-ghost" type="button" hidden>Dùng lại project đã nhận</button>
+                            <span id="uploader-media-status" class="field-help" role="status" aria-live="polite"></span>
+                        </form>
+                        <div id="uploader-empty" class="staging-empty"><strong>Chưa nhận project</strong><p>Nhận video từ VietSub / Auto Edit hoặc chọn MP4 phía trên. Chưa có video nào được đăng.</p></div>
+                        <div id="uploader-project" class="uploader-asset" hidden>
+                            <section class="handoff-preview" aria-label="Video đã bàn giao cho Đăng đa nền tảng">
+                                <div class="handoff-video-surface"><video id="uploader-video" controls preload="metadata" aria-label="Video project Đăng đa nền tảng" hidden></video><p id="uploader-video-placeholder">Chưa có URL xem video an toàn.</p></div>
+                                <p id="uploader-video-status" class="field-help" role="status"></p>
+                                <label id="uploader-source-ack-row" class="uploader-check" hidden><input id="uploader-source-ack" type="checkbox"><span>Tôi chủ động chọn video nguồn (chưa qua Auto Edit) để đăng.</span></label>
+                            </section>
+                            <details id="uploader-project-facts" class="handoff-card uploader-facts" open>
+                                <summary id="uploader-project-title">Thông tin project / file</summary><strong id="uploader-project-name" class="handoff-name"></strong>
+                                <dl class="handoff-facts"><dt>Job / Project ID</dt><dd id="uploader-project-id"></dd><dt>Nguồn</dt><dd id="uploader-source"></dd><dt>Video</dt><dd id="uploader-video-path"></dd><dt>Sub Việt SRT</dt><dd id="uploader-srt"></dd><dt>Crop chuẩn hoá (0–1)</dt><dd id="uploader-crop"></dd><dt>Độ phân giải nguồn</dt><dd id="uploader-resolution"></dd><dt>Manifest</dt><dd id="uploader-manifest"></dd><dt>Trạng thái các bước</dt><dd id="uploader-stages"></dd></dl>
+                            </details>
+                        </div>
+                    </section>
+                    <section class="uploader-compose" aria-labelledby="uploader-metadata-title">
+                        <div class="uploader-section-head"><h3 id="uploader-metadata-title">02 · Nội dung &amp; lịch đăng</h3><span id="uploader-draft-status" class="uploader-badge">Bản nháp</span></div>
+                        <form id="uploader-publish-form" novalidate>
+                            <fieldset id="uploader-content-fields" disabled>
+                                <label class="field-label" for="uploader-title-input">Tiêu đề · tối đa 120 ký tự</label><input id="uploader-title-input" class="text-input" maxlength="120" aria-describedby="uploader-metadata-error">
+                                <label class="field-label" for="uploader-description-input">Mô tả</label><textarea id="uploader-description-input" rows="5" maxlength="5000" aria-describedby="uploader-metadata-error"></textarea>
+                                <label class="field-label" for="uploader-hashtags-input">Hashtag</label><textarea id="uploader-hashtags-input" rows="2" maxlength="5000" placeholder="#vietsub #video" aria-describedby="uploader-hashtags-help uploader-metadata-error"></textarea>
+                                <small id="uploader-hashtags-help" class="field-help">Tách bằng dấu cách hoặc dấu phẩy. Tối đa 30 hashtag, mỗi hashtag 80 ký tự sau #.</small>
+                                <div class="uploader-inline-actions"><button id="uploader-save-metadata" class="btn-secondary" type="button" disabled>Lưu metadata project</button><button id="uploader-generate-metadata" class="btn-ghost" type="button" disabled>Tạo bằng AI từ SRT</button></div>
+                                <span id="uploader-ai-status" class="field-help" role="status" aria-live="polite"></span>
+                                <div id="uploader-metadata-error" class="field-error" role="alert"></div>
+                                <div class="inline-fields uploader-delivery-fields">
+                                    <div><label class="field-label" for="uploader-visibility">Chế độ</label><select id="uploader-visibility" class="select-input"><option value="draft" selected>Bản nháp</option><option value="private">Riêng tư</option><option value="public">Công khai</option></select></div>
+                                    <div><label class="field-label" for="uploader-schedule-mode">Thời điểm</label><select id="uploader-schedule-mode" class="select-input"><option value="now" selected>Ngay khi tới lượt</option><option value="local">Hẹn giờ cục bộ</option></select></div>
+                                </div>
+                                <label class="field-label" for="uploader-scheduled-at">Ngày giờ · Asia/Saigon (UTC+07:00)</label><input id="uploader-scheduled-at" class="text-input" type="datetime-local" step="60" disabled aria-describedby="uploader-schedule-warning uploader-submit-error">
+                            </fieldset>
+                            <p id="uploader-schedule-warning" class="uploader-notice">Hẹn giờ cục bộ, không phải lịch trên nền tảng: app và máy tính phải đang chạy, có mạng vào giờ đăng. Giờ luôn là Asia/Saigon (UTC+07:00).</p>
+                            <label id="uploader-public-confirm-row" class="uploader-check uploader-public-confirm" hidden><input id="uploader-confirm-public" type="checkbox"><span>Tôi xác nhận đăng CÔNG KHAI video và nội dung này lên tất cả tài khoản đã chọn.</span></label>
+                            <p id="uploader-submit-summary" class="field-help">Chưa chọn tài khoản. Không có thao tác đăng tự động.</p>
+                            <div id="uploader-submit-error" class="field-error" role="alert"></div>
+                            <button id="uploader-queue-submit" class="btn-primary uploader-submit" type="submit" disabled>Thêm vào hàng đợi đăng →</button>
+                        </form>
+                        <details class="uploader-metadata-facts" open><summary>Nội dung đang duyệt</summary><dl class="handoff-facts"><dt>Tiêu đề</dt><dd id="uploader-title"></dd><dt>Mô tả</dt><dd id="uploader-description" class="handoff-description"></dd><dt>Hashtag</dt><dd id="uploader-hashtags"></dd></dl></details>
+                    </section>
+                    <section class="uploader-profiles" aria-labelledby="uploader-profiles-heading">
+                        <div class="uploader-section-head"><h3 id="uploader-profiles-heading">03 · Tài khoản đăng</h3><button id="uploader-profiles-refresh" class="btn-ghost" type="button">Kiểm tra danh sách</button></div>
+                        <p class="field-help">Mỗi account có profile trình duyệt riêng. Chọn nhiều tài khoản; đăng nhập và xác minh luôn do bạn hoàn tất thủ công.</p>
+                        <form id="uploader-profile-form" class="uploader-profile-form" novalidate>
+                            <label class="field-label" for="uploader-profile-platform">Nền tảng</label><select id="uploader-profile-platform" class="select-input" disabled><option value="tiktok">TikTok</option><option value="youtube">YouTube</option><option value="facebook">Facebook</option><option value="douyin">Douyin</option><option value="bilibili">Bilibili</option><option value="xiaohongshu">Xiaohongshu</option></select>
+                            <label class="field-label" for="uploader-profile-name">Tên gợi nhớ tài khoản</label><input id="uploader-profile-name" class="text-input" maxlength="80" autocomplete="off" placeholder="Ví dụ: Kênh review chính">
+                            <button id="uploader-profile-create" class="btn-secondary" type="submit" disabled>Thêm profile cục bộ</button>
+                        </form>
+                        <p id="uploader-profiles-status" class="field-help" role="status" aria-live="polite"></p>
+                        <div id="uploader-profile-list" class="uploader-profile-list" aria-label="Chọn tài khoản để đăng"></div>
+                        <details class="uploader-capability-details"><summary>Ma trận chế độ theo nền tảng</summary><div class="uploader-table-wrap"><table class="uploader-capability-table"><caption>Khả năng do app trên máy này cung cấp; không tự hạ từ công khai sang chế độ khác.</caption><thead><tr><th scope="col">Nền tảng</th><th scope="col">Công khai</th><th scope="col">Riêng tư</th><th scope="col">Nháp</th></tr></thead><tbody id="uploader-capability-matrix"></tbody></table></div></details>
+                    </section>
+                    <section class="uploader-publish-queue" aria-labelledby="uploader-queue-heading">
+                        <div class="uploader-section-head"><h3 id="uploader-queue-heading">Hàng đợi đăng <span id="uploader-queue-count" class="queue-count">0</span></h3><button id="uploader-queue-refresh" class="btn-ghost" type="button">Đọc lại tiến độ</button></div>
+                        <p class="field-help">Trạng thái từng nền tảng đến từ app, không suy đoán thành công. Huỷ có thể không gỡ được video đã đăng; thử lại có nguy cơ đăng trùng.</p>
+                        <p id="uploader-queue-status" class="field-help" role="status" aria-live="polite"></p>
+                        <div id="uploader-publish-jobs" class="uploader-publish-jobs" aria-live="polite" aria-relevant="additions text"></div>
+                    </section>
+                </div>
+            </div>
+            <footer class="uploader-footer"><div class="staging-actions"><button id="uploader-back-source" class="btn-secondary" type="button">← Về VietSub</button><button id="uploader-refresh-project" class="btn-ghost" type="button" disabled>Kiểm tra lại file</button><span id="uploader-project-status" class="project-status" role="status" aria-live="polite"></span></div><p id="uploader-status" role="status" aria-live="polite">Publish Hub chưa gửi yêu cầu đăng nào.</p></footer>
+        </section>
+
         <div id="console-resizer" class="resizer console-resizer" role="separator" aria-label="Đổi chiều cao bảng nhật ký" aria-orientation="horizontal" aria-valuemin="112" aria-valuemax="400" aria-valuenow="170" tabindex="0" title="Kéo để đổi chiều cao · Nhấp đúp để đặt lại"></div>
         <section id="console-dock" class="console-dock" aria-label="Nhật ký và thông số xử lý">
             <header class="console-header">
@@ -242,6 +438,11 @@
                         <div class="result-path"><b>Sub Việt</b><span id="res-vi"></span></div>
                         <div id="res-publish-row" class="result-path" hidden><b>Publish pack</b><span id="res-publish"></span></div>
                         <button id="open-result-btn" class="btn-secondary" type="button">Mở thư mục</button>
+                        <div id="result-handoff-actions" class="handoff-actions" aria-label="Bàn giao project" hidden>
+                            <button id="result-editor-btn" class="btn-secondary" type="button" disabled>Chuyển sang Auto Edit →</button>
+                            <button id="result-uploader-btn" class="btn-secondary" type="button" disabled>Đẩy sang Đăng đa nền tảng →</button>
+                            <span id="result-handoff-status" class="handoff-status" role="status" aria-live="polite"></span>
+                        </div>
                     </div>
                     <p class="result-empty">Bộ file video và phụ đề sẽ xuất hiện ở đây khi job hoàn tất.</p>
                 </div>
@@ -254,6 +455,7 @@
         <header class="settings-header"><div><h2 id="settings-title">Thiết lập</h2><span>Tự lưu thay đổi</span></div><button id="settings-close-btn" class="icon-button" type="button" aria-label="Đóng thiết lập" title="Đóng (Esc)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
         <div class="control-card">
             <div id="settings-panel" class="settings-grid">
+                <div class="setting-field"><label>Runtime Auto Edit (tuỳ chọn)</label><small>FFmpeg chạy độc lập, không cần thư viện AI. Edge TTS: <code>python -m pip install edge-tts</code>. Tách giọng: <code>python -m pip install "audio-separator[cpu]"</code>. Model cài riêng, app không tự tải hoặc chạy lệnh cài.</small><button id="settings-editor-runtime-btn" class="btn-secondary" type="button">Kiểm tra / cấu hình runtime Auto Edit →</button></div>
                 <div class="setting-field motion-setting">
                     <label class="toggle-setting" for="setting-sakuga-vfx">
                         <input id="setting-sakuga-vfx" type="checkbox" aria-describedby="motion-help" checked>
@@ -287,7 +489,7 @@
                         <div class="setting-field"><label for="setting-notebook">Notebook Gemini</label><input id="setting-notebook" class="text-input" type="url" placeholder="https://gemini.google.com/notebook/..."><small>Tự lưu khi rời ô.</small></div>
                         <div class="setting-field">
                             <button id="show-edge-btn" class="btn-ghost" type="button">Mở Gemini trên Chrome để đăng nhập</button>
-                            <small>Notebook chạy trong trình duyệt tự động hoá của app; chỉ cần đăng nhập Google một lần trong profile riêng đó.</small>
+                            <small>Notebook chạy trong trình duyệt tự động hoá của app; chỉ cần đăng nhập Google một lần trong profile riêng đó. Cửa sổ đăng nhập thủ công được giữ tối đa 10 phút; có thể bấm mở lại nếu cần thêm thời gian.</small>
                         </div>
                     </div>
                     <div id="api-translation-settings" class="provider-settings" hidden>
@@ -315,7 +517,7 @@
                     <div class="setting-field">
                         <label class="toggle-setting" for="setting-auto-delete-source-video">
                             <input id="setting-auto-delete-source-video" type="checkbox" aria-describedby="auto-delete-source-help">
-                            <span><strong>Tự dọn video nguồn sau khi dịch thành công</strong><small id="auto-delete-source-help">Mặc định tắt. Sau khi dịch thành công, xoá video nguồn và các bản video của job, kể cả file gốc chọn trên máy. Giữ phụ đề SRT; việc xoá video không thể hoàn tác.</small></span>
+                            <span><strong>Tự dọn video nguồn sau khi dịch thành công</strong><small id="auto-delete-source-help">Mặc định tắt. Sau khi dịch thành công, xoá video nguồn và các bản video của job, kể cả file gốc chọn trên máy. Giữ phụ đề SRT; việc xoá video không thể hoàn tác và sẽ ngăn bàn giao sang Auto Edit / Đăng đa nền tảng.</small></span>
                         </label>
                     </div>
                     <div class="setting-field">
@@ -335,7 +537,7 @@
                         <small id="browser-help">App mở trình duyệt này với profile riêng, chạy song song và không đụng tới trình duyệt bạn đang dùng. Trình duyệt chỉ mở khi cần: dịch bằng Gemini Notebook, tải video cần trình duyệt, hoặc khi bạn bấm đăng nhập.</small>
                         <label class="toggle-setting browser-background-toggle" for="setting-edge-background">
                             <input id="setting-edge-background" type="checkbox" checked>
-                            <span><strong>Chạy trình duyệt ẩn</strong><small>Trình duyệt vẫn chạy đầy đủ nhưng thu nhỏ, không giành focus. Khi cần đăng nhập hoặc kéo captcha, app sẽ hiện nó lên.</small></span>
+                            <span><strong>Chạy trình duyệt ẩn</strong><small>Chạy headless, không có cửa sổ và không giành focus (không phải thu nhỏ). App chỉ hiện cửa sổ để bạn đăng nhập hoặc tự xác minh captcha, rồi trở lại chạy ẩn khi hoàn tất.</small></span>
                         </label>
                     </div>
                     <div class="setting-field source-settings">
@@ -418,6 +620,8 @@
     <meta name="app-version" content="{{ app_version }}">
     <script src="/static/sakuga-vfx.js" defer></script>
     <script src="/static/workbench.js" defer></script>
+    <script src="/static/editor.js" defer></script>
+    <script src="/static/uploader.js" defer></script>
     <script src="/static/app.js" defer></script>
 </body>
 </html>

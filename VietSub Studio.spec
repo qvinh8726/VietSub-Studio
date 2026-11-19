@@ -18,7 +18,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Optional models/providers stay outside the portable core, even on a build host with AI installed.
+    excludes=['edge_tts', 'audio_separator', 'onnxruntime', 'torch', 'torchaudio', 'demucs'],
     noarchive=False,
     optimize=0,
 )

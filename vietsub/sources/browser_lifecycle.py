@@ -11,6 +11,7 @@ from threading import RLock, Timer
 import time
 
 IDLE_SECONDS = 60
+MANUAL_LOGIN_SECONDS = 10 * 60
 
 
 class HeadedBrowserRequired(RuntimeError):
@@ -31,6 +32,7 @@ class BrowserLifecycle:
         self.active = 0
         self.instance = None
         self.last_activity = clock()
+        self.manual_login_until = None
         self._timer = None
         self._generation = 0
 
@@ -40,12 +42,15 @@ class BrowserLifecycle:
             self._timer.cancel()
             self._timer = None
 
+    def _deadline(self):
+        return max(self.last_activity + self.idle_seconds, self.manual_login_until or 0.0)
+
     def _arm(self):
         self._cancel_timer()
         if self.instance is None or self.active:
             return
         generation = self._generation
-        remaining = max(0.01, self.idle_seconds - (self.clock() - self.last_activity))
+        remaining = max(0.01, self._deadline() - self.clock())
         self._timer = self.timer_factory(remaining, lambda: self._expire(generation))
         self._timer.daemon = True
         self._timer.start()
@@ -54,7 +59,7 @@ class BrowserLifecycle:
         with self.lock:
             if generation != self._generation or self.active or self.instance is None:
                 return
-            if self.clock() - self.last_activity < self.idle_seconds:
+            if self.clock() < self._deadline():
                 self._arm()
                 return
             try:
@@ -90,8 +95,28 @@ class BrowserLifecycle:
             return run
         return decorate
 
+    def grant_manual_login(self, seconds=MANUAL_LOGIN_SECONDS):
+        """Keep an explicitly opened login window alive for a bounded grace period.
+
+        This is not a lease: automated challenge waits keep their full operation
+        lease instead. Status reads never grant or refresh this deadline.
+        """
+        with self.lock:
+            self.manual_login_until = self.clock() + max(0.0, min(float(seconds), MANUAL_LOGIN_SECONDS))
+            self._arm()
+
+    def clear_manual_login(self):
+        """Automation has resumed; restore the ordinary idle deadline."""
+        with self.lock:
+            if self.manual_login_until is not None:
+                self.manual_login_until = None
+                self._arm()
+
     def remember(self, instance):
         with self.lock:
+            previous = self.instance or {}
+            if previous.get("session") != instance.get("session"):
+                self.manual_login_until = None
             self.instance = instance
             self.last_activity = self.clock()
             self._arm()
@@ -100,17 +125,26 @@ class BrowserLifecycle:
         with self.lock:
             self._cancel_timer()
             self.instance = None
+            self.manual_login_until = None
 
     def shutdown(self):
-        """Close only when no lease is held; caller already verifies ownership."""
-        with self.lock:
+        """Refuse immediately if another thread owns a lease; never wait for it."""
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
             if self.active:
                 return False
             self._cancel_timer()
             if self.instance is None:
                 return True
-            if self.close(self.instance):
+            try:
+                closed = self.close(self.instance)
+            except Exception:
+                closed = False
+            if closed:
                 self.forget()
                 return True
             self._arm()
             return False
+        finally:
+            self.lock.release()

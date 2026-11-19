@@ -32,7 +32,7 @@ jobs:
         run: python -m pip check
       - name: Compile
         run: |
-          python -m py_compile app.py automate.py tools/make_release.py tools/workbench_qa.py
+          python -m py_compile app.py automate.py tools/make_release.py tools/workbench_qa.py tools/phase1_qa.py tools/phase2_qa.py tools/phase3_qa.py tools/editor_live_smoke.py
           python -m compileall -q vietsub
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
@@ -40,6 +40,8 @@ jobs:
         run: |
           node --check static/app.js
           node --check static/workbench.js
+          node --check static/editor.js
+          node --check static/uploader.js
           node --check static/sakuga-vfx.js
       - name: Run frontend tests
         run: node --test tests/frontend/*.test.mjs
@@ -65,11 +67,21 @@ jobs:
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg --yes --no-progress }
       - name: Exercise desktop layouts, crop and keyboard interaction
         run: python tools/workbench_qa.py --output workbench-qa
+      - name: Exercise Creator Workbench handoff and cleanup
+        run: python tools/phase1_qa.py --output phase1-qa
+      - name: Exercise Auto Edit render and synthetic TTS alignment
+        run: python tools/phase2_qa.py --output phase2-qa
+      - name: Exercise Publish Hub profiles, scheduling and isolation
+        run: python tools/phase3_qa.py --output phase3-qa
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: VietSub-Studio-workbench-qa-${{ github.sha }}
-          path: workbench-qa/*
+          path: |
+            workbench-qa/*
+            phase1-qa/*
+            phase2-qa/*
+            phase3-qa/*
           if-no-files-found: warn
 
   package-smoke:
@@ -124,7 +136,7 @@ jobs:
             if (-not $ready) {
               throw "Packaged app did not become ready within 60 seconds."
             }
-            foreach ($asset in @("avatar.jpg", "static/app.js", "static/style.css", "static/workbench.js", "static/sakuga-vfx.js", "static/fonts.css", "static/sakuga-LICENSE.txt", "static/fonts/be-vietnam-pro-regular.ttf", "static/fonts/be-vietnam-pro-medium.ttf", "static/fonts/be-vietnam-pro-semibold.ttf", "static/fonts/be-vietnam-pro-bold.ttf", "static/fonts/noto-sans-sc.ttf", "static/fonts/jetbrains-mono.ttf", "static/fonts/be-vietnam-pro-OFL.txt", "static/fonts/noto-sans-sc-OFL.txt", "static/fonts/jetbrains-mono-OFL.txt")) {
+            foreach ($asset in @("avatar.jpg", "static/app.js", "static/editor.js", "static/uploader.js", "static/editor-THIRD-PARTY.txt", "static/uploader-THIRD-PARTY.txt", "static/style.css", "static/workbench.js", "static/sakuga-vfx.js", "static/fonts.css", "static/sakuga-LICENSE.txt", "static/fonts/be-vietnam-pro-regular.ttf", "static/fonts/be-vietnam-pro-medium.ttf", "static/fonts/be-vietnam-pro-semibold.ttf", "static/fonts/be-vietnam-pro-bold.ttf", "static/fonts/noto-sans-sc.ttf", "static/fonts/jetbrains-mono.ttf", "static/fonts/be-vietnam-pro-OFL.txt", "static/fonts/noto-sans-sc-OFL.txt", "static/fonts/jetbrains-mono-OFL.txt")) {
               $assetResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:5000/$asset" -TimeoutSec 5
               if ($assetResponse.StatusCode -ne 200) {
                 throw "Packaged asset $asset was not served correctly."
