@@ -113,7 +113,7 @@ try {
   assert.deepEqual(cta.calls, ["burst", "slash"]);
   assert.equal(
     cta.href,
-    "https://github.com/qvinh8726/VietSub-Studio/releases/tag/v2.0.0",
+    "https://github.com/qvinh8726/VietSub-Studio/releases/tag/v2.0.1",
   );
   await page.waitForTimeout(900);
   const result = {

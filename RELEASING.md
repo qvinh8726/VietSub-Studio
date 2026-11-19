@@ -4,9 +4,9 @@ These steps publish a release that every portable build since v1.3.0 can install
 
 Các bước dưới đây phát hành một bản mà mọi bản portable từ v1.3.0 trở lên tự cài được. Ví dụ dùng `1.5.4`; hãy thay bằng phiên bản bạn phát hành.
 
-## v2.0.0 release gate — Creator Workbench
+## v2.0.1 release gate — Creator Workbench
 
-The four-phase implementation is now integrated for v2.0.0. Historical Phase1/2 notes below describe those approval points, not the current release scope. Run all deterministic QA before publishing; no real account uploads are part of CI.
+The four-phase implementation and the latest desktop/Soft Cinema integration are released as v2.0.1. Keep the already-published v2.0.0 tag/assets unchanged so the updater can offer this newer version. Historical Phase1/2 notes below describe those approval points, not the current release scope. Run all deterministic QA before publishing; no real account uploads are part of CI.
 
 ```powershell
 python -m py_compile app.py automate.py tools/make_release.py tools/phase1_qa.py tools/phase2_qa.py tools/phase3_qa.py
@@ -23,7 +23,7 @@ python tools/phase3_qa.py --output "$env:TEMP\vietsub-publish-qa"
 
 Publish Hub needs the selected local Chromium browser; Playwright remains bundled and lazy-loaded, Patchright is optional. Independent account directories/storage_state must never be committed or packaged. Local schedules need the app running; uncertain final submissions require user reconciliation, not auto retry. See [Publish Hub capabilities](<docs/PUBLISH_HUB_GUIDE.md>) for visibility/platform limitations and account preparation. Facebook targets Page/Business Suite, not personal profiles. No production platform upload has been performed for release QA; mock and local browser tests do not establish live account/platform acceptance.
 
-Commit only reviewed source/docs/tests; exclude scratch `hi.txt`/`plan_v2.txt`, profiles, cookies, media and artifacts. Push `main`, require the exact SHA's full **Tests and package smoke** workflow green, then tag/publish verified ZIP+SHA256 assets as v2.0.0. Keep release notes explicit about browser-selector drift, optional runtime/model setup and local scheduling.
+Commit only reviewed source/docs/tests; exclude scratch `hi.txt`/`plan_v2.txt`, profiles, cookies, media and artifacts. Push `main`, require the exact SHA's full **Tests and package smoke** workflow green, then tag/publish verified ZIP+SHA256 assets as v2.0.1. Keep release notes explicit about browser-selector drift, optional runtime/model setup and local scheduling.
 
 ## Phase 1 Creator Workbench preview / Bản xem trước Phase 1
 
@@ -65,7 +65,7 @@ python tools/phase2_qa.py --output "$env:TEMP\vietsub-phase2-qa"
 python tools/editor_live_smoke.py --live --output "$env:TEMP\vietsub-capcut-live"
 ```
 
-The deterministic UI runner uses a synthetic provider tone for audio alignment/mixing; it does not represent a live CapCut voice. Never run live TTS tests in CI automatically. Phase 2 local build smoke is validation only, not permission to tag/push/release v2.0.0. The integrated v2.0.0 now includes experimental CapCut Draft export: prepared media and draft JSON are bundled together, speed/tone remain timeline properties, and visual edits/audio mixing are baked. Verify import on the installed CapCut desktop version and relink media after moving the bundle.
+The deterministic UI runner uses a synthetic provider tone for audio alignment/mixing; it does not represent a live CapCut voice. Never run live TTS tests in CI automatically. Phase 2 local build smoke is validation only, not permission to tag/push/release v2.0.0. The integrated v2.0.1 now includes experimental CapCut Draft export: prepared media and draft JSON are bundled together, speed/tone remain timeline properties, and visual edits/audio mixing are baked. Verify import on the installed CapCut desktop version and relink media after moving the bundle.
 
 ## English
 

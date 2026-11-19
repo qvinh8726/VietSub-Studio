@@ -2,7 +2,7 @@
 
 The upstream `tabs.js` core originates from [finktheartist/sakuga-vfx](https://github.com/finktheartist/sakuga-vfx), commit `c3dabb173928a3ad2372183103caf2e6f50953d0`, under the included MIT license.
 
-## Landing-page adaptations for v2.0.0
+## Landing-page adaptations for v2.0.1
 
 - `retain()` / `release()` explicitly manage resize, visibility and reduced-motion subscriptions.
 - The shared requestAnimationFrame handle is retained and cancelled on release, when hidden, or when reduced motion is enabled. Active finite effects and timers are cleared at those boundaries.

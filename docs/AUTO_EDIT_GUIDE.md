@@ -1,6 +1,6 @@
-# Auto Edit + CapCut TTS — hướng dẫn v2.0.0
+# Auto Edit + CapCut TTS — hướng dẫn v2.0.1
 
-> Auto Edit là một trong ba phân hệ Creator Workbench v2.0.0. Video đã render có thể chuyển sang [Publish Hub](<PUBLISH_HUB_GUIDE.md>) để chuẩn bị và xác nhận đăng; việc bàn giao không tự đăng nội dung.
+> Auto Edit là một trong ba phân hệ Creator Workbench v2.0.1. Video đã render có thể chuyển sang [Publish Hub](<PUBLISH_HUB_GUIDE.md>) để chuẩn bị và xác nhận đăng; việc bàn giao không tự đăng nội dung.
 
 ## Cách dùng
 

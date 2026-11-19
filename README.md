@@ -32,9 +32,9 @@
 >
 > Video tải về nằm chờ trong `.vietsub-downloads` bên trong thư mục xuất, rồi được chuyển vào folder project sau khi SRT tiếng Việt vượt qua kiểm tra; nhờ vậy chỉ có một bản video dung lượng lớn và mỗi project hoàn tất đều tự chứa đủ file. Trong cửa sổ app, file MP4/MKV trên máy được dùng tại chỗ và hard-link vào project nếu cùng ổ đĩa (khác ổ thì sao chép); không upload, không sao chép qua `%TEMP%`.
 
-## VietSub Studio v2.0.0 — 3-in-1 Creator Workbench
+## VietSub Studio v2.0.1 — 3-in-1 Creator Workbench
 
-**VietSub → Auto Edit → Publish Hub** share three instant-switch workspaces, versioned project sidecars, local fonts, Sakuga effects and the existing VietSub DOM/API contracts.
+**VietSub → Auto Edit → Publish Hub** share three instant-switch workspaces, versioned project sidecars, local fonts, Sakuga effects and the existing VietSub DOM/API contracts. v2.0.1 adds global speed/pitch presets, a three-second audio preview, experimental CapCut Draft ZIP export and the Soft Cinema landing redesign. Draft import must be checked against the installed CapCut desktop version; visual edits and mixed audio are baked into the included media.
 
 - **VietSub:** preview/crop, sequential OCR/translation, source imports, recovery and safe bulk cleanup.
 - **Auto Edit:** FFmpeg masking/ASS/banner/PNG/vertical reframe, audio extract/mute, CapCut TTS cue alignment/ducking and cancellable render with NVENC/CPU fallback. Heavy stem-separation and Edge runtimes remain optional/external. [Auto Edit guide](<docs/AUTO_EDIT_GUIDE.md>).

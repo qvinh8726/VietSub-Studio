@@ -1,4 +1,4 @@
-VIETSUB STUDIO v2.0.0 - 3-IN-1 CREATOR WORKBENCH
+VIETSUB STUDIO v2.0.1 - 3-IN-1 CREATOR WORKBENCH
 ================================================
 
 0. BA WORKSPACE
@@ -7,6 +7,9 @@ VIETSUB STUDIO v2.0.0 - 3-IN-1 CREATOR WORKBENCH
 - Auto Edit can FFmpeg va FFprobe trong PATH: che chu boxblur/delogo/thanh mau, burn ASS,
   font local, banner/logoPNG, khung doc nen mo, tach MP3/WAV/mute, CapCut TTS va render co %/fps/huy.
   Preview nguon khong hien effect; ket qua render nam rieng, khong ghi de video/SRT goc.
+  Toc do 0.5-2x, cao do +/-12 semitone, tuy chon doi cao do theo toc do va nghe mau 3 giay.
+  Xuat goi CapCut Draft la THU NGHIEM: ZIP kem video va draft JSON, co the can relink media.
+  Toc do/tone chinh tiep duoc; subtitle, effect va audio mix da bake. Can kiem tra tren ban CapCut dang dung.
 - CapCut TTS la HTTP noi bo, chi gui text khi ban yeu cau. Edge/audio-separator la runtime
   Python ngoai tuy chon; app khong tu cai pip/model va khong dong goi ONNX/Demucs/torch.
 - Publish Hub: tao profile rieng tung tai khoan, dang nhap thu cong va bam da xong,

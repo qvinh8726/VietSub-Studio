@@ -1,5 +1,5 @@
 // One source of truth for every download surface, including the legacy relay entry.
-export const VERSION = "2.0.0";
+export const VERSION = "2.0.1";
 export const REPO_URL = "https://github.com/qvinh8726/VietSub-Studio";
 export const BUILD_URL = `${REPO_URL}/actions`;
 export const RELEASE_URL = `${REPO_URL}/releases/tag/v${VERSION}`;
@@ -220,7 +220,7 @@ export const PIPELINE_STEPS = [
 export const FAQS = [
   {
     q: "Tôi cần chuẩn bị gì để bắt đầu?",
-    a: "Bản portable chạy trên Windows 10/11 x64. Tải ZIP từ GitHub Releases v2.0.0 và giải nén. Cài riêng VideOCR CLI cho OCR, FFmpeg + FFprobe cho xử lý video, và Chrome/Edge cho tác vụ cần trình duyệt. Chọn API dịch hoặc phiên Gemini Notebook của bạn; Deno/Node 22+ cần cho nguồn YouTube. App không tự cài các model AI nặng.",
+    a: "Bản portable chạy trên Windows 10/11 x64. Tải ZIP từ GitHub Releases v2.0.1 và giải nén. Cài riêng VideOCR CLI cho OCR, FFmpeg + FFprobe cho xử lý video, và Chrome/Edge cho tác vụ cần trình duyệt. Chọn API dịch hoặc phiên Gemini Notebook của bạn; Deno/Node 22+ cần cho nguồn YouTube. App không tự cài các model AI nặng.",
   },
   {
     q: "Chạy ẩn 100% có nghĩa là không cần đăng nhập?",
@@ -228,7 +228,7 @@ export const FAQS = [
   },
   {
     q: "CapCut TTS, tách giọng và CapCut Draft có sẵn không?",
-    a: "v2.0.0 có lồng tiếng qua API CapCut, khớp giọng theo cue SRT, thay đổi tốc độ/cao độ và trộn nền. Đây là dịch vụ nội bộ không chính thức, giọng và khả năng truy cập có thể đổi. Tách giọng giữ nền cần runtime/model ngoài (audio-separator/ONNX), không kèm portable và có thể ảnh hưởng nhạc/hiệu ứng. v2.0.0 hỗ trợ xuất gói CapCut Draft thử nghiệm bên cạnh MP4 và SRT. Cần kiểm tra gói với phiên bản CapCut đang dùng; không bảo đảm tương thích mọi phiên bản.",
+    a: "v2.0.1 có lồng tiếng qua API CapCut, khớp giọng theo cue SRT, thay đổi tốc độ/cao độ và trộn nền. Đây là dịch vụ nội bộ không chính thức, giọng và khả năng truy cập có thể đổi. Tách giọng giữ nền cần runtime/model ngoài (audio-separator/ONNX), không kèm portable và có thể ảnh hưởng nhạc/hiệu ứng. v2.0.1 hỗ trợ xuất gói CapCut Draft thử nghiệm bên cạnh MP4 và SRT. Cần kiểm tra gói với phiên bản CapCut đang dùng; không bảo đảm tương thích mọi phiên bản.",
   },
   {
     q: "Hẹn giờ đăng có chạy khi tôi tắt máy không?",

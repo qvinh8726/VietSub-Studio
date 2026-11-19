@@ -1,4 +1,4 @@
-# VietSub Studio v2.0.0 — Soft Cinema landing
+# VietSub Studio v2.0.1 — Soft Cinema landing
 
 ## Design & scope
 
@@ -15,7 +15,7 @@ The Hero's three workspaces are **local simulations**. They never download a sou
 - Publish: independent mock account cards, multi-select, local datetime and clearly labelled demo scheduling feedback.
 - Hidden panels remain mounted to preserve state. The sample clock pauses when a panel is hidden, offscreen or the document is not visible.
 
-Real-product limits are stated in the copy: conditional HTTP Range ×6; manual login/CAPTCHA; optional external separation models; unofficial CapCut service; CPU render fallback; app/machine-running requirement for local schedules; platform-specific uploader capabilities; **CapCut Draft package export is experimental in v2.0.0 and is not guaranteed to work with every CapCut version**.
+Real-product limits are stated in the copy: conditional HTTP Range ×6; manual login/CAPTCHA; optional external separation models; unofficial CapCut service; CPU render fallback; app/machine-running requirement for local schedules; platform-specific uploader capabilities; **CapCut Draft package export is experimental in v2.0.1 and is not guaranteed to work with every CapCut version**.
 
 ## Run
 
