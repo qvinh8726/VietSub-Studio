@@ -3491,6 +3491,10 @@ def resolve_ffmpeg_executable():
     return resolve_path_executable("ffmpeg")
 
 
+from vietsub.media_cache import cached_media
+
+
+@cached_media()
 def get_video_resolution(video_path):
     ffprobe_path = resolve_ffprobe_executable()
     if not ffprobe_path:
@@ -3536,6 +3540,7 @@ def parse_video_frame_rate(value):
     return positive_media_number(value)
 
 
+@cached_media()
 def get_video_metadata(video_path):
     """Optional preview telemetry; failure must never prevent preparing or OCRing a video."""
     ffprobe_path = resolve_ffprobe_executable()
@@ -3565,6 +3570,7 @@ def get_video_metadata(video_path):
     return metadata if any(value is not None for value in metadata.values()) else None
 
 
+@cached_media()
 def get_video_duration_seconds(video_path):
     ffprobe_path = resolve_ffprobe_executable()
     if not ffprobe_path:
@@ -7512,7 +7518,7 @@ def index():
 @app.route('/static/<path:filename>')
 def static_asset(filename):
     if filename not in {
-        "app.js", "editor.js", "uploader.js", "uploader-THIRD-PARTY.txt", "editor-THIRD-PARTY.txt", "style.css", "sakuga-vfx.js", "workbench.js", "fonts.css", "sakuga-LICENSE.txt",
+        "app.js", "editor.js", "uploader.js", "uploader-THIRD-PARTY.txt", "editor-THIRD-PARTY.txt", "style.css", "motion.css", "sakuga-vfx.js", "workbench.js", "fonts.css", "sakuga-LICENSE.txt",
         "fonts/be-vietnam-pro-regular.ttf", "fonts/be-vietnam-pro-medium.ttf",
         "fonts/be-vietnam-pro-semibold.ttf", "fonts/be-vietnam-pro-bold.ttf",
         "fonts/noto-sans-sc.ttf", "fonts/jetbrains-mono.ttf",
@@ -7886,6 +7892,49 @@ def handoff_project(job_id):
         return jsonify({"error": error.args[0]}), 404
     except (RuntimeError, ValueError, OSError) as error:
         return jsonify({"error": str(error)}), 409
+
+
+@app.route('/api/editor/projects/<job_id>/capcut-draft', methods=['POST'])
+def export_capcut_draft(job_id):
+    """Reserve a desktop draft export in the same cancellable editor queue."""
+    from vietsub import capcut_draft
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {'options'}:
+            raise ValueError('JSON cần chứa options của Auto Edit.')
+        with operation_admission_lock, queue_state_lock, project_manifest.LOCK:
+            if shutdown_event.is_set():
+                raise RuntimeError('App đang đóng.')
+            _, result, value = editor_api._project(job_id, require_ready=True)
+            options = editor_api._options(value, data['options'])
+            ffmpeg, ffprobe = resolve_ffmpeg_executable(), resolve_ffprobe_executable()
+            if not ffmpeg or not ffprobe:
+                raise RuntimeError('Xuất Draft cần FFmpeg và FFprobe.')
+            config = editor_api.config()
+            project = copy.deepcopy(value)
+            project['project_dir'] = os.path.abspath(result['project_dir'])
+            target = project_manifest.path_for(result)
+            identifier = uuid.uuid4().hex
+            value['editor_options'] = options
+            value['stages']['editor'] = {'status': 'queued', 'action': 'capcut_draft',
+                                        'task_id': identifier, 'updated_at': int(time.time())}
+            def execute(task_id, cancel, update):
+                return capcut_draft.execute(task_id, project, options, ffmpeg=ffmpeg, ffprobe=ffprobe,
+                    fonts_dir=os.path.join(RESOURCE_DIR, 'static', 'fonts'), cancel=cancel, update=update,
+                    runtime_python=config.get('editor_runtime_python'), capcut_config={**config,
+                        'separation_model_dir': config.get('editor_separation_model_dir'),
+                        'separation_model': config.get('editor_separation_model') or 'UVR-MDX-NET-Inst_HQ_3.onnx'})
+            task = editor_api.jobs.submit(job_id, 'capcut_draft', execute, identifier=identifier,
+                prepare=lambda task: project_manifest.write_atomic(target, value),
+                finish=lambda task, state: editor_api._finish(result, target, task, state),
+                protected_paths=[*project['assets'].values(), options.get('watermark_path')])
+            return jsonify(editor_api._signed(task)), 202
+    except KeyError as error:
+        return jsonify({'error': error.args[0]}), 404
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
+    except (RuntimeError, OSError) as error:
+        return jsonify({'error': str(error)}), 409
 
 
 @app.route('/api/projects/<job_id>/video')

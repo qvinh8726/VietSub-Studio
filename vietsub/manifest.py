@@ -166,6 +166,7 @@ def _initial(project, directory, *, video_id="", source_url="", status="success"
         "crop_box": crop_box(project.get("crop_coords", project.get("crop_box"))),
         "source_resolution": resolution(project.get("video_resolution", project.get("source_resolution"))),
         "metadata": {"title": _text(project.get("project_name")), "description": "", "hashtags": []},
+        "editor_options": _copy(project.get("editor_options", {})),
         "stages": {"vietsub": {"status": status, "error": error},
                    "editor": {"status": "not_started"}, "uploader": {"status": "not_started"}},
         "updated_at": int(time.time()),

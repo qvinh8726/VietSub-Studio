@@ -40,6 +40,12 @@ from .capcut_tts import (CapCutClient, ProviderUnavailable, TTSCancelled, TTSErr
 SAMPLE_RATE = 24000
 _EDGE_GUIDANCE = "Install optional edge-tts with: <runtime_python> -m pip install edge-tts; configure a real external runtime_python for portable builds."
 _CACHE_VERSION = 1
+# Previous cache entries may contain these informational notices. Keep actionable
+# warnings (fallback, trimming, provider errors) while retiring success notices.
+_SUCCESS_NOTICES = frozenset({
+    "CapCut uses an unofficial internal API; live entitlement and protocol stability are not guaranteed.",
+    "Edge TTS is an optional unofficial online provider; service availability is not guaranteed.",
+})
 
 
 def _runtime(runtime_python=None) -> str:
@@ -191,7 +197,7 @@ class EdgeProvider:
             raise ValueError("Edge voice must be a listed Neural voice identifier")
         self._worker({"action": "synthesize", "text": text, "voice": voice}, output_path)
         return {"path": str(output_path), "provider": self.provider, "voice": voice,
-                "warnings": ["Edge TTS is an optional unofficial online provider; service availability is not guaranteed."]}
+                "warnings": []}
 
 
 def _number(value, name: str, low: float, high: float) -> float:
@@ -398,6 +404,7 @@ class TTSService:
                         or any(not isinstance(item, str) for item in data["warnings"])
                         or data.get("sha256") != self._digest(cached)):
                     raise ValueError("Invalid or mismatched cache metadata")
+                data["warnings"] = [item for item in data["warnings"] if item not in _SUCCESS_NOTICES]
                 return {**data, **info, "path": str(cached), "cached": True}
             except TTSCancelled:
                 raise
@@ -504,9 +511,15 @@ class TTSService:
         return {"path": path, "provider": result["provider"], "voice": result["voice"], "warnings": list(result["warnings"])}
 
     def preview(self, text, voice, output_path, **kwargs) -> dict:
-        """Normal bounded synthesis, capped to 300 preview characters; never automatic."""
+        """Normal synthesis, capped to 300 characters and a shared 60-second budget."""
         validate_text(text, max_text=300)
-        return self.synthesize(text, voice, output_path, **kwargs)
+        previous = self._deadline
+        deadline = time.monotonic() + 60
+        self._deadline = min(previous, deadline) if previous is not None else deadline
+        try:
+            return self.synthesize(text, voice, output_path, **kwargs)
+        finally:
+            self._deadline = previous
 
     def synthesize_srt(self, srt_path, output_path, *, voice, provider="capcut_internal", speed=1.0,
                        pitch=0.0, allow_fallback=True) -> dict:

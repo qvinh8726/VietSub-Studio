@@ -77,6 +77,35 @@ class EditorQueueTests(unittest.TestCase):
         self.assertFalse(self.jobs.active("p1"))
         self.assertEqual(self.jobs.protected_paths(), set())
 
+    def test_preview_cancel_after_publish_discards_only_task_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / '.vietsub-editor-previews'; root.mkdir()
+            previous = root / ('d'*32 + '.wav'); previous.write_bytes(b'previous')
+            def execute(identifier, cancel, update):
+                output = root / (identifier + '.wav'); output.write_bytes(b'new')
+                cancel.set()
+                return {'output_path': str(output), 'output_kind': 'audio'}
+            task = self.jobs.submit('p1', 'audio_preview', execute)
+            self.jobs.work.join()
+            self.assertEqual(self.jobs.snapshot(task['id'])['status'], 'cancelled')
+            self.assertEqual(list(root.iterdir()), [previous])
+            self.assertEqual(previous.read_bytes(), b'previous')
+
+    def test_preview_manifest_commit_failure_discards_new_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / '.vietsub-editor-previews'; root.mkdir()
+            def execute(identifier, cancel, update):
+                output = root / (identifier + '.wav'); output.write_bytes(b'new')
+                return {'output_path': str(output), 'output_kind': 'audio'}
+            def finish(task, state):
+                if state == 'success':
+                    raise OSError('manifest locked')
+            task = self.jobs.submit('p1', 'audio_preview', execute, finish=finish)
+            self.jobs.work.join()
+            self.assertEqual(self.jobs.snapshot(task['id'])['status'], 'error')
+            self.assertEqual(list(root.iterdir()), [])
+            self.assertEqual(self.jobs.snapshot(task['id'])['output_path'], '')
+
     def test_failed_commit_is_not_reported_as_success(self):
         def fail(task, state):
             if state == "success":
@@ -121,6 +150,46 @@ class EditorAPITests(unittest.TestCase):
                     "source_type": "local", "source_video": self.project["video"]}
         self.enterContext(patch.object(app, "workflow_jobs", [self.job]))
         self.client = app.app.test_client()
+
+    def test_draft_export_preserves_speed_pitch_and_signed_zip(self):
+        from vietsub import capcut_draft
+        output = self.root / 'draft.zip'
+        def execute(identifier, project, options, **kwargs):
+            self.assertEqual(options['speed'], 1.5)
+            self.assertIs(options['change_audio_pitch'], True)
+            self.assertEqual(options['pitch_semitones'], -2)
+            output.write_bytes(b'zip fixture')
+            return {'output_path': str(output), 'output_kind': 'archive'}
+        with (patch.object(app, 'resolve_ffmpeg_executable', return_value='ffmpeg'),
+              patch.object(app, 'resolve_ffprobe_executable', return_value='ffprobe'),
+              patch.object(capcut_draft, 'execute', side_effect=execute)):
+            response = self.client.post('/api/editor/projects/one/capcut-draft', json={'options': {
+                'speed': 1.5, 'change_audio_pitch': True, 'pitch_semitones': -2}})
+            self.assertEqual(response.status_code, 202, response.get_json())
+            self.jobs.work.join()
+        task = self.client.get('/api/editor/jobs/' + response.get_json()['id']).get_json()
+        self.assertEqual(task['status'], 'success', task)
+        self.assertEqual(task['action'], 'capcut_draft')
+        self.assertEqual(manifest.snapshot(self.project)['editor_options']['speed'], 1.5)
+        self.assertEqual(Path(self.project['video']).read_bytes(), b'video')
+        with self.client.get(task['output_url']) as response:
+            self.assertEqual(response.mimetype, 'application/zip')
+            self.assertIn('attachment', response.headers['Content-Disposition'])
+            self.assertEqual(response.get_data(), b'zip fixture')
+        self.assertEqual(self.client.get(task['output_url'].split('?')[0]).status_code, 403)
+        with patch.dict(app.app.config, TESTING=False):
+            self.assertEqual(self.client.post('/api/editor/projects/one/capcut-draft', json={'options': {}}).status_code, 403)
+
+    def test_ducking_is_optional_without_changing_default_mix(self):
+        for enabled in (True, False):
+            options = normalize({'ducking_enabled': enabled})
+            filters, label = renderer._audio_graph(True, None, 1, options, 10)
+            self.assertEqual('sidechaincompress' in ';'.join(filters), enabled)
+            self.assertIn('amix=inputs=2', ';'.join(filters))
+            self.assertEqual(label, '[aout]')
+        self.assertIs(normalize({})['ducking_enabled'], True)
+        with self.assertRaises(ValueError):
+            normalize({'ducking_enabled': 'false'})
 
     def test_get_options_is_pure_and_save_crop_never_changes_ocr_geometry(self):
         path = manifest.path_for(self.project)
@@ -279,6 +348,106 @@ class EditorAPITests(unittest.TestCase):
         self.assertIn('App đã đóng', task['error'])
         self.assertEqual(output.read_bytes(), b'old')
         self.assertIsNone(self.jobs.worker)
+
+    def test_audio_preview_contract_signed_output_and_saved_options(self):
+        old_video = self.root / 'previous.mp4'; old_video.write_bytes(b'previous')
+        _, saved = manifest.save_project(self.project)
+        saved['assets']['edited_video'] = str(old_video)
+        saved['last_editor_render'] = {'task_id': 'e'*32, 'action': 'render', 'status': 'success'}
+        manifest.write_atomic(manifest.path_for(self.project), saved)
+        requested = {'speed': 1.5, 'change_audio_pitch': True, 'pitch_semitones': -4}
+        def execute(identifier, project, options, action, **kwargs):
+            self.assertEqual(action, 'audio_preview')
+            self.assertEqual({key: options[key] for key in requested}, requested)
+            output = self.root / (identifier + '.wav'); output.write_bytes(b'preview')
+            return {'output_path': str(output), 'output_kind': 'audio', 'assets': {},
+                    'duration': 3.0, 'preview_source': 'original', 'warnings': []}
+        with (patch.object(app, 'resolve_ffmpeg_executable', return_value='ffmpeg'),
+              patch.object(app, 'resolve_ffprobe_executable', return_value='ffprobe'),
+              patch.object(renderer, 'execute', side_effect=execute)):
+            response = self.client.post('/api/editor/projects/one/audio-preview', json={'options': requested})
+            self.assertEqual(response.status_code, 202, response.get_json())
+            self.assertEqual(response.get_json()['action'], 'audio_preview')
+            identifier = response.get_json()['id']
+            self.jobs.work.join()
+        task = self.client.get('/api/editor/jobs/' + identifier).get_json()
+        self.assertEqual((task['status'], task['output_kind'], task['duration'], task['preview_source']),
+                         ('success', 'audio', 3, 'original'))
+        with self.client.get(task['output_url']) as output:
+            self.assertEqual(output.mimetype, 'audio/wav')
+            self.assertEqual(output.get_data(), b'preview')
+        self.assertEqual(self.client.get('/api/editor/jobs/' + identifier + '/output').status_code, 403)
+        saved = manifest.snapshot(self.project)
+        self.assertEqual(saved['assets']['edited_video'], str(old_video))
+        self.assertEqual(saved['last_editor_render']['task_id'], 'e'*32)
+        self.assertEqual({key: saved['editor_options'][key] for key in requested}, requested)
+        self.assertEqual(saved['stages']['editor']['duration'], 3)
+        self.jobs.tasks.clear(); self.jobs.events.clear()
+        restored = self.client.get('/api/editor/projects/one').get_json()
+        self.assertEqual(restored['active_task']['preview_source'], 'original')
+        self.assertEqual(restored['active_task']['duration'], 3)
+        self.assertEqual(restored['last_render']['id'], 'e'*32)
+
+    def test_audio_preview_cache_retains_eight_and_never_removes_unrelated_files(self):
+        directory = self.root / '.vietsub-editor-previews'; directory.mkdir()
+        for index in range(10):
+            path = directory / (f'{index:032x}' + '.wav'); path.write_bytes(b'old')
+            os.utime(path, ns=(1_000_000_000 * (index + 1), 1_000_000_000 * (index + 1)))
+        unrelated = directory / 'my-audio.wav'; unrelated.write_bytes(b'keep')
+        def execute(identifier, *args, **kwargs):
+            output = directory / (identifier + '.wav'); output.write_bytes(b'new')
+            return {'output_path': str(output), 'output_kind': 'audio'}
+        with (patch.object(app, 'resolve_ffmpeg_executable', return_value='ffmpeg'),
+              patch.object(app, 'resolve_ffprobe_executable', return_value='ffprobe'),
+              patch.object(renderer, 'execute', side_effect=execute)):
+            response = self.client.post('/api/editor/projects/one/audio-preview', json={})
+            self.assertEqual(response.status_code, 202)
+            self.jobs.work.join()
+        self.assertEqual(len(list(directory.iterdir())), 9)
+        self.assertEqual(unrelated.read_bytes(), b'keep')
+        self.assertFalse((directory / ('0'*32 + '.wav')).exists())
+        self.assertTrue((directory / (response.get_json()['id'] + '.wav')).exists())
+
+    def test_audio_preview_rejects_invalid_body_and_incomplete_project(self):
+        for body in ({'speed': 2}, {'options': {'speed': 5}}, {'options': {'change_audio_pitch': 'true'}},
+                     {'options': {'pitch_semitones': float('nan')}}, {'action': 'render'},
+                     {'options': {'tts_enabled': True}}):
+            response = self.client.post('/api/editor/projects/one/audio-preview', json=body)
+            self.assertEqual(response.status_code, 400, response.get_json())
+        self.job['status'] = 'running'
+        response = self.client.post('/api/editor/projects/one/audio-preview', json={'options': {}})
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(self.jobs.tasks)
+
+    def test_audio_preview_uses_existing_admission_protection_and_cancel(self):
+        entered, release = threading.Event(), threading.Event()
+        def execute(*args, **kwargs):
+            entered.set(); release.wait(3)
+            process.check_cancel(kwargs['cancel'])
+        with (patch.object(app, 'resolve_ffmpeg_executable', return_value='ffmpeg'),
+              patch.object(app, 'resolve_ffprobe_executable', return_value='ffprobe'),
+              patch.object(renderer, 'execute', side_effect=execute)):
+            response = self.client.post('/api/editor/projects/one/audio-preview', json={'options': {}})
+            self.assertEqual(response.status_code, 202)
+            self.assertTrue(entered.wait(2))
+            identifier = response.get_json()['id']
+            try:
+                self.assertEqual(self.client.post('/api/editor/projects/one/audio-preview', json={}).status_code, 409)
+                self.assertEqual(self.client.delete('/api/queue/one').status_code, 409)
+                self.assertEqual(self.client.post('/api/editor/projects/one', json={'options': {}}).status_code, 409)
+                response = self.client.post('/api/editor/jobs/' + identifier + '/cancel', json={})
+                self.assertEqual(response.status_code, 200)
+            finally:
+                release.set(); self.jobs.work.join()
+        self.assertEqual(self.jobs.snapshot(identifier)['status'], 'cancelled')
+        self.assertTrue(Path(self.project['video']).exists())
+        self.assertEqual(self.jobs.protected_paths(), set())
+
+    def test_audio_preview_auth_and_origin_match_existing_endpoints(self):
+        with patch.dict(app.app.config, TESTING=False):
+            self.assertEqual(self.client.post('/api/editor/projects/one/audio-preview', json={}).status_code, 403)
+            headers = {app.API_TOKEN_HEADER: app.API_TOKEN, 'Origin': 'https://evil.test'}
+            self.assertEqual(self.client.post('/api/editor/projects/one/audio-preview', json={}, headers=headers).status_code, 403)
 
     def test_optional_runtime_absence_does_not_import_heavy_modules(self):
         import sys

@@ -191,6 +191,8 @@ def write_ass(srt_path, output_path, width, height, options):
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     if opts["subtitle_enabled"]:
         for start, end, text in cues:
+            start = math.floor(start / opts["speed"])
+            end = math.ceil(end / opts["speed"])
             rows.append(_event(1, _timestamp(start), _timestamp(end, ceil=True), "Subtitle", tags, text, margins=margins))
     if opts["banner_text"].strip():
         top = opts["banner_position"] == "top"

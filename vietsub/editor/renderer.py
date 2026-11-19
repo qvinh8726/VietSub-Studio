@@ -1,4 +1,5 @@
 """FFmpeg-only render pipeline. Optional TTS/separation imports happen on demand."""
+from collections import OrderedDict
 import json
 import math
 import os
@@ -6,16 +7,36 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
-import time
 
 from . import process
 from .options import normalize
+from .audio import audio_effects
 
 _ENCODERS = {}
 _ENCODER_LOCK = threading.Lock()
+_PROBES = OrderedDict()
+_PROBE_LOCK = threading.Lock()
 
 
 def probe_media(path, ffprobe):
+    """Cache verified metadata by file identity; never cache failures or missing files."""
+    resolved = Path(path).resolve(strict=True)
+    stat = resolved.stat()
+    binary = str(ffprobe)
+    binary_mtime = os.stat(ffprobe).st_mtime_ns if ffprobe and os.path.isfile(ffprobe) else 0
+    key = (os.path.normcase(str(resolved)), stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns, binary, binary_mtime)
+    with _PROBE_LOCK:
+        if key in _PROBES:
+            _PROBES.move_to_end(key)
+            return dict(_PROBES[key])
+        result = _probe_media(resolved, ffprobe)
+        _PROBES[key] = result
+        while len(_PROBES) > 128:
+            _PROBES.popitem(last=False)
+        return dict(result)
+
+
+def _probe_media(path, ffprobe):
     if not ffprobe:
         raise RuntimeError("Auto Edit cần FFprobe để xác minh độ phân giải và thời lượng.")
     raw = process.capture([ffprobe, "-v", "error", "-protocol_whitelist", "file,pipe",
@@ -66,11 +87,11 @@ def detect_encoders(ffmpeg, *, refresh=False):
     """A compiled-in encoder is not enough: verify actual hardware initialization."""
     if not ffmpeg:
         return {"h264_nvenc": False, "libx264": False}
-    key = (str(ffmpeg), os.path.getmtime(ffmpeg) if os.path.isfile(ffmpeg) else 0)
+    key = (str(ffmpeg), os.stat(ffmpeg).st_mtime_ns if os.path.isfile(ffmpeg) else 0)
     with _ENCODER_LOCK:
         cached = _ENCODERS.get(key)
-        if cached and not refresh and time.monotonic() - cached[0] < 300:
-            return dict(cached[1])
+        if cached is not None and not refresh:
+            return dict(cached)
         found = {}
         for encoder in ("libx264", "h264_nvenc"):
             try:
@@ -80,7 +101,7 @@ def detect_encoders(ffmpeg, *, refresh=False):
                 found[encoder] = True
             except (OSError, RuntimeError, TimeoutError, subprocess.TimeoutExpired):
                 found[encoder] = False
-        _ENCODERS[key] = (time.monotonic(), found)
+        _ENCODERS[key] = found
         return dict(found)
 
 
@@ -127,7 +148,11 @@ def _audio_graph(has_audio, bg_index, tts_index, options, duration, source_timel
         background = 'sourceaudio'
     if options["audio_mode"] == "mute":
         background = None
-    if tts_index is not None and background:
+    if tts_index is not None and background and not options.get("ducking_enabled", True):
+        filters += [f"[{background}]aresample=48000,volume={options['bgm_volume']}[bgm]",
+                    f"[{tts_index}:a:0]aresample=48000,apad,atrim=duration={duration}[voice]",
+                    f"[bgm][voice]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration={duration}[aout]"]
+    elif tts_index is not None and background:
         filters += [f"[{background}]aresample=48000,volume={options['bgm_volume']}[bgm]",
                     f"[{tts_index}:a:0]aresample=48000,apad,atrim=duration={duration},asplit=2[side][voice]",
                     "[bgm][side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=250[ducked]",
@@ -137,7 +162,25 @@ def _audio_graph(has_audio, bg_index, tts_index, options, duration, source_timel
     elif background:
         volume = options["bgm_volume"] if options["audio_mode"] == "instrumental" else 1
         filters += [f"[{background}]aresample=48000,volume={volume},apad,atrim=duration={duration}[aout]"]
+    if filters:
+        # Mix in the source timeline, then apply one identical transform to both
+        # original/BGM and aligned speech. Silence and delayed starts scale too.
+        filters[-1] = filters[-1].replace("[aout]", "[source_mix]")
+        output_duration = duration / options.get("speed", 1)
+        filters.append(f"[source_mix]{audio_effects(options)},apad,atrim=duration={output_duration}[aout]")
     return filters, "[aout]" if filters else None
+
+
+def _audio_file(source, target, options, source_duration, output_duration, *, ffmpeg, cancel,
+                update, timeout, phase, timeline=None, bounded=False):
+    """Export one track with the same effects and timebase as the render mix."""
+    chain = timeline or f"asetpts=PTS-STARTPTS,apad,atrim=duration={source_duration}"
+    chain += f",{audio_effects(options)},apad,atrim=duration={output_duration}"
+    input_args = ["-t", str(source_duration)] if bounded else []
+    process.run([ffmpeg, "-hide_banner", "-y", *input_args, "-i", str(source), "-vn", "-af", chain,
+                 "-ar", "48000", "-c:a", "pcm_s16le", "-t", str(output_duration),
+                 "-progress", "pipe:1", "-nostats", str(target)], cancel=cancel, timeout=timeout,
+                on_line=progress_reader(output_duration, update, phase=phase))
 
 
 def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, cancel, update,
@@ -151,11 +194,13 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
     srt = project["assets"]["translated_srt"]
     root = Path(project["project_dir"])
     work = root / ".vietsub-editor" / task_id
+    process.check_cancel(cancel)
     metadata = probe_media(source, ffprobe)
     if not 2 <= metadata["width"] <= 16384 or not 2 <= metadata["height"] <= 16384:
         raise ValueError("Độ phân giải video không được hỗ trợ.")
-    duration = metadata["duration"]
-    timeout = min(24 * 3600, max(300, duration * 10 + 120))
+    source_duration = metadata["duration"]
+    duration = source_duration / options["speed"]
+    timeout = min(24 * 3600, max(300, max(duration, source_duration) * 10 + 120))
     stem = Path(source).stem
     warnings = []
     tts_path = None
@@ -165,18 +210,61 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
     work.mkdir(parents=True, exist_ok=False)
     try:
         process.check_cancel(cancel)
+        if action == "audio_preview":
+            preview_input = source
+            preview_source = "original"
+            preview_seconds = 3.0
+            source_seconds = min(source_duration, preview_seconds * options["speed"])
+            timeline = _source_audio_timeline({**metadata, "duration": source_seconds})
+            if options["tts_enabled"]:
+                from .providers import service as create_tts_service
+                from .subtitles import _parse_srt
+                # One bounded utterance: don't synthesize a whole project's cues
+                # (or wait through a long silent lead-in) for a three-second sample.
+                text = _parse_srt(srt)[0][2][:250].strip()
+                service = create_tts_service(ffmpeg, ffprobe, str(root / ".vietsub-tts-cache"),
+                                             runtime_python=runtime_python, config=capcut_config, cancel=cancel)
+                preview_input = work / "preview-voice.wav"
+                update(phase="tts_preview", percent=0, fps=0)
+                generated = service.preview(text, options["tts_voice"], str(preview_input),
+                                            provider=options["tts_provider"], speed=options["tts_speed"],
+                                            pitch=options["tts_pitch"], allow_fallback=options["tts_fallback"])
+                warnings += generated.get("warnings", [])
+                preview_source = "tts"
+                source_seconds = preview_seconds * options["speed"]
+                timeline = None
+            elif not metadata["has_audio"]:
+                raise ValueError("Video nguồn không có âm thanh để nghe thử; hãy bật TTS và chọn giọng đọc.")
+            temporary = work / "preview.wav"
+            _audio_file(preview_input, temporary, options, source_seconds, preview_seconds,
+                        ffmpeg=ffmpeg, cancel=cancel, update=update, timeout=60,
+                        phase="audio_preview", timeline=timeline, bounded=True)
+            verified = probe_media(temporary, ffprobe)
+            if abs(verified["duration"] - preview_seconds) > .02:
+                raise RuntimeError("Audio nghe thử không đủ ba giây; hãy thử lại.")
+            preview_dir = root / ".vietsub-editor-previews"
+            manifest._safe_path(str(preview_dir))
+            preview_dir.mkdir(exist_ok=True)
+            result = preview_dir / f"{task_id}.wav"
+            process.check_cancel(cancel); os.replace(temporary, result)
+            final_paths.append(result)
+            process.check_cancel(cancel)
+            return {"output_path": str(result), "output_kind": "audio", "assets": {},
+                    "duration": preview_seconds, "preview_source": preview_source, "warnings": warnings}
         if action == "extract_audio":
             if not metadata["has_audio"]:
                 raise ValueError("Video nguồn không có track âm thanh để tách.")
             extension = options["audio_format"]
             temporary = work / f"extracted.{extension}"
             codec = ["-c:a", "pcm_s16le"] if extension == "wav" else ["-c:a", "libmp3lame", "-q:a", "2"]
-            process.run([ffmpeg, "-hide_banner", "-y", "-i", source, "-vn", "-af", _source_audio_timeline(metadata),
+            process.run([ffmpeg, "-hide_banner", "-y", "-i", source, "-vn", "-af", _source_audio_timeline(metadata) + "," + audio_effects(options) + f",apad,atrim=duration={duration}",
                          *codec, "-progress", "pipe:1", "-nostats", str(temporary)],
                         cancel=cancel, timeout=timeout, on_line=progress_reader(duration, update, phase="extract_audio"))
             result = root / f"{stem}.extracted.{task_id[:10]}.{extension}"
             probe_media(temporary, ffprobe)
             process.check_cancel(cancel); os.replace(temporary, result)
+            final_paths.append(result)
+            process.check_cancel(cancel)
             return {"output_path": str(result), "output_kind": "audio", "assets": {"extracted_audio": str(result)}, "warnings": warnings}
         if action == "tts" or options["tts_enabled"]:
             from .providers import service as create_tts_service
@@ -191,9 +279,14 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
                                                pitch=options["tts_pitch"], allow_fallback=options["tts_fallback"])
             warnings += generated.get("warnings", [])
             if action == "tts":
+                processed = work / "voice-edited.wav"
+                _audio_file(tts_path, processed, options, source_duration, duration, ffmpeg=ffmpeg,
+                            cancel=cancel, update=update, timeout=timeout, phase="tts_audio")
                 result = root / f"{stem}.tts.{task_id[:10]}.wav"
-                probe_media(tts_path, ffprobe)
-                process.check_cancel(cancel); os.replace(tts_path, result)
+                probe_media(processed, ffprobe)
+                process.check_cancel(cancel); os.replace(processed, result)
+                final_paths.append(result)
+                process.check_cancel(cancel)
                 return {"output_path": str(result), "output_kind": "audio", "assets": {"tts_audio": str(result)}, "warnings": warnings}
         if action != "render":
             raise ValueError("Tác vụ Auto Edit không được hỗ trợ.")
@@ -242,7 +335,7 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
         # Resize anamorphic frames to the same square-pixel geometry used by UI.
         transform = [f"scale={metadata['width']}:{metadata['height']}", 'setsar=1', 'setpts=PTS-STARTPTS']
         video_graph = '[0:v:0]' + ','.join(transform) + '[oriented];' + graph['filter_complex'].replace('[0:v:0]', '[oriented]', 1)
-        audio_filters, audio_label = _audio_graph(metadata["has_audio"], background_index, tts_index, options, duration,
+        audio_filters, audio_label = _audio_graph(metadata["has_audio"], background_index, tts_index, options, source_duration,
                                                   source_timeline=_source_audio_timeline(metadata))
         full_graph = video_graph + (";" + ";".join(audio_filters) if audio_filters else "")
         available = detect_encoders(ffmpeg)
@@ -277,13 +370,24 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
         output = root / f"{stem}.edited.{task_id[:10]}.mp4"
         assets = {"edited_video": str(output)}
         if tts_path:
+            processed = work / "voice-edited.wav"
+            _audio_file(tts_path, processed, options, source_duration, duration, ffmpeg=ffmpeg,
+                        cancel=cancel, update=update, timeout=timeout, phase="tts_audio")
             voice_output = root / f"{stem}.tts.{task_id[:10]}.wav"
-            process.check_cancel(cancel); os.replace(tts_path, voice_output)
+            process.check_cancel(cancel); os.replace(processed, voice_output)
             final_paths.append(voice_output); assets["tts_audio"] = str(voice_output)
         process.check_cancel(cancel); os.replace(temporary, output); final_paths.append(output)
+        process.check_cancel(cancel)
         return {"output_path": str(output), "output_kind": "video", "assets": assets,
                 "warnings": list(dict.fromkeys(warnings)), "encoder": encoder,
-                "width": rendered["width"], "height": rendered["height"]}
+                "width": rendered["width"], "height": rendered["height"], "duration": duration}
+    except BaseException:
+        # Roll back only files published by this task; earlier good outputs and
+        # inputs keep their own filenames and are never in final_paths.
+        for published in final_paths:
+            if published.resolve().is_relative_to(root.resolve()) and task_id[:10] in published.name:
+                published.unlink(missing_ok=True)
+        raise
     finally:
         # Only this verified task-owned temporary directory, never project/source.
         if work.parent == root / ".vietsub-editor" and work.name == task_id:

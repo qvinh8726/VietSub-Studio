@@ -52,6 +52,7 @@ VietSub Studio/
 
 # Local QA screenshots/reports (regenerate with tools/*_qa.py)
 /artifacts/
+/tools/qa-system/
 
 # Logs and temporary files
 *.log

@@ -54,6 +54,19 @@ OVERFLOW = """() => {
         const el = document.getElementById(id);
         if (!el.getClientRects().length) continue;
         const r = el.getBoundingClientRect();
+        const center = {x: r.left + r.width / 2, y: r.top + r.height / 2};
+        // Inspector controls can be outside a scroll pane at short window heights.
+        // Check occlusion for painted controls; phase1 separately scrolls each crop
+        // action into view and verifies that it can actually be reached.
+        let scrolledOut = false;
+        for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+            const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+            if (/^(auto|scroll)$/.test(style.overflowY) && parent.scrollHeight > parent.clientHeight &&
+                (center.y < bounds.top || center.y >= bounds.bottom)) scrolledOut = true;
+            if (/^(auto|scroll)$/.test(style.overflowX) && parent.scrollWidth > parent.clientWidth &&
+                (center.x < bounds.left || center.x >= bounds.right)) scrolledOut = true;
+        }
+        if (scrolledOut) continue;
         if (r.left < -1 || r.top < -1 || r.right > innerWidth+1 || r.bottom > innerHeight+1)
             failures.push(`${id} outside viewport ${JSON.stringify(r.toJSON())}`);
         if (el.tagName === 'BUTTON' && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1))

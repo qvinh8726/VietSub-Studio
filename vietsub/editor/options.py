@@ -16,8 +16,9 @@ DEFAULTS = {
     "banner_text": "", "banner_position": "top", "watermark_enabled": False,
     "watermark_path": "", "watermark_opacity": .7, "watermark_corner": "top_right",
     "reframe": "original", "output_height": 1280, "encoder": "auto",
-    "audio_mode": "original", "audio_format": "wav", "bgm_volume": .35,
+    "audio_mode": "original", "audio_format": "wav", "bgm_volume": .35, "ducking_enabled": True,
     "tts_enabled": False, "tts_provider": "capcut_internal", "tts_voice": "",
+    "speed": 1.0, "change_audio_pitch": False, "pitch_semitones": 0.0,
     "tts_speed": 1.0, "tts_pitch": 0.0, "tts_fallback": True,
 }
 CHOICES = {
@@ -34,8 +35,9 @@ NUMBERS = {
     "font_size": (12, 120), "outline": (0, 10), "shadow": (0, 10),
     "watermark_opacity": (0, 1), "bgm_volume": (0, 2),
     "tts_speed": (.5, 2), "tts_pitch": (-12, 12),
+    "speed": (.5, 2), "pitch_semitones": (-12, 12),
 }
-BOOLEANS = ("subtitle_enabled", "watermark_enabled", "tts_enabled", "tts_fallback")
+BOOLEANS = ("subtitle_enabled", "watermark_enabled", "tts_enabled", "tts_fallback", "change_audio_pitch", "ducking_enabled")
 
 
 def normalize(value=None, *, inherited_crop=None, base=None):

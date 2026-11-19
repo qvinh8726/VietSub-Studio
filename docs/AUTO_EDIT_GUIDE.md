@@ -1,6 +1,6 @@
-# Auto Edit + CapCut TTS — hướng dẫn Phase 2
+# Auto Edit + CapCut TTS — hướng dẫn v2.0.0
 
-> Bản source đang phát triển trên baseline v1.8.0. Phase 2 không đồng nghĩa đã phát hành v2.0.0; Publish Hub vẫn là bàn giao chuẩn bị, chưa upload.
+> Auto Edit là một trong ba phân hệ Creator Workbench v2.0.0. Video đã render có thể chuyển sang [Publish Hub](<PUBLISH_HUB_GUIDE.md>) để chuẩn bị và xác nhận đăng; việc bàn giao không tự đăng nội dung.
 
 ## Cách dùng
 
@@ -51,4 +51,6 @@ URL artifact bắt buộc HTTPS/443, không credentials/redirect; actual TLS con
 - TTS SRT tối đa 1000 cue / 2 giờ / 200k ký tự tổng / 2000 ký tự mỗi cue. Preview tối đa 250 ký tự. Không gửi SRT online khi chưa bật/gọi TTS.
 - Renderer giữ delay audio nguồn khi tách stem, xử lý rotation/display matrix/SAR trước mask; kết quả có dimension/time được probe lại.
 - Lưu options/outputs/stage trong sidecar project. Khi mở lại, output cuối và reservation bị gián đoạn được nhận diện, không tự chạy lại billable TTS. Editor queue serial; task history trong memory bị giới hạn, manifest giữ kết quả lâu dài.
-- Chưa có CapCut Draft exporter (mục mở rộng tùy chọn), chưa AI inpainting, chưa đăng/schedule nhiều nền tảng.
+- Tốc độ toàn video 0.5–2× và cao độ độc lập ±12 semitone áp dụng cùng timeline cho video, phụ đề và âm thanh/TTS. Công tắc đổi cao độ theo tốc độ bổ sung hiệu ứng nhanh/cao hoặc chậm/trầm; nghe mẫu ba giây để kiểm tra trước khi render. Có thể tắt ducking nếu muốn giữ mức BGM cố định.
+- **Xuất gói CapCut Draft** hiện là thử nghiệm: ZIP chứa media đã chuẩn bị, draft JSON và hướng dẫn. Tốc độ/công tắc đổi cao độ theo tốc độ vẫn chỉnh được trên timeline; semitone, phụ đề, che chữ, logo và bản trộn audio đã được kết xuất vào video. Sao chép cả thư mục khi CapCut desktop đã đóng, relink media nếu đổi đường dẫn, và kiểm tra tương thích trên bản CapCut đang dùng. QA tự động kiểm tra JSON/ZIP, chưa xác nhận import thực tế vào CapCut desktop.
+- Chưa có AI inpainting. Đăng và lên lịch đa nền tảng nằm trong Publish Hub; lịch cục bộ yêu cầu app/máy/mạng đang hoạt động.

@@ -105,6 +105,9 @@ class EditorAPI:
                      "updated_at": int(time.time()), "error": task.get("error", ""),
                      "warnings": task.get("warnings", []), "percent": task.get("percent", 0),
                      "output_path": task.get("output_path", ""), "output_kind": task.get("output_kind", "")}
+            for key in ("duration", "preview_source"):
+                if key in task:
+                    stage[key] = task[key]
             value["stages"]["editor"] = stage
             if state == "success":
                 value["assets"].update(task.get("assets", {}))
@@ -112,6 +115,20 @@ class EditorAPI:
                     value["last_editor_render"] = copy.deepcopy(stage)
             value["updated_at"] = int(time.time())
             manifest.write_atomic(manifest_path, value)
+        if state == "success" and task["action"] == "audio_preview":
+            # Preview WAVs are a bounded cache, not durable rendered assets.
+            # Retain the newest eight (including the just-published result).
+            directory = Path(result["project_dir"]) / ".vietsub-editor-previews"
+            try:
+                manifest._safe_path(str(directory))
+                paths = [str(path) for path in directory.glob("*.wav")
+                         if len(path.stem) == 32 and all(c in "0123456789abcdef" for c in path.stem)
+                         and str(path) != task.get("output_path")]
+                inventory = storage.inventory(paths)
+                stale = sorted(inventory, key=lambda path: inventory[path].st_mtime_ns, reverse=True)[7:]
+                storage.delete_inventory({path: inventory[path] for path in stale})
+            except (OSError, ValueError):
+                pass  # A cache cleanup failure must not invalidate a committed result.
         self.app.log_to_app(f"[Auto Edit] {task['action']}: {state}" + (f" · {task.get('error')}" if state == "error" else ""),
                             "error" if state == "error" else "system")
 
@@ -139,6 +156,9 @@ class EditorAPI:
                 "error": "App đã đóng khi Auto Edit đang chạy. Output cũ được giữ; hãy chạy lại." if interrupted else stage.get("error", ""),
                 "warnings": stage.get("warnings", []), "output_path": output,
                 "output_kind": stage.get("output_kind", ""), "restored": True}
+        for key in ("duration", "preview_source"):
+            if key in stage:
+                task[key] = stage[key]
         self.jobs.restore(task)
         return task
 
@@ -270,11 +290,16 @@ class EditorAPI:
                 return jsonify({"watermark_path": str(target), "options": options})
 
         @bp.post("/api/editor/jobs")
-        def start_task():
-            data = self._body(("job_id", "action", "options"), ("job_id", "action"))
-            job_id, action = data["job_id"], data["action"]
+        @bp.post("/api/editor/projects/<job_id>/audio-preview")
+        def start_task(job_id=None):
+            if job_id is not None:
+                data = self._body(("options",))
+                action = "audio_preview"
+            else:
+                data = self._body(("job_id", "action", "options"), ("job_id", "action"))
+                job_id, action = data["job_id"], data["action"]
             if (not isinstance(job_id, str) or not isinstance(action, str)
-                    or action not in ("render", "tts", "extract_audio")):
+                    or action not in ("render", "tts", "extract_audio", "audio_preview")):
                 raise ValueError("Job ID/action Auto Edit không hợp lệ.")
             with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
                 if self.app.shutdown_event.is_set():
@@ -336,6 +361,9 @@ class EditorAPI:
             if not expected or not secrets.compare_digest(expected.encode("ascii"), supplied.encode("utf-8")):
                 return jsonify({"error": "Liên kết output không hợp lệ hoặc file chưa sẵn sàng."}), 403
             path = task["output_path"]
+            if task['output_kind'] == 'archive':
+                return send_file(path, conditional=True, mimetype='application/zip', as_attachment=True,
+                                 download_name=Path(path).name)
             mimetype = "video/mp4" if task["output_kind"] == "video" else "audio/mpeg" if path.endswith(".mp3") else "audio/wav"
             return send_file(path, conditional=True, mimetype=mimetype)
 
@@ -345,13 +373,16 @@ class EditorAPI:
             provider = request.args.get("provider", "capcut_internal")
             if provider not in ("capcut_internal", "edge_tts"):
                 raise ValueError("TTS provider không hợp lệ.")
+            language = request.args.get("language", "vi")
+            if provider == "capcut_internal":
+                from .capcut_tts import catalog_voices
+                return jsonify({"voices": catalog_voices(language), "warnings": [
+                    "Danh sách giọng CapCut là catalog offline; không xác nhận quyền dùng giọng hoặc dịch vụ live."]})
             config = self.config()
             service = create_tts_service(self.app.resolve_ffmpeg_executable() or "", self.app.resolve_ffprobe_executable() or "",
                                          os.path.join(self.app.CONFIG_DIR, "editor-tts-cache"),
                                          runtime_python=config.get("editor_runtime_python"), config=config)
-            warning = [] if provider == "edge_tts" else [
-                "Danh sách giọng CapCut là catalog offline; không xác nhận quyền dùng giọng hoặc dịch vụ live."]
-            return jsonify({"voices": service.voices(provider=provider, language=request.args.get("language", "vi")), "warnings": warning})
+            return jsonify({"voices": service.voices(provider=provider, language=language), "warnings": []})
 
         @bp.post("/api/editor/tts/preview")
         def preview_tts():

@@ -23,6 +23,7 @@ are never logged, persisted, or forwarded to artifact downloads.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 import hashlib
 import http.client
 import ssl
@@ -156,11 +157,16 @@ def validate_text(text: str, *, max_text: int = 2000) -> str:
 
 def catalog_voices(language="vi") -> list[dict]:
     language = str(language or "").replace("_", "-").lower()
-    return [{"id": identifier, "name": name, "language": lang, "provider": PROVIDER,
+    return [dict(record) for record in _catalog_voices(language)]
+
+
+@lru_cache(maxsize=64)
+def _catalog_voices(language):
+    return tuple({"id": identifier, "name": name, "language": lang, "provider": PROVIDER,
              "resource_id": resource, "catalog_only": True, "service_verified": False}
             for identifier, name, lang, resource in _CATALOG
             if not language or language == "*" or lang.lower() == language
-            or ("-" not in language and lang.lower().split("-", 1)[0] == language)]
+            or ("-" not in language and lang.lower().split("-", 1)[0] == language))
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -507,7 +513,7 @@ class CapCutClient:
             if temporary is not None and temporary.exists():
                 temporary.unlink()
         return {"path": str(output), "provider": PROVIDER, "voice": self._voice(voice)["id"],
-                "warnings": ["CapCut uses an unofficial internal API; live entitlement and protocol stability are not guaranteed."]}
+                "warnings": []}
 
     def preview(self, text: str, voice: str | dict, output_path) -> dict:
         return self.synthesize(text, voice, output_path)

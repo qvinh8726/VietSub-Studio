@@ -144,9 +144,10 @@ test('Auto Edit and Publish Hub retain expanded phase1 facts and add real explic
         assert.equal(byId(`${name}-video`)[0].attrs.preload, 'metadata');
     }
     const uploaderButtons = nodes.filter(node => node.tag === 'button' && node.ancestors.some(parent => parent.attrs.id === 'workspace-uploader'));
-    assert.deepEqual(uploaderButtons.map(node => node.attrs.id), ['uploader-media-upload', 'uploader-use-project',
+    assert.deepEqual(uploaderButtons.map(node => node.attrs.id).sort(), ['uploader-media-upload', 'uploader-use-project',
         'uploader-save-metadata', 'uploader-generate-metadata', 'uploader-queue-submit', 'uploader-profiles-refresh', 'uploader-profile-create', 'uploader-queue-refresh',
-        'uploader-back-source', 'uploader-refresh-project']);
+        'uploader-inspector-accounts-tab', 'uploader-inspector-publish-tab',
+        'uploader-back-source', 'uploader-refresh-project'].sort());
     assert.ok(Object.hasOwn(byId('uploader-project-facts')[0].attrs, 'open'), 'old QA can see mounted project facts');
     for (const field of ['title', 'description', 'hashtags']) {
         const control = byId(`uploader-${field}-input`)[0];
@@ -177,7 +178,7 @@ test('Auto Edit and Publish Hub retain expanded phase1 facts and add real explic
         'subtitle_enabled', 'subtitle_preset', 'font', 'font_size', 'text_color', 'outline', 'shadow', 'back_color', 'subtitle_position',
         'banner_text', 'banner_position', 'watermark_enabled', 'watermark_path', 'watermark_opacity', 'watermark_corner', 'reframe',
         'output_height', 'encoder', 'audio_mode', 'audio_format', 'bgm_volume', 'tts_enabled', 'tts_provider', 'tts_voice', 'tts_speed',
-        'tts_pitch', 'tts_fallback'].sort());
+        'tts_pitch', 'tts_fallback', 'speed', 'change_audio_pitch', 'pitch_semitones', 'ducking_enabled'].sort());
     for (const node of nodes.filter(node => node.attrs['data-editor-option'])) {
         assert.ok(node.ancestors.some(parent => parent.attrs.id === 'editor-options-form'), node.attrs.id);
         assert.ok(nodes.some(label => label.tag === 'label' && (label.attrs.for === node.attrs.id || node.ancestors.includes(label))), node.attrs.id);

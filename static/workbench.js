@@ -12,8 +12,9 @@
             typeof value.console_collapsed === 'boolean');
     }
     function layoutPixels(layout, width, height) {
-        const minSidebar = Math.min(320, width * .4);
-        const maxSidebar = Math.max(minSidebar, Math.min(380, width * .55));
+        // Keep a useful centre stage at every desktop width, including restored older layouts.
+        const minSidebar = width * .16;
+        const maxSidebar = width * .185;
         const maxConsole = Math.max(36, height * .4);
         return {
             sidebar: clamp(width * layout.sidebar_ratio, minSidebar, maxSidebar),
@@ -47,14 +48,14 @@
     const downloads = {preview: null, job: null};
     function dimensions() {
         const shell = $('workbench-shell');
-        return {width: shell.clientWidth, height: Math.max(100, shell.clientHeight - 44 - ($('update-banner').hidden ? 0 : $('update-banner').offsetHeight))};
+        return {width: shell.clientWidth, height: Math.max(100, shell.clientHeight - 52 - ($('update-banner').hidden ? 0 : $('update-banner').offsetHeight))};
     }
     function readLayout() {
         try {
             const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
             if (validLayout(saved)) { hasStoredLayout = true; return saved; }
         } catch (_) { /* Private browsing, unavailable storage or an older layout: use defaults. */ }
-        return {version: 1, sidebar_ratio: 350 / Math.max(window.innerWidth, 640), console_ratio: .24, console_collapsed: false};
+        return {version: 1, sidebar_ratio: .18, console_ratio: .14, console_collapsed: false};
     }
     function localSave() {
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(layout)); } catch (_) {}
@@ -130,6 +131,31 @@
             });
         });
     }
+    const inspectorNames = {editor: ['frame', 'audio', 'subtitle', 'export'], uploader: ['accounts', 'publish']};
+    const inspectorSelection = {editor: 'frame', uploader: 'accounts'};
+    function selectInspector(name, panel, focus = false) {
+        if (!initialized || !inspectorNames[name]?.includes(panel)) return false;
+        const previous = inspectorSelection[name], prefix = `${name}-inspector`;
+        const previousPanel = $(`${prefix}-${previous}-panel`);
+        const moveFocus = focus || previousPanel.contains(document.activeElement);
+        inspectorSelection[name] = panel;
+        for (const item of inspectorNames[name]) {
+            const selected = item === panel, tab = $(`${prefix}-${item}-tab`), content = $(`${prefix}-${item}-panel`);
+            tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
+            content.hidden = !selected; content.inert = !selected;
+        }
+        if (moveFocus && workspace === name && !drawerOpen) $(`${prefix}-${panel}-tab`).focus({preventScroll: true});
+        if (previous !== panel) document.dispatchEvent(new CustomEvent('vietsub:inspector-change', {
+            detail: {panel: `${prefix}-${panel}-panel`, previous: `${prefix}-${previous}-panel`},
+        }));
+        return true;
+    }
+    function bindInspectors() {
+        for (const [name, items] of Object.entries(inspectorNames)) {
+            bindTabs(items, `${name}-inspector`, (panel, focus) => selectInspector(name, panel, focus));
+            selectInspector(name, inspectorSelection[name]);
+        }
+    }
     function workspacePanel(name) { return $(name === 'vietsub' ? 'workbench' : `workspace-${name}`); }
     function canFocus(element) {
         if (!element?.isConnected || element.disabled || !element.getClientRects().length) return false;
@@ -155,6 +181,7 @@
         }
         if (moveFocus && !drawerOpen) $(`workspace-${name}-tab`).focus({preventScroll: true});
         scheduleFit();
+        if (changed) document.dispatchEvent(new CustomEvent('vietsub:workspace-change', {detail: {panel: workspacePanel(name).id, previous: previous.id === 'workbench' ? 'vietsub' : previous.id.replace('workspace-', '')}}));
         return true;
     }
     function bindWorkspaces() {
@@ -297,8 +324,8 @@
         });
         for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) el.addEventListener(type, finishSplit);
         el.addEventListener('dblclick', () => {
-            if (axis === 'x') layout.sidebar_ratio = 350 / dimensions().width;
-            else { layout.console_ratio = .24; layout.console_collapsed = false; }
+            if (axis === 'x') layout.sidebar_ratio = .18;
+            else { layout.console_ratio = .14; layout.console_collapsed = false; }
             applyLayout(); saveLayout();
         });
         el.addEventListener('keydown', event => {
@@ -448,7 +475,7 @@
         window.VietSubVFX?.init();
         bindTabs(['link', 'local'], 'source', selectSource);
         bindTabs(['log', 'result'], 'console', selectConsole);
-        bindWorkspaces(); selectWorkspace('vietsub');
+        bindWorkspaces(); selectWorkspace('vietsub'); bindInspectors();
         selectSource('link'); selectConsole('log');
         $('preview-form').addEventListener('submit', event => {
             if (sourceMode === 'local') { event.preventDefault(); event.stopImmediatePropagation(); }
@@ -487,7 +514,7 @@
         applyLayout(); refreshTransport(); refreshMetrics(); motionHelp();
     }
     window.VietSubWorkbench = {init, applySettings, previewChanged, downloadChanged, progressChanged,
-        resultShown, resultHidden, focusSource, refreshTransport, selectWorkspace, projectReceived, projectStatus,
+        resultShown, resultHidden, focusSource, refreshTransport, selectWorkspace, selectInspector, projectReceived, projectStatus,
         workspaceState: () => ({name: workspace, revision: workspaceRevision}),
         helpers: {validLayout, layoutPixels, fitRect, formatTime, frameTime, cropText, projectVideoUrl}};
 })();

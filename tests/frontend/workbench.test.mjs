@@ -26,6 +26,7 @@ function eventTarget() {
     const listeners = new Map();
     return {
         listeners,
+        dispatchEvent(event) { return !this.emit(event.type, event).event.defaultPrevented; },
         addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); },
         emit(name, detail = {}) {
             const event = {target: this, currentTarget: this, button: 0, pointerId: 1,
@@ -104,6 +105,7 @@ function harness({stored = null, storageThrows = false, request, fetch, withApp 
         VietSubVFX: {init() {}, setEnabled(value) { vfxEnabled = value; motionCalls.push(value); }, smoke() {}, pipeline() {}},
     });
     const context = vm.createContext({document, window, console, Headers, AbortController, FormData, URL,
+        CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
         localStorage: {
             getItem(key) { assert.equal(key, STORAGE_KEY); if (storageThrows) throw Error('Storage blocked'); return storage; },
             setItem(key, value) { assert.equal(key, STORAGE_KEY); if (storageThrows) throw Error('Storage blocked'); storage = value; },
@@ -139,9 +141,9 @@ test('layout validation rejects corrupt versions, booleans-as-ratios, infinity a
 
 test('restored pane sizes clamp to desktop minimum/maximum and preserve a visible collapsed console', () => {
     for (const [width, height] of [[1280, 676], [1440, 856], [1920, 1036]]) {
-        assert.equal(helpers.layoutPixels(layout({sidebar_ratio: .01, console_ratio: .01}), width, height).sidebar, 320);
+        assert.equal(helpers.layoutPixels(layout({sidebar_ratio: .01, console_ratio: .01}), width, height).sidebar, width * .16);
         const max = helpers.layoutPixels(layout({sidebar_ratio: .99, console_ratio: .99}), width, height);
-        assert.equal(max.sidebar, 380); approx(max.console, height * .4);
+        assert.equal(max.sidebar, width * .185); approx(max.console, height * .4);
         assert.equal(helpers.layoutPixels(layout({console_collapsed: true}), width, height).console, 36);
     }
 });
@@ -182,7 +184,7 @@ test('timecodes remain deterministic through minute/hour boundaries and invalid 
 test('invalid or unavailable localStorage boots the default workbench without writes', () => {
     for (const options of [{stored: '{broken'}, {stored: JSON.stringify(layout({sidebar_ratio: 5}))}, {storageThrows: true}]) {
         const h = harness(options); assert.doesNotThrow(h.init); h.flushFrames();
-        assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '350px');
+        approx(parseFloat(h.elements['workbench-shell'].style['--sidebar-width']), 1280 * .18);
         assert.equal(h.elements['console-toggle-btn'].getAttribute('aria-expanded'), 'true');
         assert.equal(h.calls.length, 0, 'boot should not overwrite server preferences with defaults');
     }
@@ -191,13 +193,13 @@ test('invalid or unavailable localStorage boots the default workbench without wr
 test('server layout restores across origins while a local user drag wins over a delayed GET', async () => {
     const h = harness(); h.init();
     h.wb.applySettings({sakuga_vfx_enabled: false, workbench_layout: layout({sidebar_ratio: .28, console_collapsed: true})});
-    approx(parseFloat(h.elements['workbench-shell'].style['--sidebar-width']), 358.4);
+    approx(parseFloat(h.elements['workbench-shell'].style['--sidebar-width']), 236.8);
     assert.equal(h.elements['workbench-shell'].style['--console-height'], '36px');
     assert.equal(h.vfxEnabled, false);
     assert.deepEqual(JSON.parse(h.storage), layout({sidebar_ratio: .28, console_collapsed: true}));
     h.elements['sidebar-resizer'].emit('keydown', {key: 'End'}); await settle();
     h.wb.applySettings({workbench_layout: layout({sidebar_ratio: .1})});
-    assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '380px', 'late GET must not undo drag');
+    assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '236.8px', 'late GET must not undo drag');
     assert.deepEqual(Object.keys(JSON.parse(h.calls[0][1].body)), ['workbench_layout']);
 });
 
@@ -215,12 +217,12 @@ test('pane pointer cancellation, keyboard limits and double-click reset persist 
     el.emit('pointerdown', {clientX: 350, clientY: 50});
     el.emit('pointermove', {clientX: -100, clientY: 50});
     el.emit('pointercancel'); await settle();
-    assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '320px');
+    assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '204.8px');
     assert.equal(el.hasPointerCapture(1), false);
     el.emit('keydown', {key: 'End'}); await settle();
-    assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '380px');
+    assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '236.8px');
     el.emit('dblclick'); await settle();
-    assert.equal(h.elements['workbench-shell'].style['--sidebar-width'], '350px');
+    approx(parseFloat(h.elements['workbench-shell'].style['--sidebar-width']), 1280 * .18);
     assert.equal(h.endedDrags > 0, true);
     for (const [, options] of h.calls) assert.equal(helpers.validLayout(JSON.parse(options.body).workbench_layout), true);
 });
@@ -235,7 +237,7 @@ test('preference saves serialize so a slow first write cannot arrive after a lat
     assert.equal(h.calls.length, 1);
     release({ok: true}); await settle();
     assert.equal(h.calls.length, 2);
-    approx(JSON.parse(h.calls[1][1].body).workbench_layout.sidebar_ratio, 380 / 1280);
+    approx(JSON.parse(h.calls[1][1].body).workbench_layout.sidebar_ratio, 236.8 / 1280);
 });
 
 test('failed layout persistence retains browser preference and reports the failure', async () => {
@@ -527,4 +529,80 @@ test('late handoff responses cannot undo a newer rail selection or steal setting
     pending.shift()({ok: true, status: 200, json: async () => projectSnapshot()}); await second;
     assert.equal(h.elements['workspace-uploader'].hidden, false);
     assert.equal(h.document.activeElement, h.elements['settings-close-btn']);
+});
+
+
+test('inspector tabs support arrows, wrap and Home/End without changing workspace or draft values', () => {
+    const h = harness(); h.init(); h.wb.selectWorkspace('editor');
+    h.elements['editor-speed'].value = '1.25';
+    const names = ['frame', 'audio', 'subtitle', 'export'];
+    for (const [from, key, to] of [[0, 'ArrowRight', 1], [1, 'End', 3], [3, 'ArrowRight', 0], [0, 'ArrowLeft', 3], [3, 'Home', 0]]) {
+        const event = h.elements[`editor-inspector-${names[from]}-tab`].emit('keydown', {key}).event;
+        assert.equal(event.defaultPrevented, true);
+        assert.equal(h.document.activeElement, h.elements[`editor-inspector-${names[to]}-tab`]);
+        for (const [index, name] of names.entries()) {
+            const tab = h.elements[`editor-inspector-${name}-tab`], panel = h.elements[`editor-inspector-${name}-panel`];
+            assert.equal(tab.tabIndex, index === to ? 0 : -1);
+            assert.equal(tab.getAttribute('aria-selected'), String(index === to));
+            assert.equal(panel.hidden, index !== to); assert.equal(panel.inert, index !== to);
+        }
+    }
+    assert.equal(h.elements['editor-speed'].value, '1.25');
+    assert.equal(h.wb.workspaceState().name, 'editor');
+    assert.equal(h.calls.length, 0, 'inspector navigation never saves or calls an API');
+    assert.equal(h.wb.selectInspector('editor', 'missing'), false);
+    assert.equal(h.wb.selectInspector('missing', 'frame'), false);
+});
+
+test('inspector state survives workspace switches and emits one semantic event per actual change', () => {
+    const h = harness(); h.init(); const events = [];
+    h.document.addEventListener('vietsub:inspector-change', event => events.push(plain(event.detail)));
+    h.wb.selectWorkspace('editor'); h.wb.selectInspector('editor', 'audio', true);
+    h.wb.selectWorkspace('uploader');
+    h.elements['uploader-inspector-accounts-tab'].emit('keydown', {key: 'ArrowRight'});
+    assert.equal(h.elements['uploader-inspector-publish-panel'].hidden, false);
+    assert.equal(h.document.activeElement, h.elements['uploader-inspector-publish-tab']);
+    h.wb.selectWorkspace('editor');
+    assert.equal(h.elements['editor-inspector-audio-panel'].hidden, false);
+    h.wb.selectInspector('editor', 'audio');
+    assert.deepEqual(events, [
+        {panel: 'editor-inspector-audio-panel', previous: 'editor-inspector-frame-panel'},
+        {panel: 'uploader-inspector-publish-panel', previous: 'uploader-inspector-accounts-panel'},
+    ]);
+});
+
+test('inspector programmatic changes recover hidden focus and never steal focus behind settings', () => {
+    const h = harness(); h.init(); h.wb.selectWorkspace('editor');
+    const control = h.elements['editor-mask-mode'];
+    h.elements['editor-inspector-frame-panel'].children.push(control);
+    control.focus(); h.wb.selectInspector('editor', 'audio');
+    assert.equal(h.document.activeElement, h.elements['editor-inspector-audio-tab']);
+    h.elements['settings-open-btn'].focus(); h.elements['settings-open-btn'].emit('click');
+    h.wb.selectInspector('editor', 'export', true);
+    assert.equal(h.document.activeElement, h.elements['settings-close-btn']);
+});
+
+test('audio UI exposes one persisted numeric field per option and bounded presentation sliders', () => {
+    const h = harness();
+    for (const [id, option, min, max, value] of [
+        ['editor-speed', 'speed', '0.5', '2', '1'],
+        ['editor-pitch-semitones', 'pitch_semitones', '-12', '12', '0'],
+    ]) {
+        const input = h.elements[id];
+        assert.equal(input.type, 'number'); assert.equal(input.getAttribute('data-editor-option'), option);
+        assert.equal(input.getAttribute('min'), min); assert.equal(input.getAttribute('max'), max); assert.equal(input.value, value);
+        assert.equal([...template.matchAll(new RegExp(`data-editor-option="${option}"`, 'g'))].length, 1);
+    }
+    for (const id of ['editor-speed-range', 'editor-pitch-range']) {
+        assert.equal(h.elements[id].type, 'range');
+        assert.equal(h.elements[id].getAttribute('data-editor-option'), null);
+        assert.ok(h.elements[id].getAttribute('aria-label'));
+    }
+    assert.equal(h.elements['editor-change-audio-pitch'].getAttribute('checked'), null);
+    assert.equal(h.elements['editor-change-audio-pitch'].getAttribute('data-editor-option'), 'change_audio_pitch');
+    assert.deepEqual([...template.matchAll(/data-pitch-preset="(-?\d+)"/g)].map(match => Number(match[1])), [-2, 0, 2, 4]);
+    assert.equal(h.elements['editor-audio-preview'].disabled, true);
+    assert.equal(h.elements['editor-speed-duration'].getAttribute('aria-live'), 'polite');
+    assert.equal(h.elements['editor-tts-provider'].getAttribute('aria-describedby'), 'editor-capcut-voice-help');
+    assert.match(template, /href="\/static\/motion\.css"/);
 });

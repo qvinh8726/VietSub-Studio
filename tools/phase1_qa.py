@@ -139,8 +139,18 @@ def run(output):
                             # Exercise limited pane space, not just the default console height.
                             page.locator('#console-resizer').focus(); page.keyboard.press('End')
                             page.evaluate("document.querySelector('#update-banner').hidden = false")
-                            assert not page.evaluate(OVERFLOW)
+                            overflow = page.evaluate(OVERFLOW)
+                            assert not overflow, {"workspace": workspace, "viewport": label, "overflow": overflow}
                             assert not page.evaluate(WORKSPACE_LAYOUT)
+                            if workspace == "vietsub":
+                                for identifier in ("full-frame-btn", "lower-third-btn", "save-crop-btn"):
+                                    control = page.locator("#" + identifier)
+                                    control.scroll_into_view_if_needed()
+                                    control.click(trial=True)
+                                    assert control.evaluate("""el => {
+                                        const r = el.getBoundingClientRect();
+                                        return el.contains(document.elementFromPoint(r.left + r.width/2, r.top + r.height/2));
+                                    }"""), identifier + " is not reachable in the crop scroll pane"
                             page.evaluate("document.querySelector('#update-banner').hidden = true")
                             page.locator('#console-resizer').dblclick()
                             if workspace != "vietsub":
@@ -166,7 +176,7 @@ def run(output):
                         page.locator("#workspace-vietsub-tab").click()
                         page.locator("#console-result-tab").click()
                         page.locator("#result-editor-btn").click()
-                        page.wait_for_function("() => !document.querySelector('#editor-project').hidden")
+                        page.wait_for_function("() => document.querySelector('#workspace-editor-tab').getAttribute('aria-selected') === 'true' && !document.querySelector('#editor-project').hidden")
                         assert page.locator("#workspace-editor-tab").get_attribute("aria-selected") == "true"
                         assert page.locator("#editor-project-name").inner_text() == project["project_name"]
                         assert page.locator("#editor-title").inner_text() == "Tiêu đề thật từ manifest"

@@ -659,3 +659,58 @@ test('an independent extract remains actionable and posts its own action when op
     assert.equal(JSON.parse(h.calls.at(-1).options.body).action, 'extract_audio');
     assert.equal(h.editor.state().task.action, 'extract_audio'); assert.equal(h.elements['editor-cancel-btn'].disabled, false);
 });
+
+
+test('global speed and independent semitone controls persist with the CapCut pitch switch off', async () => {
+    const h = harness(); await h.init(); await h.receive();
+    h.change('editor-speed-range', '1.5');
+    h.change('editor-pitch-range', '4');
+    assert.equal(h.editor.state().options.speed, 1.5);
+    assert.equal(h.editor.state().options.pitch_semitones, 4);
+    assert.equal(h.editor.state().options.change_audio_pitch, false);
+    assert.equal(h.elements['editor-speed'].value, '1.5');
+    assert.equal(h.elements['editor-pitch-semitones'].value, '4');
+    assert.equal(h.elements['editor-video'].preservesPitch, true);
+    h.change('editor-change-audio-pitch', true);
+    assert.equal(h.elements['editor-video'].preservesPitch, false);
+    await h.elements['editor-save-btn'].emit('click').done;
+    const saved = JSON.parse(h.calls.find(call => call.url === '/api/editor/projects/job-a' && call.options.method === 'POST').options.body).options;
+    assert.equal(saved.speed, 1.5); assert.equal(saved.pitch_semitones, 4); assert.equal(saved.change_audio_pitch, true);
+});
+
+test('duration helper and global option validation reject invalid boundaries', () => {
+    assert.equal(helpers.estimatedDuration(60, .5), '02:00.00');
+    assert.equal(helpers.estimatedDuration(60, 2), '00:30.00');
+    assert.equal(helpers.estimatedDuration(NaN, 1), '—');
+    for (const [key, values] of Object.entries({speed: [0, .49, 2.01, true, '1'], pitch_semitones: [-13, 13, Infinity], change_audio_pitch: ['false', 0]})) {
+        for (const value of values) assert.ok(helpers.validateOptions({[key]: value}).errors[key]);
+    }
+    for (const pitch of [-2, 0, 2, 4]) assert.deepEqual(plain(helpers.validateOptions({speed: 1, pitch_semitones: pitch, change_audio_pitch: false}).errors), {});
+});
+
+test('three-second preview sends current shared options and accepts only the correct project task', async () => {
+    const h = harness({handler: url => url.endsWith('/audio-preview') ? task({action: 'audio_preview'}) : undefined});
+    await h.init(); await h.receive(); h.change('editor-speed', 2); h.change('editor-pitch-semitones', -2);
+    await h.elements['editor-audio-preview'].emit('click').done;
+    const request = h.calls.find(call => call.url.endsWith('/audio-preview'));
+    assert.equal(JSON.parse(request.options.body).options.speed, 2);
+    assert.equal(JSON.parse(request.options.body).options.pitch_semitones, -2);
+    assert.equal(h.editor.state().task.action, 'audio_preview');
+    assert.equal(helpers.validTask(task({job_id: 'other', action: 'audio_preview'}), 'job-a'), false);
+});
+
+test('successful archived drafts expose a download link without assigning ZIP to an audio player', async () => {
+    const draft = task({action: 'capcut_draft', status: 'success', output_kind: 'archive', output_url: '/api/editor/jobs/task-a/output?signature=zip'});
+    const h = harness({handler: url => url.endsWith('/capcut-draft') ? draft : undefined});
+    await h.init(); await h.receive(); await h.elements['editor-draft-btn'].emit('click').done;
+    await h.elements['editor-refresh-project'].emit('click').done;
+    // Completion output is painted during polling; helper accepts the action for recovery.
+    assert.equal(helpers.validTask(draft, 'job-a'), true);
+    assert.equal(h.elements['editor-output-audio'].src, undefined);
+});
+
+test('completed status hides historic provider boilerplate but retains fallback and real errors', () => {
+    const messages = ['CapCut uses an unofficial internal API; live entitlement and protocol stability are not guaranteed.',
+        'CapCut lỗi mạng; đã chuyển sang Edge.', 'Câu dài đã được cắt để khớp phụ đề.'];
+    assert.deepEqual(plain(helpers.actionableWarnings(messages)), messages.slice(1));
+});

@@ -15,9 +15,21 @@ All notable changes to VietSub Studio are documented here.
 - Browser adapters use platform-specific upload/form/confirmation flows and fail closed on changed UI, login walls, CAPTCHA, legal defaults or missing identity. No production account uploads were performed for release QA. Supported modes differ by platform and are documented; Facebook targets Page/Business Suite, not arbitrary personal profiles.
 - Optional heavy AI runtimes remain external/lazy; the default portable build excludes ONNX/Demucs/torch and retains independent FFmpeg/CapCut functionality.
 
+### Auto Edit — speed, audio and experimental CapCut Draft
+
+- Added one-click speed/pitch presets, independent semitone adjustment and a toggle to change audio pitch with playback speed. Video, subtitles, original audio/BGM and TTS share the adjusted timeline; audio extraction and TTS exports apply the same effects.
+- Added a bounded three-second audio preview, optional BGM ducking, file-identity-based metadata caches and cached encoder/catalog detection. Cancellation removes only the current task's temporary outputs and preserves earlier successful exports.
+- Added experimental CapCut Draft ZIP export through the cancellable Auto Edit queue. The bundle includes prepared media, desktop draft JSON and relinking instructions; speed and the pitch-with-speed toggle remain editable, while semitone pitch, visual edits and the audio mix are baked into the video. Import must be checked against the installed CapCut desktop version; cross-version compatibility is not guaranteed.
+
+### Landing page — Soft Cinema
+
+- Redesigned `landing-page/` for v2.0.0 with warm paper/ink tones, cinematic imagery, an interactive three-workspace showcase, refreshed feature/FAQ/download content and responsive layouts.
+- Added reduced-motion handling and reusable browser, accessibility and animation-lifecycle QA scripts. Generated screenshots, JSON reports and local QA notes stay outside source control.
+- Aligned the landing copy with all three Creator Workbench modules and the experimental CapCut Draft export, including optional-runtime and platform limitations.
+
 ### QA and release
 
-- Added uploader profile/browser/adapter/queue/API and Publish Hub frontend regressions, three-resolution Playwright QA with real local persistence and mocked external upload effects, existing VietSub/Auto Edit regressions, and portable build/smoke coverage. Live platform success is not inferred from mock tests.
+- Added uploader profile/browser/adapter/queue/API and Publish Hub frontend regressions, three-resolution Playwright QA with real local persistence and mocked external upload effects, existing VietSub/Auto Edit regressions, speed/audio/CapCut Draft regressions, and portable build/smoke coverage. Live platform success is not inferred from mock tests.
 - Preserved the existing updater ZIP layout/checksum contract. Release artifacts do not include scratch files, profiles/cookies, user media, build caches or QA screenshots.
 
 ### Creator Workbench v2.0.0 — Phase 2 Auto Edit
@@ -27,7 +39,7 @@ All notable changes to VietSub Studio are documented here.
 - Added a standard-library CapCut common-task HTTP client with offline Vietnamese/multilanguage catalog, explicit preview and cue synthesis, bounded polling/downloads, safe artifact handling and pluggable optional Edge fallback. The common-task RSA compatibility mode is configurable; an anonymous `Xin chào.` live smoke completed generation, cue alignment, ducked BGM mix and real MP4 rendering on 2026-11-19. This is an unofficial internal service; future availability/voice entitlement is not guaranteed and no credentials are bundled or scraped.
 - Added speed/pitch controls, integrity-checked per-cue cache, timestamp alignment, modest atempo fitting and explicit trim warnings for speech that cannot fit a cue. FFmpeg sidechain ducking retains background duration after the final cue.
 - Added lazy external Python adapters and status/configuration guidance for Edge TTS and audio-separator/ONNX. No package/model auto-install or model download at startup; missing optional runtimes do not affect FFmpeg mask/ASS/mute/extract. Separation remains model-dependent and may alter BGM/SFX. Portable specs explicitly exclude heavy optional libraries.
-- Added real FFmpeg, mock HTTP, optional-absent, API/security/cancellation/recovery tests and a three-resolution Playwright editor runner. CapCut Draft export remains an optional follow-up, not a simulated button; multi-platform publishing is integrated above.
+- Added real FFmpeg, mock HTTP, optional-absent, API/security/cancellation/recovery tests and a three-resolution Playwright editor runner. Experimental CapCut Draft export and multi-platform publishing are integrated above.
 
 ### Workspace foundation (Phase 1)
 
@@ -36,7 +48,7 @@ All notable changes to VietSub Studio are documented here.
 - Added job-ID-scoped project snapshots and explicit handoff APIs, quick actions on results and successful history, and same-origin signed media URLs. Missing/cleaned videos, invalid subtitles, corrupt/newer sidecars and active jobs fail safely without pretending to render or publish.
 - Hardened bulk cleanup so inaccessible selected jobs remain retryable without blocking independent jobs; shared assets of failed inventories are protected and dry-run counts only eligible jobs. Added a success-only selection shortcut without changing the existing finished/error/cancelled selection behavior.
 - Hardened browser recovery to return to headless at a verified, successful outer operation boundary, retain headed windows on unresolved login/cancellation/failure, and fail closed when browser ownership cannot be verified. Manual sign-in has a bounded ten-minute grace period; status polls do not extend it. Desktop shutdown performs bounded ownership-checked cleanup without waiting indefinitely on an active browser lease.
-- Added manifest/API/storage/browser/frontend regressions and a deterministic three-resolution Playwright runner using real local handoff, signed media and temporary-file cleanup. No new runtime dependency or AI model is bundled. Version bump, portable release, push and remote CI verification remain Phase 4 work.
+- Added manifest/API/storage/browser/frontend regressions and a deterministic three-resolution Playwright runner using real local handoff, signed media and temporary-file cleanup. No new runtime dependency or AI model is bundled. Bulk Delete previews protect active/shared media, and Chrome automation returns to headless mode after successful manual login or CAPTCHA handling.
 
 ## [1.8.0] - 2026-11-19
 

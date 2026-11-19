@@ -73,6 +73,8 @@ jobs:
         run: python tools/phase2_qa.py --output phase2-qa
       - name: Exercise Publish Hub profiles, scheduling and isolation
         run: python tools/phase3_qa.py --output phase3-qa
+      - name: Exercise speed, pitch and experimental CapCut Draft export
+        run: python tools/system_qa.py --output system-qa
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -82,10 +84,35 @@ jobs:
             phase1-qa/*
             phase2-qa/*
             phase3-qa/*
+            system-qa/*
           if-no-files-found: warn
 
+  landing-page:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: landing-page
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: landing-page/package-lock.json
+      - name: Install landing dependencies
+        run: npm ci
+      - name: Lint landing page without warnings
+        run: npm run lint
+      - name: Type-check landing page
+        run: npm run typecheck
+      - name: Build landing page
+        run: npm run build
+
   package-smoke:
-    needs: [unit-tests, desktop-ui]
+    needs: [unit-tests, desktop-ui, landing-page]
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -136,7 +163,7 @@ jobs:
             if (-not $ready) {
               throw "Packaged app did not become ready within 60 seconds."
             }
-            foreach ($asset in @("avatar.jpg", "static/app.js", "static/editor.js", "static/uploader.js", "static/editor-THIRD-PARTY.txt", "static/uploader-THIRD-PARTY.txt", "static/style.css", "static/workbench.js", "static/sakuga-vfx.js", "static/fonts.css", "static/sakuga-LICENSE.txt", "static/fonts/be-vietnam-pro-regular.ttf", "static/fonts/be-vietnam-pro-medium.ttf", "static/fonts/be-vietnam-pro-semibold.ttf", "static/fonts/be-vietnam-pro-bold.ttf", "static/fonts/noto-sans-sc.ttf", "static/fonts/jetbrains-mono.ttf", "static/fonts/be-vietnam-pro-OFL.txt", "static/fonts/noto-sans-sc-OFL.txt", "static/fonts/jetbrains-mono-OFL.txt")) {
+            foreach ($asset in @("avatar.jpg", "static/app.js", "static/editor.js", "static/uploader.js", "static/editor-THIRD-PARTY.txt", "static/uploader-THIRD-PARTY.txt", "static/style.css", "static/motion.css", "static/workbench.js", "static/sakuga-vfx.js", "static/fonts.css", "static/sakuga-LICENSE.txt", "static/fonts/be-vietnam-pro-regular.ttf", "static/fonts/be-vietnam-pro-medium.ttf", "static/fonts/be-vietnam-pro-semibold.ttf", "static/fonts/be-vietnam-pro-bold.ttf", "static/fonts/noto-sans-sc.ttf", "static/fonts/jetbrains-mono.ttf", "static/fonts/be-vietnam-pro-OFL.txt", "static/fonts/noto-sans-sc-OFL.txt", "static/fonts/jetbrains-mono-OFL.txt")) {
               $assetResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:5000/$asset" -TimeoutSec 5
               if ($assetResponse.StatusCode -ne 200) {
                 throw "Packaged asset $asset was not served correctly."

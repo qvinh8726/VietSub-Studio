@@ -11,7 +11,8 @@
         text_color: '#ffffff', outline: 2, shadow: 1, back_color: '#000000', subtitle_position: 'crop',
         banner_text: '', banner_position: 'top', watermark_enabled: false, watermark_path: '', watermark_opacity: .7,
         watermark_corner: 'top_right', reframe: 'original', output_height: 1280, encoder: 'auto',
-        audio_mode: 'original', audio_format: 'wav', bgm_volume: .35, tts_enabled: false,
+        audio_mode: 'original', audio_format: 'wav', bgm_volume: .35, tts_enabled: false, ducking_enabled: true,
+        speed: 1, change_audio_pitch: false, pitch_semitones: 0,
         tts_provider: 'capcut_internal', tts_voice: '', tts_speed: 1, tts_pitch: 0, tts_fallback: true,
     });
     const choices = {
@@ -22,8 +23,9 @@
         audio_mode: ['original', 'mute', 'instrumental'], audio_format: ['wav', 'mp3'], tts_provider: ['capcut_internal', 'edge_tts'],
     };
     const ranges = {blur_strength: [1, 40], padding_px: [0, 100], solid_opacity: [0, 1], font_size: [12, 120],
-        outline: [0, 10], shadow: [0, 10], watermark_opacity: [0, 1], bgm_volume: [0, 2], tts_speed: [.5, 2], tts_pitch: [-12, 12]};
-    const booleans = ['subtitle_enabled', 'watermark_enabled', 'tts_enabled', 'tts_fallback'];
+        outline: [0, 10], shadow: [0, 10], watermark_opacity: [0, 1], bgm_volume: [0, 2], tts_speed: [.5, 2], tts_pitch: [-12, 12],
+        speed: [.5, 2], pitch_semitones: [-12, 12]};
+    const booleans = ['subtitle_enabled', 'watermark_enabled', 'tts_enabled', 'tts_fallback', 'change_audio_pitch', 'ducking_enabled'];
     const colors = ['solid_color', 'text_color', 'back_color'];
     const cropFields = ['x', 'y', 'width', 'height'];
     const cropDraftError = 'X + rộng và Y + cao không được vượt 100%; rộng / cao phải lớn hơn 0.';
@@ -180,7 +182,7 @@
     function validTask(task, jobId, preview = false) {
         return Boolean(task && typeof task === 'object' && typeof task.id === 'string' && task.id &&
             (task.job_id === jobId || (preview && !task.job_id)) && Object.hasOwn(statuses, task.status) &&
-            ['render', 'extract_audio', 'tts', 'tts_preview', 'preview'].includes(task.action));
+            ['render', 'extract_audio', 'tts', 'tts_preview', 'preview', 'audio_preview', 'capcut_draft'].includes(task.action));
     }
     async function request(url, options = {}) {
         const {timeoutMs = 20000, ...rest} = options, method = (rest.method || 'GET').toUpperCase();
@@ -250,6 +252,9 @@
         $('editor-extract-btn').disabled = !launch;
         $('editor-tts-generate-btn').disabled = !launch || !ttsReady() || current?.snapshot.availability?.translated_srt !== true;
         $('editor-tts-preview-btn').disabled = !launch || !ttsReady();
+        if ($('editor-audio-preview')) $('editor-audio-preview').disabled = !launch || (current?.options.tts_enabled && !ttsReady());
+        if ($('editor-draft-btn')) $('editor-draft-btn').disabled = $('editor-render-btn').disabled;
+        syncAudioControls();
         $('editor-load-voices-btn').disabled = !editable || busy || Boolean(current?.voicesLoading);
         $('editor-watermark-file').disabled = !editable || busy || active || Boolean(current?.recoveryRequired);
         $('editor-cancel-btn').disabled = !active || busy;
@@ -281,6 +286,32 @@
             else if (control.dataset.editorOption !== 'tts_voice') control.value = current.numericDraft[control.dataset.editorOption] ?? String(value);
         }
         renderVoices(); writeCropInputs(); refreshControls(); syncOverlay();
+    }
+    function estimatedDuration(duration, speed) {
+        if (!finite(duration) || duration <= 0 || !finite(speed) || speed < .5 || speed > 2) return '—';
+        const seconds = duration / speed, minutes = Math.floor(seconds / 60);
+        return `${String(minutes).padStart(2, '0')}:${(seconds % 60).toFixed(2).padStart(5, '0')}`;
+    }
+    function syncAudioControls() {
+        const options = current?.options || defaults, video = $('editor-video');
+        for (const [id, key] of [['editor-speed-range', 'speed'], ['editor-pitch-range', 'pitch_semitones']]) {
+            const input = $(id);
+            if (input && finite(options[key])) input.value = String(options[key]);
+        }
+        const output = $('editor-speed-duration');
+        if (output) output.textContent = `Thời lượng dự kiến: ${estimatedDuration(video.duration || current?.snapshot.manifest?.source_duration, options.speed)}`;
+        if ($('editor-isolate-vocals')) $('editor-isolate-vocals').checked = options.audio_mode === 'instrumental';
+        for (const chip of $('editor-options-form').querySelectorAll('[data-editor-preset]')) if (chip.dataset.editorPreset) chip.setAttribute('aria-pressed', String(options[chip.dataset.editorPreset] === chip.dataset.presetValue));
+        const chips = $('editor-options-form').querySelectorAll('[data-pitch-preset]');
+        for (const chip of chips) if (chip.dataset.pitchPreset !== undefined) chip.setAttribute('aria-pressed', String(Number(chip.dataset.pitchPreset) === options.pitch_semitones));
+        // Browser transport previews speed/tone coupling; independent semitones use the FFmpeg sample.
+        if (finite(options.speed) && options.speed >= .5 && options.speed <= 2) video.playbackRate = options.speed;
+        video.preservesPitch = !options.change_audio_pitch;
+    }
+    function setAudioOption(key, value) {
+        const control = controlByKey[key];
+        if (!control || !canEdit()) return;
+        control.value = String(value); optionChanged({target: control});
     }
     function writeCropInputs() {
         const box = current?.options.crop_box;
@@ -318,7 +349,7 @@
     }
     function syncOverlay() {
         if (!initialized) return;
-        const content = sourceContent(), box = current?.options.crop_box, layer = $('editor-crop-layer'), rect = $('editor-crop-box');
+        const content = drag?.record === current ? drag.content : sourceContent(), box = current?.options.crop_box, layer = $('editor-crop-layer'), rect = $('editor-crop-box');
         layer.hidden = !content || !validCrop(box) || $('editor-video').hidden;
         if (layer.hidden) return;
         for (const [key, value] of Object.entries({left: content.left, top: content.top, width: content.width, height: content.height})) layer.style[key] = `${value}px`;
@@ -571,6 +602,32 @@
             if (current === record) { paintTask(); paintOutput(); startPolling(record); notify('Đang tạo mẫu giọng; audio không tự phát.'); }
         });
     }
+    async function previewAudio() {
+        if ($('editor-audio-preview').disabled) return;
+        return withAction('audio_preview', async record => {
+            const options = checkedOptions();
+            if (options.tts_enabled) requireVoice(options);
+            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/audio-preview`, {
+                method: 'POST', timeoutMs: 30000, body: JSON.stringify({options})});
+            const task = data.task || data;
+            if (!validTask(task, record.jobId) || task.action !== 'audio_preview') throw new Error('Mẫu nghe thử không đúng project.');
+            record.task = task; record.previewTask = true; record.pollFailures = 0;
+            if (current === record) { paintTask(); startPolling(record); notify('Đang tạo mẫu 3 giây với tốc độ và cao độ hiện tại…'); }
+        });
+    }
+    async function exportDraft() {
+        if ($('editor-draft-btn').disabled) return;
+        return withAction('capcut_draft', async record => {
+            const options = checkedOptions();
+            if (options.tts_enabled) requireVoice(options);
+            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/capcut-draft`, {
+                method: 'POST', timeoutMs: 30000, body: JSON.stringify({options})});
+            const task = data.task || data;
+            if (!validTask(task, record.jobId) || task.action !== 'capcut_draft') throw new Error('Tác vụ Draft không hợp lệ.');
+            record.task = task; record.previewTask = false; record.pollFailures = 0;
+            if (current === record) { paintTask(); startPolling(record); notify('Đang chuẩn bị CapCut Draft với cấu hình đã chọn…'); }
+        });
+    }
     function stopPolling() { clearTimeout(pollTimer); pollTimer = 0; pollGeneration++; }
     function startPolling(record) {
         stopPolling();
@@ -589,7 +646,15 @@
             paintTask(); acceptOutput(record, task); paintOutput(); refreshControls();
             if (task.status === 'error') notify(task.error || 'Tác vụ Auto Edit thất bại.', 'error');
             else if (task.status === 'cancelled') notify('Đã huỷ tác vụ. Bản chỉnh sửa vẫn được giữ.');
-            else if (task.status === 'success') notify('Tác vụ Auto Edit hoàn tất. Kết quả nằm riêng, không thay video nguồn.');
+            else if (task.status === 'success') {
+                notify('Tác vụ Auto Edit hoàn tất. Kết quả nằm riêng, không thay video nguồn.');
+                window.VietSubVFX?.complete?.({kind: task.action === 'render' || task.action === 'capcut_draft' ? 'render' : 'audio',
+                    id: task.id, status: 'success', target: $('editor-output')});
+                if (task.action === 'audio_preview') {
+                    const playback = $('editor-output-audio').play?.();
+                    playback?.catch?.(() => notify('Mẫu 3 giây đã sẵn sàng. Bấm Phát ở kết quả để nghe thử.'));
+                }
+            }
         } catch (error) {
             if (current !== record || generation !== pollGeneration || record.task?.id !== id) return;
             record.pollFailures++;
@@ -599,6 +664,12 @@
         if (current === record && generation === pollGeneration && record.task?.id === id && running(record) && record.pollFailures < 3) {
             pollTimer = setTimeout(() => poll(record, id, generation), record.pollFailures ? 2500 : 1000);
         }
+    }
+    // Old saved tasks may still carry provider boilerplate. Real errors/fallbacks remain visible.
+    function actionableWarnings(values) {
+        return Array.isArray(values) ? values.filter(value => typeof value === 'string' &&
+            !/^CapCut uses an unofficial internal API; live entitlement and protocol stability are not guaranteed\.$/.test(value) &&
+            !/^Edge TTS is an optional unofficial online provider; service availability is not guaranteed\.$/.test(value)) : [];
     }
     function paintTask() {
         const task = current?.task, active = running();
@@ -610,13 +681,13 @@
         $('editor-task-progress').setAttribute('aria-valuetext', `${Math.round(percent)}% · ${task?.phase || statuses[task?.status] || 'Chưa có tác vụ'}`);
         $('editor-task-fill').style.width = `${percent}%`; $('editor-task-panel').setAttribute('aria-busy', String(active));
         $('editor-task-retry').hidden = !active || (current?.pollFailures || 0) < 3;
-        const warnings = Array.isArray(task?.warnings) ? task.warnings.filter(value => typeof value === 'string') : [];
+        const warnings = actionableWarnings(task?.warnings);
         if (task?.error && typeof task.error === 'string') warnings.push(task.error);
         const items = warnings.map(message => { const li = document.createElement('li'); li.textContent = message; return li; });
         $('editor-task-warnings').replaceChildren(...items); $('editor-task-warnings').hidden = !items.length;
     }
     function acceptOutput(record, task) {
-        if (task.status !== 'success' || !['video', 'audio'].includes(task.output_kind)) return;
+        if (task.status !== 'success' || !['video', 'audio', 'archive'].includes(task.output_kind)) return;
         const url = safeOutputUrl(task.output_url, record.jobId, task.id);
         record.output = {...task, url};
         if (task.action === 'render' && task.output_kind === 'video') record.videoOutput = {...task, url};
@@ -630,7 +701,8 @@
         for (const player of [video, audio]) { player.pause(); player.removeAttribute('src'); player.hidden = true; }
         link.hidden = !output?.url; link.removeAttribute('href');
         if (!output) return;
-        if (output.url) {
+        if (output.url) link.href = output.url;
+        if (output.url && output.output_kind !== 'archive') {
             const player = output.output_kind === 'video' ? video : audio;
             player.src = output.url; player.hidden = false; player.load(); link.href = output.url;
         }
@@ -691,12 +763,24 @@
         $('editor-crop-box').addEventListener('lostpointercapture', endDrag);
         window.addEventListener('pointermove', pointerMove); window.addEventListener('pointerup', endDrag); window.addEventListener('pointercancel', endDrag);
         window.addEventListener('blur', endDrag); window.addEventListener('resize', () => { endDrag(); syncOverlay(); });
-        for (const type of ['loadedmetadata', 'loadeddata']) $('editor-video').addEventListener(type, syncOverlay);
+        for (const type of ['loadedmetadata', 'loadeddata']) $('editor-video').addEventListener(type, () => { syncOverlay(); syncAudioControls(); });
         for (const id of ['editor-output-video', 'editor-output-audio']) $(id).addEventListener('error', () => notify('Trình duyệt không phát được kết quả. File vẫn được giữ; dùng “Mở kết quả” để kiểm tra.', 'error'));
         $('editor-save-btn').addEventListener('click', save); $('editor-render-btn').addEventListener('click', () => launch('render'));
         $('editor-extract-btn').addEventListener('click', () => launch('extract_audio')); $('editor-tts-generate-btn').addEventListener('click', () => launch('tts'));
         $('editor-tts-preview-btn').addEventListener('click', previewTts); $('editor-load-voices-btn').addEventListener('click', loadVoices);
         $('editor-cancel-btn').addEventListener('click', cancelTask);
+        $('editor-audio-preview')?.addEventListener('click', previewAudio);
+        $('editor-draft-btn')?.addEventListener('click', exportDraft);
+        for (const [id, key] of [['editor-speed-range', 'speed'], ['editor-pitch-range', 'pitch_semitones']]) {
+            $(id)?.addEventListener('input', event => setAudioOption(key, Number(event.target.value)));
+        }
+        $('editor-isolate-vocals')?.addEventListener('change', event => setAudioOption('audio_mode', event.target.checked ? 'instrumental' : 'original'));
+        $('editor-options-form').addEventListener('click', event => {
+            const chip = event.target.closest?.('[data-pitch-preset]');
+            if (chip && !chip.disabled) setAudioOption('pitch_semitones', Number(chip.dataset.pitchPreset));
+            const preset = event.target.closest?.('[data-editor-preset]');
+            if (preset && !preset.disabled && Object.hasOwn(choices, preset.dataset.editorPreset)) setAudioOption(preset.dataset.editorPreset, preset.dataset.presetValue);
+        });
         $('editor-task-retry').addEventListener('click', () => { if (current) { current.pollFailures = 0; paintTask(); startPolling(current); } });
         $('editor-watermark-file').addEventListener('change', uploadWatermark); $('editor-send-publish-btn').addEventListener('click', sendToPublish);
         $('settings-editor-runtime-btn')?.addEventListener('click', () => {
@@ -721,6 +805,6 @@
             cropDraft: current?.cropDraft ? {...current.cropDraft} : null, cropError: current?.cropError || '',
             numericDraft: current ? {...current.numericDraft} : {}, draftPersisted: Boolean(current?.draftPersisted),
             output: current?.output ? clone(current.output) : null, videoOutput: current?.videoOutput ? clone(current.videoOutput) : null}),
-        helpers: {defaults, validateOptions, validCrop, containRect, adjustCrop, safeOutputUrl, validTask, draftStorageKey, validatedDraft}};
+        helpers: {actionableWarnings, estimatedDuration, defaults, validateOptions, validCrop, containRect, adjustCrop, safeOutputUrl, validTask, draftStorageKey, validatedDraft}};
     window.addEventListener('load', init);
 })();

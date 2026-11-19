@@ -13,6 +13,21 @@ from .process import EditorCancelled, check_cancel
 TERMINAL = {"success", "error", "cancelled"}
 
 
+def _discard_preview(task):
+    """Remove only a failed task's own private preview, never an input/export."""
+    if task.get("action") not in {"audio_preview", "tts_preview"}:
+        return
+    from vietsub import storage
+    path = task.get("output_path") or ""
+    identifier = task.get("id") or ""
+    if (len(identifier) != 32 or any(char not in "0123456789abcdef" for char in identifier)
+            or os.path.basename(path) != identifier + ".wav"
+            or os.path.basename(os.path.dirname(path)) not in {".vietsub-editor-previews", "editor-previews"}):
+        return
+    # inventory/delete rechecks regular-file identity immediately before unlink.
+    storage.delete_inventory(storage.inventory([path]))
+
+
 class EditorJobs:
     def __init__(self):
         self.lock = RLock()
@@ -99,6 +114,7 @@ class EditorJobs:
         while True:
             identifier, execute, finish = self.work.get()
             cancel = self.events[identifier]
+            result = {}
             try:
                 check_cancel(cancel)
                 self._update(identifier, status="running", phase="prepare", started_at=time.time())
@@ -111,6 +127,13 @@ class EditorJobs:
                 self._update(identifier, status="success", phase="done", percent=100, finished_at=time.time())
             except Exception as error:
                 state = "cancelled" if isinstance(error, EditorCancelled) or cancel.is_set() else "error"
+                task = self.snapshot(identifier)
+                if task["action"] in {"audio_preview", "tts_preview"}:
+                    try:
+                        _discard_preview({**task, **result})
+                    except OSError:
+                        pass  # Best-effort cleanup must not hide the actual failure.
+                    self._update(identifier, output_path="", output_kind="", assets={})
                 # Keep inputs/project reserved until even error-state persistence
                 # has finished; cleanup cannot unlink assets during that window.
                 self._update(identifier, phase=state, error=str(error)[:6000])

@@ -722,7 +722,7 @@
                     bulkEstimate = {key: bulkEstimateKey(), failures, error: 'Một số job chưa xoá được. Kiểm tra lại trước khi thử lại.'};
                     renderQueue(); renderBulkFailures(failures);
                 } else { closeBulkDelete(); renderQueue(); }
-                window.VietSubVFX?.smoke(byId('queue-bulk-status'));
+                if (deleted.size) window.VietSubVFX?.dissolve?.(byId('queue-bulk-status'));
             } catch (error) {
                 bulkDeleteBusy = false;
                 bulkEstimate = {key: bulkEstimateKey(), error: error.message};

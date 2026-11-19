@@ -427,11 +427,17 @@
         try {
             const data = await request('/api/uploader/queue'); if (sequence !== queueSequence || mutation !== queueMutation || [...records.values()].some(record => record.busy === 'queue') || queueBusy.size) return;
             if (!Array.isArray(data.jobs) || !data.jobs.every(validQueueTask) || new Set(data.jobs.map(task => task.id)).size !== data.jobs.length) throw new Error('App trả hàng đợi đăng không hợp lệ.');
+            const completed = data.jobs.filter(task => task.status === 'success' && jobs.some(old => old.id === task.id && activeQueue.has(old.status)));
             jobs = data.jobs; queueError = ''; $('uploader-queue-status').textContent = 'Đã đọc trạng thái từ app cục bộ. Không tự thử lại / tạo tác vụ mới.'; paintQueue();
+            for (const task of completed) window.VietSubVFX?.complete?.({kind: 'upload', id: task.id, status: 'success', target: $('uploader-publish-jobs')});
         } catch (error) { if (sequence === queueSequence) { queueError = error.message; $('uploader-queue-status').textContent = error.message + ' Giữ trạng thái cuối; bấm Đọc lại tiến độ để kết nối lại.'; } }
         finally { if (sequence === queueSequence) { queueLoading = false; paintProfiles(); refreshControls(); } }
     }
+    let paintedQueueSignature = '';
     function paintQueue() {
+        const signature = JSON.stringify([jobs, profiles.map(profile => [profile.id, profile.name]), [...queueBusy]]);
+        if (signature === paintedQueueSignature) return;
+        paintedQueueSignature = signature;
         const rows = [], focused = document.activeElement?.dataset?.uploaderFocus;
         $('uploader-queue-count').textContent = String(jobs.length);
         for (const task of jobs) {

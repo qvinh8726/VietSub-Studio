@@ -1,0 +1,131 @@
+/* Finite, preference-gated interaction motion. Load after style.css.
+ * Canvas/spring/WAAPI ownership stays in sakuga-vfx.js; no ambient animation.
+ */
+:root {
+    --motion-press: 120ms;
+    --motion-control: 160ms;
+    --motion-panel: 240ms;
+    --motion-ease: cubic-bezier(.2, .8, .2, 1);
+    --motion-gold: var(--sun, #f5c542);
+    --motion-mint: var(--mint, #7ee0b8);
+    --motion-coral: var(--coral, #ff6b3d);
+}
+
+/* Override the original infinite decorative beam, including before JS boots. */
+.step.active::before { animation: none; opacity: 0; }
+
+:root[data-motion="on"] :is(.btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .icon-button, .workspace-tab, .source-tab, .console-tab, [role="tab"], [data-pitch-preset]) {
+    transition: color var(--motion-control) var(--motion-ease),
+        background-color var(--motion-control) var(--motion-ease),
+        border-color var(--motion-control) var(--motion-ease),
+        box-shadow var(--motion-control) var(--motion-ease);
+}
+
+:root[data-motion="on"] :is(button, [role="tab"], summary) > .icon {
+    transition: transform var(--motion-control) var(--motion-ease), opacity var(--motion-control) var(--motion-ease);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    :root[data-motion="on"] :is(.btn-primary, .btn-secondary, .btn-ghost, .icon-button, .workspace-tab):not(:disabled):not([aria-disabled="true"]):hover > .icon {
+        transform: translateY(-1px);
+    }
+    :root[data-motion="on"] [data-pitch-preset]:not(:disabled):hover {
+        border-color: var(--motion-mint);
+    }
+}
+
+:root[data-motion="on"] :is(button, summary):not(:disabled):not([aria-disabled="true"]):active > .icon {
+    transform: scale(.92);
+    transition-duration: var(--motion-press);
+}
+
+/* Compositor-only beam runs solely while a real task is running; idle has no animation. */
+:root[data-motion="on"] #workflow-progress[data-status="running"] .step.active[data-vfx-step="active"]::before {
+    left: -60%;
+    opacity: 0;
+    background: linear-gradient(105deg, transparent, #f5c54224, #fff4bb48, transparent);
+    animation: sakuga-step-beam 1400ms var(--motion-ease) infinite;
+}
+
+:root[data-motion="on"] #workflow-progress .step.completed[data-vfx-step="complete"] {
+    animation: sakuga-step-settle 340ms var(--motion-ease) 1;
+}
+
+:root[data-motion="on"] :is([data-pitch-preset], .inspector-tab)[aria-pressed="true"] {
+    border-color: var(--motion-mint);
+}
+
+/* Native disclosure state and focus stay owned by the browser/workbench. */
+:root[data-motion="on"] :is(.source-details, .editor-option-section, .editor-runtime, .uploader-facts) > summary::marker {
+    color: var(--motion-gold);
+}
+
+:root[data-motion="on"] :is(.text-input, .number-input, .select-input, textarea, input[type="checkbox"], input[type="radio"]) {
+    transition: border-color var(--motion-control) var(--motion-ease),
+        background-color var(--motion-control) var(--motion-ease),
+        box-shadow var(--motion-control) var(--motion-ease);
+}
+
+/* Preserve visible keyboard focus: no transforms or clipping on its outline. */
+:root[data-motion="on"] [data-pitch-preset]:focus-visible {
+    outline: 2px solid var(--motion-gold);
+    outline-offset: 3px;
+}
+
+.sakuga-fx { contain: strict; pointer-events: none; }
+.sakuga-fx[hidden] { display: none; }
+
+@keyframes sakuga-step-beam {
+    0% { opacity: 0; transform: translateX(0) skewX(-20deg); }
+    18% { opacity: 1; }
+    80% { opacity: .75; }
+    100% { opacity: 0; transform: translateX(460%) skewX(-20deg); }
+}
+
+@keyframes sakuga-step-settle {
+    0% { transform: translateY(2px); opacity: .65; }
+    65% { transform: translateY(-1px); opacity: 1; }
+    100% { transform: translateY(0); opacity: 1; }
+}
+
+/* Do not replay a hidden document's CSS effects when it becomes visible again.
+ * JS flips data-motion synchronously on visibility and preference changes. */
+:root:not([data-motion="on"]) *,
+:root:not([data-motion="on"]) *::before,
+:root:not([data-motion="on"]) *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+}
+:root:not([data-motion="on"]) .sakuga-fx { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+    }
+    .sakuga-fx { display: none; }
+}
+
+/* Progress surfaces share the same active-only beam; no JavaScript frame loop. */
+:root[data-motion="on"] #editor-task-panel[aria-busy="true"] #editor-task-fill,
+:root[data-motion="on"] .uploader-job[data-status="running"] .uploader-job-progress > i {
+    position: relative; overflow: hidden;
+}
+:root[data-motion="on"] #editor-task-panel[aria-busy="true"] #editor-task-fill::after,
+:root[data-motion="on"] .uploader-job[data-status="running"] .uploader-job-progress > i::after {
+    content: ""; position: absolute; inset: 0 auto 0 -60%; width: 40%;
+    background: linear-gradient(90deg, transparent, #ffffffb0, transparent);
+    animation: sakuga-step-beam 1400ms var(--motion-ease) infinite;
+}
+
+:root[data-motion="on"] .workspace-tab[aria-selected="true"]::before {
+    transform-origin: center; animation: sakuga-rail-spring 420ms cubic-bezier(.2,.8,.2,1) 1;
+}
+@keyframes sakuga-rail-spring {
+    0% { transform: scale(.5,.35); opacity: .4; }
+    45% { transform: scale(1.4,1.2); opacity: 1; }
+    72% { transform: scale(.9,.92); }
+    100% { transform: scale(1); }
+}

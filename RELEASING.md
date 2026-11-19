@@ -65,7 +65,7 @@ python tools/phase2_qa.py --output "$env:TEMP\vietsub-phase2-qa"
 python tools/editor_live_smoke.py --live --output "$env:TEMP\vietsub-capcut-live"
 ```
 
-The deterministic UI runner uses a synthetic provider tone for audio alignment/mixing; it does not represent a live CapCut voice. Never run live TTS tests in CI automatically. Phase 2 local build smoke is validation only, not permission to tag/push/release v2.0.0. CapCut Draft export remains optional and is not included yet.
+The deterministic UI runner uses a synthetic provider tone for audio alignment/mixing; it does not represent a live CapCut voice. Never run live TTS tests in CI automatically. Phase 2 local build smoke is validation only, not permission to tag/push/release v2.0.0. The integrated v2.0.0 now includes experimental CapCut Draft export: prepared media and draft JSON are bundled together, speed/tone remain timeline properties, and visual edits/audio mixing are baked. Verify import on the installed CapCut desktop version and relink media after moving the bundle.
 
 ## English
 

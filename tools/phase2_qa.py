@@ -62,7 +62,9 @@ def run(output):
         thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
         url=f'http://127.0.0.1:{server.server_port}'
         try:
-            with patch.object(providers,'service',side_effect=local_service), sync_playwright() as pw:
+            with (patch.object(providers, 'service', side_effect=local_service),
+                  patch('vietsub.editor.capcut_tts.catalog_voices', side_effect=ToneProvider().voices),
+                  sync_playwright() as pw):
                 browser=pw.chromium.launch(headless=True)
                 for width,height in ((1280,720),(1440,900),(1920,1080)):
                     from vietsub.editor.jobs import EditorJobs
@@ -107,6 +109,7 @@ def run(output):
                         page.locator('#editor-crop-y').fill('60')
                         page.locator('#editor-crop-y').dispatch_event('change')
                         page.locator('#editor-mask-mode').select_option('solid_bar')
+                        page.locator('#editor-inspector-subtitle-tab').click()
                         page.locator('#editor-font-size').fill('28'); page.locator('#editor-font-size').dispatch_event('change')
                         page.locator('#editor-save-btn').click()
                         page.wait_for_function("() => document.querySelector('#editor-dirty').textContent.includes('Đã')",timeout=15000)
@@ -124,7 +127,7 @@ def run(output):
                         page.wait_for_function("() => document.querySelector('#editor-output-video').readyState >= 2 && !document.querySelector('#editor-output-video').seeking")
                         image=output/f'{label}-rendered.png';page.screenshot(path=str(image));screenshots.append(str(image))
                         # Open audio section; real queue/TTSService/FFmpeg with synthetic provider only.
-                        page.locator('#editor-tts-provider').evaluate("el => el.closest('details').open = true")
+                        page.locator('#editor-inspector-audio-tab').click()
                         page.locator('#editor-load-voices-btn').click()
                         page.wait_for_function("() => [...document.querySelector('#editor-tts-voice').options].some(o=>o.value==='qa-tone')")
                         page.locator('#editor-tts-voice').select_option('qa-tone')

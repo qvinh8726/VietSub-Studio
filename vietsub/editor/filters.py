@@ -27,6 +27,7 @@ _DEFAULTS = {
     "back_color": "#000000", "subtitle_position": "bottom", "banner_text": "",
     "banner_position": "top", "watermark_opacity": 0.7,
     "watermark_corner": "top_right", "reframe": "original", "output_height": 1920,
+    "speed": 1.0,
 }
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
 
@@ -71,6 +72,7 @@ def _validated_options(options):
         ("solid_opacity", 0, 1, False), ("watermark_opacity", 0, 1, False),
         ("font_size", 4, 512, False), ("outline", 0, 32, False),
         ("shadow", 0, 32, False), ("output_height", 32, 32768, True),
+        ("speed", .5, 2, False),
     ):
         opts[key] = _number(opts[key], key, minimum, maximum, integer=integer)
     text = opts["banner_text"]
@@ -202,7 +204,7 @@ def build_video_graph(width, height, options, *, ass_path=None, watermark_input=
         escaped_fonts = _filter_path(fonts_dir)
     else:
         escaped_fonts = None
-    graph = ["[0:v:0]format=yuv444p,setsar=1[src]"]
+    graph = [f"[0:v:0]setpts=(PTS-STARTPTS)/{_decimal(opts['speed'])},format=yuv444p,setsar=1[src]"]
     current = "src"
     if opts["mask_mode"] != "none":
         box = pixel_crop(opts["crop_box"], width, height, opts["padding_px"])
