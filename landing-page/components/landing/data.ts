@@ -1,12 +1,17 @@
-// Release and validation links for the published v1.8.0 build.
-export const VERSION = "1.8.0";
+// One source of truth for every download surface, including the legacy relay entry.
+export const VERSION = "2.0.0";
 export const REPO_URL = "https://github.com/qvinh8726/VietSub-Studio";
-export const BUILD_URL = `${REPO_URL}/actions/runs/44359388673`;
+export const BUILD_URL = `${REPO_URL}/actions`;
 export const RELEASE_URL = `${REPO_URL}/releases/tag/v${VERSION}`;
 export const CHECKSUM_URL = `${REPO_URL}/releases/download/v${VERSION}/VietSub-Studio-Portable-v${VERSION}.zip.sha256.txt`;
 export const CHANGELOG_URL = `${REPO_URL}/blob/main/CHANGELOG.md`;
 
-export type SubtitleLine = { start: number; end: number; zh: string; vi: string };
+export type SubtitleLine = {
+  start: number;
+  end: number;
+  zh: string;
+  vi: string;
+};
 
 export type SandboxPlatform = {
   id: "douyin" | "bilibili" | "xiaohongshu" | "kuaishou";
@@ -33,7 +38,8 @@ export const SANDBOX_PLATFORMS: SandboxPlatform[] = [
     id: "douyin",
     label: "Douyin",
     han: "抖音",
-    shareUrl: "4.89 复制打开抖音，看看【VietSub演示】https://v.douyin.com/demo-vs/",
+    shareUrl:
+      "4.89 复制打开抖音，看看【VietSub演示】https://v.douyin.com/demo-vs/",
     ratio: 9 / 16,
     band: { top: 0.79, height: 0.09 },
     scene: "linear-gradient(165deg, #1d2b52 0%, #3b1f45 52%, #0d1322 100%)",
@@ -42,9 +48,24 @@ export const SANDBOX_PLATFORMS: SandboxPlatform[] = [
     noise: "抖音号：VietSub演示",
     icon: "headphones",
     lines: [
-      { start: 1.2, end: 3.8, zh: "大家好，今天带你们看看这款新耳机。", vi: "Chào mọi người, hôm nay mình cho các bạn xem chiếc tai nghe mới này." },
-      { start: 4.1, end: 6.6, zh: "音质真的很清楚，低音也很足。", vi: "Âm thanh thật sự rất rõ, âm trầm cũng rất đầy." },
-      { start: 7.0, end: 9.6, zh: "喜欢的话记得点赞关注哦！", vi: "Nếu thích thì nhớ thả tim và theo dõi nhé!" },
+      {
+        start: 1.2,
+        end: 3.8,
+        zh: "大家好，今天带你们看看这款新耳机。",
+        vi: "Chào mọi người, hôm nay mình cho các bạn xem chiếc tai nghe mới này.",
+      },
+      {
+        start: 4.1,
+        end: 6.6,
+        zh: "音质真的很清楚，低音也很足。",
+        vi: "Âm thanh thật sự rất rõ, âm trầm cũng rất đầy.",
+      },
+      {
+        start: 7.0,
+        end: 9.6,
+        zh: "喜欢的话记得点赞关注哦！",
+        vi: "Nếu thích thì nhớ thả tim và theo dõi nhé!",
+      },
     ],
   },
   {
@@ -60,9 +81,24 @@ export const SANDBOX_PLATFORMS: SandboxPlatform[] = [
     noise: "弹幕：太强了！",
     icon: "cpu",
     lines: [
-      { start: 1.2, end: 3.8, zh: "这一期我们来测试新显卡的性能。", vi: "Số này chúng ta sẽ thử hiệu năng của card đồ hoạ mới." },
-      { start: 4.1, end: 6.6, zh: "在4K画质下帧数依然很稳定。", vi: "Ở chất lượng 4K, khung hình vẫn rất ổn định." },
-      { start: 7.0, end: 9.6, zh: "别忘了一键三连支持一下！", vi: "Đừng quên like, tặng xu và lưu video để ủng hộ nhé!" },
+      {
+        start: 1.2,
+        end: 3.8,
+        zh: "这一期我们来测试新显卡的性能。",
+        vi: "Số này chúng ta sẽ thử hiệu năng của card đồ hoạ mới.",
+      },
+      {
+        start: 4.1,
+        end: 6.6,
+        zh: "在4K画质下帧数依然很稳定。",
+        vi: "Ở chất lượng 4K, khung hình vẫn rất ổn định.",
+      },
+      {
+        start: 7.0,
+        end: 9.6,
+        zh: "别忘了一键三连支持一下！",
+        vi: "Đừng quên like, tặng xu và lưu video để ủng hộ nhé!",
+      },
     ],
   },
   {
@@ -78,9 +114,24 @@ export const SANDBOX_PLATFORMS: SandboxPlatform[] = [
     noise: "小红书号：2026demo",
     icon: "coffee",
     lines: [
-      { start: 1.2, end: 3.8, zh: "这家咖啡店藏在小巷子里。", vi: "Quán cà phê này nằm khuất trong một con hẻm nhỏ." },
-      { start: 4.1, end: 6.6, zh: "拿铁的奶泡特别绵密。", vi: "Lớp bọt sữa của ly latte cực kỳ mịn." },
-      { start: 7.0, end: 9.6, zh: "周末来打卡一定不会失望。", vi: "Cuối tuần ghé check-in chắc chắn sẽ không thất vọng." },
+      {
+        start: 1.2,
+        end: 3.8,
+        zh: "这家咖啡店藏在小巷子里。",
+        vi: "Quán cà phê này nằm khuất trong một con hẻm nhỏ.",
+      },
+      {
+        start: 4.1,
+        end: 6.6,
+        zh: "拿铁的奶泡特别绵密。",
+        vi: "Lớp bọt sữa của ly latte cực kỳ mịn.",
+      },
+      {
+        start: 7.0,
+        end: 9.6,
+        zh: "周末来打卡一定不会失望。",
+        vi: "Cuối tuần ghé check-in chắc chắn sẽ không thất vọng.",
+      },
     ],
   },
   {
@@ -96,101 +147,99 @@ export const SANDBOX_PLATFORMS: SandboxPlatform[] = [
     noise: "快手号：demo2026",
     icon: "pot",
     lines: [
-      { start: 1.2, end: 3.8, zh: "今天教大家做一道家常红烧肉。", vi: "Hôm nay mình dạy mọi người làm món thịt kho tàu kiểu gia đình." },
-      { start: 4.1, end: 6.6, zh: "先把五花肉切成小块焯水。", vi: "Trước tiên thái thịt ba chỉ thành miếng nhỏ rồi chần qua nước sôi." },
-      { start: 7.0, end: 9.6, zh: "小火慢炖四十分钟就好了。", vi: "Hầm lửa nhỏ bốn mươi phút là xong." },
+      {
+        start: 1.2,
+        end: 3.8,
+        zh: "今天教大家做一道家常红烧肉。",
+        vi: "Hôm nay mình dạy mọi người làm món thịt kho tàu kiểu gia đình.",
+      },
+      {
+        start: 4.1,
+        end: 6.6,
+        zh: "先把五花肉切成小块焯水。",
+        vi: "Trước tiên thái thịt ba chỉ thành miếng nhỏ rồi chần qua nước sôi.",
+      },
+      {
+        start: 7.0,
+        end: 9.6,
+        zh: "小火慢炖四十分钟就好了。",
+        vi: "Hầm lửa nhỏ bốn mươi phút là xong.",
+      },
     ],
   },
 ];
 
 export type MarqueeItem = { han?: string; label: string; note?: string };
 
-/** Weibo and Xigua are not supported by the app yet, so they carry a note instead of a claim. */
+/** Source integrations and publishing channels are intentionally described separately on the page. */
 export const PLATFORM_ITEMS: MarqueeItem[] = [
   { han: "抖音", label: "Douyin" },
   { han: "哔哩哔哩", label: "Bilibili" },
   { han: "小红书", label: "Xiaohongshu" },
-  { han: "快手", label: "Kuaishou" },
+  { han: "快手", label: "Kuaishou", note: "source" },
   { label: "TikTok" },
-  { label: "YouTube" },
-  { label: "MP4 / MKV trên máy" },
-  { han: "微博", label: "Weibo", note: "chưa hỗ trợ" },
-  { han: "西瓜视频", label: "Xigua", note: "chưa hỗ trợ" },
+  { label: "YouTube Shorts" },
+  { label: "Facebook Reels", note: "Page" },
 ];
 
 export const TECH_ITEMS: MarqueeItem[] = [
+  { label: "VietSub" },
+  { label: "Auto Edit" },
+  { label: "Publish Hub" },
+  { label: "CapCut TTS" },
+  { label: "NVIDIA NVENC" },
+  { label: ".vi.srt" },
   { label: "HTTP Range × 6" },
-  { label: "Chrome --user-data-dir" },
-  { label: "FFmpeg + FFprobe" },
-  { label: "VideOCR" },
-  { label: "H.264 1,5–3,5 Mbps" },
-  { label: "DeepSeek API" },
-  { label: "Gemini Notebook" },
-  { label: "yt-dlp" },
-  { label: ".raw.srt → .vi.srt" },
-  { label: "SHA256 auto-update" },
-  { label: "Windows 10/11" },
-];
-
-export const METRICS = [
-  { value: "MP4 + MKV", label: "nhập nhiều file hoặc nhiều link share, xếp hàng xử lý tuần tự" },
-  { value: "60 giây", label: "nhàn rỗi trước khi Chrome của app tự đóng; công việc đang chạy được giữ nguyên" },
-  { value: "Giữ SRT", label: "mặc định khi dọn video và file tạm; tự dọn video sau xuất sub là tùy chọn" },
-  { value: "397 + 70", label: "test Python và frontend của v1.8.0; 3 test Python bỏ qua theo môi trường local" },
+  { label: "FFmpeg" },
 ];
 
 export const PIPELINE_STEPS = [
-  { title: "Nhiều link / File local", body: "Dán mỗi link một dòng hoặc chọn nhiều MP4/MKV. Từng video vào hàng đợi tuần tự.", icon: "link" },
-  { title: "Chrome chạy nền · Tải 6 kết nối", body: "Profile riêng, mặc định headless. Gặp captcha thì hiện cửa sổ để bạn xác minh.", icon: "zap" },
-  { title: "FFmpeg + VideOCR", body: "Cắt đúng vùng chữ, OCR ch · en · ja · ko · vi.", icon: "scan" },
-  { title: "DeepSeek API / Gemini Notebook", body: "Dịch theo đoạn, giữ nguyên index và timestamp.", icon: "languages" },
-  { title: "SRT + publish pack tùy chọn", body: "Kiểm tra phụ đề trước khi lưu. Có thể tạo thêm tiêu đề, mô tả và hashtag tiếng Việt.", icon: "file" },
+  {
+    title: "Hiểu từng lời kể.",
+    label: "VIETSUB THÔNG MINH",
+    body: "Dán link hoặc nhập MP4/MKV. Tải 6 luồng khi nguồn hỗ trợ HTTP Range, chọn vùng OCR và dịch ra .vi.srt giữ timecode.",
+    note: "Trình duyệt chạy ẩn · Hiện khi cần xác minh",
+    icon: "scan",
+  },
+  {
+    title: "Thêm dấu ấn riêng.",
+    label: "AUTO EDIT",
+    body: "Che chữ gốc theo vùng OCR, đóng phụ đề, lồng tiếng CapCut và chỉnh tốc độ / cao độ. Render với NVENC nếu GPU hỗ trợ.",
+    note: "CapCut TTS · FFmpeg · CPU fallback",
+    icon: "edit",
+  },
+  {
+    title: "Đưa câu chuyện đi xa.",
+    label: "ĐĂNG ĐA NỀN TẢNG",
+    body: "Chuyển video đã dựng sang Publish Hub, duyệt nội dung, chọn các profile độc lập và xếp lịch đăng theo từng tài khoản.",
+    note: "Lịch cục bộ · Cần app và máy đang chạy",
+    icon: "publish",
+  },
 ] as const;
-
-export const REQUIREMENTS = {
-  required: ["Windows 10/11 x64", "VideOCR CLI", "API dịch (DeepSeek, OpenRouter…) hoặc Gemini Notebook"],
-  recommended: ["Google Chrome (hoặc Edge) cho Douyin, Kuaishou, Notebook", "FFmpeg + FFprobe trong PATH", "Deno hoặc Node.js 22+ nếu tải YouTube"],
-};
 
 export const FAQS = [
   {
-    q: "Tải v1.8.0 ở đâu?",
-    a: "Bấm “Tải VietSub Studio v1.8.0” để mở GitHub Releases. Trong mục Assets, tải VietSub-Studio-Portable-v1.8.0.zip, giải nén rồi chạy VietSub Studio.exe. File .zip.sha256.txt đi kèm để kiểm tra tính toàn vẹn. Bản portable tải công khai, không cần đăng nhập GitHub.",
+    q: "Tôi cần chuẩn bị gì để bắt đầu?",
+    a: "Bản portable chạy trên Windows 10/11 x64. Tải ZIP từ GitHub Releases v2.0.0 và giải nén. Cài riêng VideOCR CLI cho OCR, FFmpeg + FFprobe cho xử lý video, và Chrome/Edge cho tác vụ cần trình duyệt. Chọn API dịch hoặc phiên Gemini Notebook của bạn; Deno/Node 22+ cần cho nguồn YouTube. App không tự cài các model AI nặng.",
   },
   {
-    q: "Nhập nhiều video có khác chỉnh crop từng video không?",
-    a: "Dán nhiều link, mỗi link một dòng, hoặc bấm Chọn nhiều file để nhập MP4/MKV. App xử lý lần lượt và báo riêng video nào chưa thêm được. Batch dùng crop mặc định và tên từng video. Muốn chỉnh crop riêng, hãy tải preview một video rồi thêm vào hàng đợi.",
+    q: "Chạy ẩn 100% có nghĩa là không cần đăng nhập?",
+    a: "Không. Các tác vụ tự động bình thường dùng Chromium --headless=new với profile riêng. Khi gặp CAPTCHA hoặc cần đăng nhập, app hiện trình duyệt để bạn xác minh thủ công. Phiên đăng nhập hợp lệ được tái sử dụng; profile cá nhân hằng ngày của bạn không bị sửa. OCR và render chạy trên máy.",
   },
   {
-    q: "Dọn hàng đợi có xóa video gốc hoặc phụ đề không?",
-    a: "Hộp thoại mặc định chỉ xóa bản ghi, giữ nguyên file. Bạn có thể chọn job đã kết thúc hoặc quá 3 ngày và xem dung lượng dự kiến trước khi chọn xóa video/file tạm. Chế độ xóa file có thể xóa cả video gốc đã chọn trên máy; file còn được job khác dùng sẽ được giữ. Giữ phụ đề SRT luôn được bật mặc định, và job đang xử lý được bảo vệ.",
+    q: "CapCut TTS, tách giọng và CapCut Draft có sẵn không?",
+    a: "v2.0.0 có lồng tiếng qua API CapCut, khớp giọng theo cue SRT, thay đổi tốc độ/cao độ và trộn nền. Đây là dịch vụ nội bộ không chính thức, giọng và khả năng truy cập có thể đổi. Tách giọng giữ nền cần runtime/model ngoài (audio-separator/ONNX), không kèm portable và có thể ảnh hưởng nhạc/hiệu ứng. v2.0.0 hỗ trợ xuất gói CapCut Draft thử nghiệm bên cạnh MP4 và SRT. Cần kiểm tra gói với phiên bản CapCut đang dùng; không bảo đảm tương thích mọi phiên bản.",
   },
   {
-    q: "App có tự xóa video sau khi dịch xong không?",
-    a: "Mặc định không. Khi bật tùy chọn tự dọn video nguồn trong Thiết lập, app chỉ dọn sau khi xuất và kiểm tra phụ đề thành công, giữ các file SRT. Video nguồn và video project, kể cả file gốc trên máy, có thể bị xóa; file còn được job khác dùng được giữ. Kết quả đã dọn vẫn xem được trong lịch sử sau khi mở lại app.",
+    q: "Hẹn giờ đăng có chạy khi tôi tắt máy không?",
+    a: "Không. Lịch nằm cục bộ và cần app cùng máy tính đang chạy. Bạn đăng nhập thủ công cho từng profile, chọn tài khoản, duyệt metadata rồi xếp lịch. Khả năng đăng và chế độ riêng tư khác nhau theo nền tảng; Facebook hỗ trợ Page / Meta Business Suite, không phải mọi profile cá nhân. UI nền tảng thay đổi, CAPTCHA hay phiên hết hạn có thể cần bạn can thiệp. Không cam kết mọi lần tải lên đều thành công.",
   },
   {
-    q: "Publish pack có tự đăng video lên mạng không?",
-    a: "Không. Đây là tùy chọn mặc định tắt: AI tạo thêm file .publish.json cạnh phụ đề, gồm tiêu đề, mô tả ngắn và hashtag tiếng Việt. Bạn có thể duyệt, chỉnh nội dung và dùng cho bước đăng video sau đó. App chưa tự đăng lên nền tảng nào.",
+    q: "Dọn video có làm mất phụ đề hay file gốc?",
+    a: "Xóa bản ghi mặc định không xóa media. Nếu bạn bật xóa file, app xem trước dung lượng, giữ .vi.srt mặc định và bảo vệ file đang được job khác sử dụng. Video nguồn, kể cả file gốc trên máy nếu bạn chọn, có thể bị xóa: hãy xem kỹ trước khi xác nhận. Tự dọn sau khi dịch là tùy chọn mặc định tắt, chỉ chạy sau khi SRT được kiểm tra thành công.",
   },
   {
-    q: "Chrome chạy nền thế nào, và gặp captcha thì sao?",
-    a: "App dùng profile riêng và mặc định chạy headless, không mở cửa sổ. Sau 60 giây nhàn rỗi, Chrome của app tự đóng. Khi phát hiện captcha, app mở lại cùng profile để bạn xác minh; lượt tự động tiếp theo trở về headless. Profile Chrome hoặc Edge hằng ngày của bạn không bị đọc hay sửa.",
-  },
-  {
-    q: "Video chỉ cho người đã đăng nhập xem thì sao?",
-    a: "Trong Thiết lập, mở trang đăng nhập của nền tảng bằng Chrome của app, đăng nhập một lần rồi thử lại. Profile riêng giữ thông tin đăng nhập; đăng nhập và xác minh thủ công vẫn cần cửa sổ trình duyệt hiển thị.",
-  },
-  {
-    q: "File trên máy có được tải lên dịch vụ bên ngoài không?",
-    a: "Video được xử lý trên máy bạn. Trong cửa sổ app, Chọn video mở một MP4/MKV tại chỗ và có thể hard-link vào project khi cùng ổ đĩa. Nhập nhiều file sẽ chuyển file vào thư mục do app quản lý trên chính máy đó. Văn bản phụ đề được gửi tới nhà cung cấp AI bạn chọn để dịch và tạo publish pack nếu bật.",
-  },
-  {
-    q: "Timestamp có bị model dịch sửa không?",
-    a: "Studio đối chiếu index và timestamp với SRT gốc. Nếu model chỉ đổi timing mà vẫn giữ đúng block, app khôi phục timestamp gốc; block thiếu hoặc dính nhau bị chặn trước khi lưu.",
-  },
-  {
-    q: "Bản portable đã kèm VideOCR và FFmpeg chưa?",
-    a: "Chưa. Bản portable gồm VietSub Studio và bộ tải yt-dlp. VideOCR, FFmpeg, Google Chrome (hoặc Edge) và tài khoản AI là phụ thuộc bên ngoài do bạn tự cài. App kiểm tra cập nhật từ GitHub Releases và đối chiếu SHA256 trước khi thay file.",
+    q: "Tôi có cần card NVIDIA? Dữ liệu có ở trên máy không?",
+    a: "Không bắt buộc: app kiểm tra NVENC thực tế và chuyển sang CPU nếu không dùng được. Video được OCR/render trên máy; văn bản phụ đề gửi đến AI dịch bạn cấu hình, văn bản TTS đến dịch vụ giọng nói, và video gửi đến nền tảng khi bạn yêu cầu đăng. Tài khoản và cookie thuộc các profile độc lập, không đi trong manifest project. Chỉ dùng nội dung bạn có quyền sử dụng.",
   },
 ];

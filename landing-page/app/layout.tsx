@@ -27,9 +27,15 @@ const monoFont = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: `VietSub Studio v${VERSION} — OCR và dịch phụ đề video Trung sang tiếng Việt`,
-  description:
-    `VietSub Studio v${VERSION}: nhập nhiều link hoặc MP4/MKV, OCR và dịch phụ đề sang tiếng Việt. Chrome headless, dọn video giữ SRT và publish pack AI tùy chọn.`,
+  title: `VietSub Studio v${VERSION} — Một Studio, muôn cách tỏa sáng`,
+  description: `VietSub Studio v${VERSION}: Creator Workbench 3-trong-1 cho VietSub thông minh, Auto Edit và đăng đa nền tảng. OCR, CapCut TTS, NVENC và profile độc lập trong một Studio trên Windows.`,
+  openGraph: {
+    title: `VietSub Studio v${VERSION} — 3-in-1 Creator Workbench`,
+    description:
+      "VietSub · Auto Edit · Đăng đa nền tảng. Giữ mạch sáng tạo, bớt những bước rời rạc.",
+    type: "website",
+    locale: "vi_VN",
+  },
 };
 
 export const viewport: Viewport = {
@@ -37,10 +43,16 @@ export const viewport: Viewport = {
   colorScheme: "dark",
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({
+  children,
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="vi">
-      <body className={`${sansFont.variable} ${cjkFont.variable} ${monoFont.variable}`}>{children}</body>
+      <body
+        className={`${sansFont.variable} ${cjkFont.variable} ${monoFont.variable}`}
+      >
+        {children}
+      </body>
     </html>
   );
 }

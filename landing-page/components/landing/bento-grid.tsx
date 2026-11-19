@@ -1,172 +1,260 @@
 "use client";
 
-import { AppWindow, Gauge, HardDrive, Languages, Sparkles, Zap } from "lucide-react";
+import {
+  AudioLines,
+  Check,
+  Clapperboard,
+  Cpu,
+  FileCheck2,
+  HardDrive,
+  Layers3,
+  LockKeyhole,
+  ScanText,
+  Sparkles,
+  Zap,
+} from "lucide-react";
 import { motion } from "motion/react";
-import type { Variants } from "motion/react";
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { VERSION } from "./data";
+import { usePrefersReducedMotion } from "./use-reduced-motion";
 
-const grid: Variants = { hidden: {}, show: { transition: { staggerChildren: 0.09, delayChildren: 0.05 } } };
-const card: Variants = {
-  hidden: { opacity: 0, y: 26 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.55, ease: [0.22, 1, 0.36, 1] } },
-};
-
-function Card({ className, children }: { className: string; children: ReactNode }) {
+function Card({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
+  const reduced = usePrefersReducedMotion();
   return (
-    <motion.article className={`bento-card ${className}`} variants={card}>
+    <motion.article
+      className={`bento-card ${className ?? ""}`}
+      whileHover={reduced ? undefined : { y: -5, rotateX: 0.5, rotateY: -0.5 }}
+      transition={{ type: "spring", stiffness: 170, damping: 23 }}
+    >
       <div className="bento-inner">{children}</div>
     </motion.article>
   );
 }
 
-const SOURCES = [
-  { han: "抖音", label: "Douyin", note: "bản gốc không watermark" },
-  { han: "哔哩哔哩", label: "Bilibili", note: "tới 1080p H.264" },
-  { han: "小红书", label: "Xiaohongshu", note: "từ link xhslink" },
-  { han: "快手", label: "Kuaishou", note: "từ đoạn share" },
-];
-
-/** A border light that follows the cursor across every card. Coordinates are written per card, at most once a frame. */
 export function BentoGrid() {
   const ref = useRef<HTMLDivElement>(null);
-
+  const reduced = usePrefersReducedMotion();
   useEffect(() => {
     const el = ref.current;
-    if (!el || !matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    if (
+      !el ||
+      reduced ||
+      !matchMedia("(hover: hover) and (pointer: fine)").matches
+    )
+      return;
     let frame = 0;
     let x = 0;
     let y = 0;
-    const paint = () => {
+    function paint() {
       frame = 0;
-      for (const c of el.querySelectorAll<HTMLElement>(".bento-card")) {
-        const r = c.getBoundingClientRect();
-        c.style.setProperty("--mx", `${x - r.left}px`);
-        c.style.setProperty("--my", `${y - r.top}px`);
+      for (const card of el!.querySelectorAll<HTMLElement>(".bento-card")) {
+        const r = card.getBoundingClientRect();
+        card.style.setProperty("--mx", `${x - r.left}px`);
+        card.style.setProperty("--my", `${y - r.top}px`);
       }
-    };
-    const onMove = (event: PointerEvent) => {
-      x = event.clientX;
-      y = event.clientY;
+    }
+    const move = (e: PointerEvent) => {
+      x = e.clientX;
+      y = e.clientY;
       if (!frame) frame = requestAnimationFrame(paint);
     };
-    const onEnter = () => el.classList.add("is-lit");
-    const onLeave = () => el.classList.remove("is-lit");
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerenter", onEnter);
-    el.addEventListener("pointerleave", onLeave);
+    const enter = () => el.classList.add("is-lit");
+    const leave = () => el.classList.remove("is-lit");
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerenter", enter);
+    el.addEventListener("pointerleave", leave);
     return () => {
       cancelAnimationFrame(frame);
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerenter", onEnter);
-      el.removeEventListener("pointerleave", onLeave);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerenter", enter);
+      el.removeEventListener("pointerleave", leave);
     };
-  }, []);
+  }, [reduced]);
 
   return (
-    <motion.div
-      ref={ref}
-      className="bento"
-      variants={grid}
-      initial="hidden"
-      whileInView="show"
-      viewport={{ once: true, amount: 0.15 }}
-    >
-      <Card className="bento-a">
-        <span className="bento-kicker">
-          <Zap size={15} aria-hidden="true" /> Bản v{VERSION}
-        </span>
-        <h3>Nhiều link, nhiều video. Một hàng đợi.</h3>
+    <div className="bento" ref={ref}>
+      <Card className="bento-download">
+        <div className="bento-topline">
+          <span className="bento-icon sun-icon">
+            <Zap size={20} aria-hidden="true" />
+          </span>
+          <span className="feature-badge">ÍT CHỜ ĐỢI HƠN</span>
+        </div>
+        <h3>
+          6 luồng tải.
+          <br />
+          Cảm hứng không phải đợi.
+        </h3>
         <p>
-          Dán mỗi link một dòng hoặc chọn nhiều MP4/MKV để thêm tuần tự. Mỗi video giữ tên riêng, dùng crop mặc định;
-          video nào chưa thêm được sẽ có thông báo riêng. Tải nhiều kết nối và preview từng video vẫn có sẵn.
+          Tải song song HTTP Range khi nguồn hỗ trợ, tự về một kết nối khi cần.
+          Trình duyệt chạy ẩn với <code>--headless=new</code>; chỉ hiện khi cần
+          đăng nhập hoặc giải CAPTCHA.
         </p>
-        <ul className="source-list">
-          {SOURCES.map((s) => (
-            <li key={s.label}>
-              <span lang="zh-CN" className="source-han">
-                {s.han}
+        <div className="download-art" aria-hidden="true">
+          <div className="download-art-label">
+            <span>HTTP RANGE</span>
+            <span>06 CONNECTIONS</span>
+          </div>
+          <div className="range-streams">
+            {Array.from({ length: 6 }, (_, i) => (
+              <span key={i}>
+                <i
+                  style={{
+                    animationDelay: `${i * -0.6}s`,
+                    width: `${40 + i * 9}%`,
+                  }}
+                />
+                <b>0{i + 1}</b>
               </span>
-              <span className="source-name">{s.label}</span>
-              <span className="source-note">{s.note}</span>
-            </li>
-          ))}
-        </ul>
-        <div className="range-viz" aria-hidden="true">
-          {Array.from({ length: 6 }, (_, i) => (
-            <span key={i} style={{ animationDelay: `${i * 0.12}s` }}>
-              <em style={{ animationDelay: `${i * 0.12}s` }} />
+            ))}
+          </div>
+          <span className="range-complete">
+            <Check size={12} /> Tự tiếp tục phần đang tải
+          </span>
+        </div>
+      </Card>
+      <Card className="bento-render">
+        <span className="bento-icon mint-icon">
+          <Cpu size={21} aria-hidden="true" />
+        </span>
+        <div className="gpu-art" aria-hidden="true">
+          <div className="gpu-chip">
+            <Cpu size={38} strokeWidth={1.1} />
+            <span>NVENC</span>
+          </div>
+          <i />
+          <i />
+          <i />
+        </div>
+        <h3>
+          Nhẹ thời gian render.
+          <br />
+          Nặng chất sáng tạo.
+        </h3>
+        <p>
+          Tăng tốc phần cứng NVIDIA <code>h264_nvenc</code>. Kiểm tra encoder
+          thực tế và tự dùng CPU khi GPU không đáp ứng.
+        </p>
+        <span className="bento-footnote">
+          <span className="live-dot" /> GPU khi sẵn sàng. CPU luôn có lối.
+        </span>
+      </Card>
+      <Card className="bento-edit">
+        <span className="bento-icon coral-icon">
+          <Clapperboard size={20} aria-hidden="true" />
+        </span>
+        <div className="edit-art" aria-hidden="true">
+          <div className="edit-caption">
+            <span lang="zh-CN">让故事被听见</span>
+            <strong>Để câu chuyện được lắng nghe.</strong>
+          </div>
+          <div className="audio-art">
+            {Array.from({ length: 33 }, (_, i) => (
+              <i key={i} style={{ height: `${12 + ((i * 17) % 31)}px` }} />
+            ))}
+          </div>
+          <span>
+            <AudioLines size={12} /> CapCut TTS + BGM
+          </span>
+        </div>
+        <h3>
+          Không chỉ dịch lời.
+          <br />
+          Trao một giọng kể.
+        </h3>
+        <p>
+          Che chữ theo vùng OCR, đóng phụ đề đẹp, lồng tiếng CapCut và đổi tốc
+          độ / cao độ. Tách giọng là tùy chọn cần model ngoài; chất lượng nhạc
+          nền tùy model.
+        </p>
+        <span className="bento-footnote">
+          CapCut là API không chính thức, có thể thay đổi.
+        </span>
+      </Card>
+      <Card className="bento-storage">
+        <span className="bento-icon sun-icon">
+          <HardDrive size={20} aria-hidden="true" />
+        </span>
+        <h3>
+          Dọn dung lượng.
+          <br />
+          Giữ lại công sức.
+        </h3>
+        <p>
+          Xem trước dung lượng, chọn xóa video nguồn hàng loạt. Giữ{" "}
+          <code>.vi.srt</code> mặc định và bảo vệ tài nguyên còn được dùng.
+        </p>
+        <div className="storage-art" aria-hidden="true">
+          <div>
+            <span>
+              <Clapperboard size={15} /> video gốc
             </span>
+            <span className="storage-muted">Dọn theo lựa chọn</span>
+          </div>
+          <div>
+            <span>
+              <FileCheck2 size={15} /> story.vi.srt
+            </span>
+            <span className="storage-keep">
+              <Check size={12} /> Giữ lại
+            </span>
+          </div>
+        </div>
+        <span className="bento-footnote">
+          Luôn xem kỹ danh sách trước khi xóa file.
+        </span>
+      </Card>
+      <Card className="bento-publish">
+        <div className="bento-topline">
+          <span className="bento-icon mint-icon">
+            <Layers3 size={20} aria-hidden="true" />
+          </span>
+          <span className="feature-badge mint-badge">PUBLISH HUB</span>
+        </div>
+        <h3>
+          Mỗi tài khoản, một không gian riêng.
+          <br />
+          Mỗi câu chuyện, nhiều điểm đến.
+        </h3>
+        <p>
+          Chuyển video đã dựng, chỉnh metadata, chọn nhiều profile và xếp lịch
+          đăng cục bộ. Trạng thái từng tài khoản độc lập; cần app và máy tính
+          đang chạy.
+        </p>
+        <div className="profile-art" aria-hidden="true">
+          {[
+            { text: "TK", name: "TikTok", color: "sun" },
+            { text: "YT", name: "YouTube", color: "coral" },
+            { text: "FB", name: "Facebook Page", color: "mint" },
+          ].map((p) => (
+            <div className={`profile-mini ${p.color}`} key={p.text}>
+              <span>{p.text}</span>
+              <div>
+                <strong>{p.name}</strong>
+                <small>
+                  <LockKeyhole size={10} /> Profile độc lập
+                </small>
+              </div>
+              <Check size={13} />
+            </div>
           ))}
         </div>
-        <dl className="bento-stats">
-          <div>
-            <dt>Benchmark tải 6 MB của v1.6.2</dt>
-            <dd>15,4 s → 2,6 s</dd>
-          </div>
-          <div>
-            <dt>
-              <Gauge size={14} aria-hidden="true" /> Bitrate cho OCR
-            </dt>
-            <dd>H.264 1,5–3,5 Mbps</dd>
-          </div>
-        </dl>
       </Card>
-
-      <Card className="bento-b">
-        <span className="bento-icon">
-          <AppWindow size={22} aria-hidden="true" />
-        </span>
-        <h3>Chrome chạy nền, hiện lên khi bạn cần</h3>
+      <div className="bento-honesty">
+        <ScanText size={17} aria-hidden="true" />
         <p>
-          Mặc định headless, dùng profile riêng và tái sử dụng tab đầu tiên. Chrome của app tự đóng sau 60 giây nhàn rỗi.
-          Gặp captcha, cùng profile mở lại để bạn xác minh; lượt tự động sau trở về chạy nền.
+          <strong>Đúng những gì có trong v2.0.0.</strong> Xuất MP4, SRT và gói
+          CapCut Draft thử nghiệm. Cần kiểm tra với phiên bản CapCut đang dùng;
+          không bảo đảm tương thích mọi phiên bản.
         </p>
-        <div className="profiles" aria-hidden="true">
-          <div className="profile-win">
-            <span className="profile-dots" />
-            <strong>Chrome của bạn</strong>
-            <small>Default profile · giữ nguyên</small>
-          </div>
-          <div className="profile-win is-app">
-            <span className="profile-dots" />
-            <strong>VietSub profile</strong>
-            <small>Headless · hiện khi xác minh</small>
-          </div>
-        </div>
-      </Card>
-
-      <Card className="bento-c">
-        <span className="bento-icon">
-          <HardDrive size={22} aria-hidden="true" />
-        </span>
-        <h3>Dọn hàng đợi, giữ lại phụ đề</h3>
-        <p>
-          Chọn job đã kết thúc hoặc quá 3 ngày, xem dung lượng có thể dọn rồi chọn xóa bản ghi hay video/file tạm.
-          SRT được giữ mặc định. Có thể bật tự dọn nguồn sau khi xuất sub thành công.
-        </p>
-      </Card>
-
-      <Card className="bento-d">
-        <span className="bento-icon">
-          <Sparkles size={22} aria-hidden="true" />
-        </span>
-        <h3>Thêm tiêu đề, mô tả và hashtag</h3>
-        <p>Bật publish pack để AI tạo thêm <code>.publish.json</code> cạnh phụ đề với nội dung tiếng Việt.
-          Bạn duyệt trước khi đăng; tính năng mặc định tắt và không tự đăng video.</p>
-      </Card>
-
-      <Card className="bento-e">
-        <span className="bento-icon">
-          <Languages size={22} aria-hidden="true" />
-        </span>
-        <h3>Giữ đúng từng timestamp</h3>
-        <p>
-          Dịch bằng DeepSeek, OpenRouter hoặc Gemini Notebook. Index, số block và timecode được đối chiếu với SRT gốc
-          trước khi lưu. Workbench vẫn giữ preview, crop và nhật ký trong cùng cửa sổ.
-        </p>
-      </Card>
-    </motion.div>
+        <Sparkles size={17} aria-hidden="true" />
+      </div>
+    </div>
   );
 }

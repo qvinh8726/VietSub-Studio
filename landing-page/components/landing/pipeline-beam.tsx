@@ -1,50 +1,81 @@
 "use client";
 
-import { FileCheck2, Languages, Link2, ScanText, Zap } from "lucide-react";
+import { Clapperboard, Radio, ScanText } from "lucide-react";
 import { useInView } from "motion/react";
 import { useRef } from "react";
 import { PIPELINE_STEPS } from "./data";
+import { Reveal } from "./reveal";
 
-const ICONS = { link: Link2, zap: Zap, scan: ScanText, languages: Languages, file: FileCheck2 } as const;
-
-/** One connector, drawn twice: across for wide screens, down for narrow ones. The beam only runs while the diagram is on screen. */
-function Connector({ index }: { index: number }) {
-  const delay = { animationDelay: `${index * 0.34}s` };
-  return (
-    <span className="pipe-link" aria-hidden="true">
-      <svg className="pipe-link-h" viewBox="0 0 100 12" preserveAspectRatio="none">
-        <path className="pipe-base" d="M0 6 H100" pathLength={100} vectorEffect="non-scaling-stroke" />
-        <path className="pipe-beam" d="M0 6 H100" pathLength={100} vectorEffect="non-scaling-stroke" style={delay} />
-      </svg>
-      <svg className="pipe-link-v" viewBox="0 0 12 100" preserveAspectRatio="none">
-        <path className="pipe-base" d="M6 0 V100" pathLength={100} vectorEffect="non-scaling-stroke" />
-        <path className="pipe-beam" d="M6 0 V100" pathLength={100} vectorEffect="non-scaling-stroke" style={delay} />
-      </svg>
-    </span>
-  );
-}
+const ICONS = { scan: ScanText, edit: Clapperboard, publish: Radio };
 
 export function PipelineBeam() {
-  const ref = useRef<HTMLOListElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
   const live = useInView(ref, { margin: "0px 0px -10% 0px" });
-
   return (
-    <ol ref={ref} className={`pipe ${live ? "is-live" : ""}`}>
-      {PIPELINE_STEPS.map((step, i) => {
-        const Icon = ICONS[step.icon];
-        const last = i === PIPELINE_STEPS.length - 1;
-        return (
-          <li key={step.title} className={`pipe-step ${last ? "is-last" : ""}`}>
-            <span className="pipe-node">
-              <Icon size={22} aria-hidden="true" />
-              <span className="pipe-num">{String(i + 1).padStart(2, "0")}</span>
-            </span>
-            <h3>{step.title}</h3>
-            <p>{step.body}</p>
-            {last ? null : <Connector index={i} />}
-          </li>
-        );
-      })}
-    </ol>
+    <div ref={ref} className={`liquid-workflow ${live ? "is-live" : ""}`}>
+      <svg
+        className="liquid-path horizontal-path"
+        viewBox="0 0 1100 180"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="liquid-gradient">
+            <stop stopColor="#f5c542" />
+            <stop offset="0.5" stopColor="#ff9c69" />
+            <stop offset="1" stopColor="#7ee0b8" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M 165 80 C 310 -10, 390 170, 550 80 S 810 -10, 935 80"
+          className="liquid-base"
+        />
+        <path
+          d="M 165 80 C 310 -10, 390 170, 550 80 S 810 -10, 935 80"
+          className="liquid-beam"
+          pathLength="100"
+        />
+      </svg>
+      <svg
+        className="liquid-path vertical-path"
+        viewBox="0 0 80 850"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <path
+          d="M 40 50 C 80 160, 0 250, 40 340 S 80 530, 40 620 S 0 730, 40 800"
+          className="liquid-base"
+        />
+        <path
+          d="M 40 50 C 80 160, 0 250, 40 340 S 80 530, 40 620 S 0 730, 40 800"
+          className="liquid-beam"
+          pathLength="100"
+        />
+      </svg>
+      <ol className="workflow-stages">
+        {PIPELINE_STEPS.map((step, i) => {
+          const Icon = ICONS[step.icon];
+          return (
+            <li key={step.label}>
+              <Reveal
+                className={`workflow-stage stage-${i + 1}`}
+                delay={i * 0.1}
+              >
+                <div className="workflow-node">
+                  <Icon size={26} strokeWidth={1.5} aria-hidden="true" />
+                  <span className="workflow-number">0{i + 1}</span>
+                </div>
+                <div className="workflow-copy">
+                  <p className="workflow-label">{step.label}</p>
+                  <h3>{step.title}</h3>
+                  <p>{step.body}</p>
+                  <span className="workflow-detail">{step.note}</span>
+                </div>
+              </Reveal>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }

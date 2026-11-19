@@ -1,45 +1,50 @@
 "use client";
 
-import { Download, GitBranch, Menu, X } from "lucide-react";
-import Image from "next/image";
-import { useEffect, useState } from "react";
+import { Clapperboard, Download, GitBranch, Menu, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { RELEASE_URL, REPO_URL, VERSION } from "./data";
 
 const NAV = [
-  { href: "#demo", label: "Demo" },
-  { href: "#pipeline", label: "Quy trình" },
-  { href: "#features", label: "Tính năng" },
-  { href: "#faq", label: "FAQ" },
+  { href: "#demo", label: "Studio 3-trong-1" },
+  { href: "#pipeline", label: "Hành trình" },
+  { href: "#features", label: "Điểm khác biệt" },
+  { href: "#faq", label: "Hỏi & đáp" },
 ];
 
 export function SiteHeader() {
-  const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 12);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-
+  const toggle = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        toggle.current?.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const media = matchMedia("(min-width: 1000px)");
+    const close = () => {
+      if (media.matches) setOpen(false);
+    };
+    media.addEventListener("change", close);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      media.removeEventListener("change", close);
+    };
   }, [open]);
-
   return (
-    <header className={`site-header ${scrolled ? "is-scrolled" : ""}`}>
+    <header className="site-header">
       <div className="wrap header-row">
-        <a href="#top" className="brand" aria-label="VietSub Studio, về đầu trang">
-          <Image src="/avatar.jpg" width={32} height={32} alt="" className="brand-mark" />
-          <span className="brand-name">VietSub Studio</span>
-          <span className="brand-ver">v{VERSION}</span>
+        <a href="#top" className="brand" title="Về đầu trang">
+          <span className="brand-symbol">
+            <Clapperboard size={21} strokeWidth={1.7} aria-hidden="true" />
+          </span>
+          <span>
+            VietSub<span className="brand-light"> Studio</span>
+          </span>
+          <span className="brand-ver">2.0</span>
         </a>
-
         <nav className="nav-desktop" aria-label="Điều hướng chính">
           {NAV.map((item) => (
             <a key={item.href} href={item.href}>
@@ -47,15 +52,26 @@ export function SiteHeader() {
             </a>
           ))}
         </nav>
-
         <div className="header-actions">
-          <a href={REPO_URL} target="_blank" rel="noreferrer" className="btn-ghost hide-sm">
-            <GitBranch size={16} aria-hidden="true" /> GitHub
+          <a
+            href={REPO_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="github-link"
+            aria-label="Mở mã nguồn GitHub"
+          >
+            <GitBranch size={18} aria-hidden="true" />
           </a>
-          <a href={RELEASE_URL} target="_blank" rel="noreferrer" className="btn-sun-sm">
-            <Download size={16} aria-hidden="true" /> Tải v{VERSION}
+          <a
+            href={RELEASE_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="btn-sun-sm"
+          >
+            <Download size={15} aria-hidden="true" /> Tải v{VERSION}
           </a>
           <button
+            ref={toggle}
             type="button"
             className="menu-btn"
             aria-expanded={open}
@@ -63,20 +79,25 @@ export function SiteHeader() {
             aria-label={open ? "Đóng menu" : "Mở menu"}
             onClick={() => setOpen((v) => !v)}
           >
-            {open ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
+            {open ? (
+              <X size={21} aria-hidden="true" />
+            ) : (
+              <Menu size={21} aria-hidden="true" />
+            )}
           </button>
         </div>
       </div>
-
-      <nav id="mobile-nav" className="nav-mobile" aria-label="Điều hướng trên di động" hidden={!open}>
+      <nav
+        id="mobile-nav"
+        className="nav-mobile"
+        aria-label="Điều hướng trên di động"
+        hidden={!open}
+      >
         {NAV.map((item) => (
           <a key={item.href} href={item.href} onClick={() => setOpen(false)}>
             {item.label}
           </a>
         ))}
-        <a href={REPO_URL} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>
-          GitHub
-        </a>
       </nav>
     </header>
   );

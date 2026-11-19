@@ -1,16 +1,13 @@
-# Sakuga VFX (vendored)
+# Sakuga VFX (vendored, locally adapted)
 
-`tabs.js` is copied unmodified from [finktheartist/sakuga-vfx](https://github.com/finktheartist/sakuga-vfx)
-at commit `c3dabb173928a3ad2372183103caf2e6f50953d0`, under the MIT license in `LICENSE`.
+The upstream `tabs.js` core originates from [finktheartist/sakuga-vfx](https://github.com/finktheartist/sakuga-vfx), commit `c3dabb173928a3ad2372183103caf2e6f50953d0`, under the included MIT license.
 
-The file holds the `<sakuga-tabs>` element plus the shared core, which sets `window.SakugaFX`.
-The landing page loads it once with `next/script` and builds on the core API:
+## Landing-page adaptations for v2.0.0
 
-- `components/landing/sakuga.tsx` sets the effect palette (`SakugaFX.P`) and defines
-  `<vs-sakuga-link>`, the download link with squash, overshoot, burst and slash.
-- `app/globals.css` overrides the `--sk-*` control variables with the VietSub Studio palette.
+- `retain()` / `release()` explicitly manage resize, visibility and reduced-motion subscriptions.
+- The shared requestAnimationFrame handle is retained and cancelled on release, when hidden, or when reduced motion is enabled. Active finite effects and timers are cleared at those boundaries.
+- The landing page does **not** instantiate the upstream custom tabs or permanently ticking `Base` elements. Native React tabs use a shared-layout spring pill; Sakuga only draws a small finite smoke puff.
+- The CTA is a real external anchor. `motion/react` supplies squash/overshoot, while the vendored core supplies warm burst/slash strokes.
+- The palette is applied in `components/landing/sakuga.tsx`. The core is released on component unmount, and its canvas is removed.
 
-The core drops every effect when the visitor prefers reduced motion.
-
-To update, download `tabs/tabs.js` from a newer commit, replace this file and update the commit above.
-`README-tabs.md` is the upstream usage note for the element.
+Keep these lifecycle adaptations when updating the upstream core. `README-tabs.md` retains the original element's usage note; the production landing page does not use that element.

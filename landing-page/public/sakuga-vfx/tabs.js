@@ -85,7 +85,8 @@ canvas.sakuga-fx{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:
 document.head.append(Object.assign(document.createElement('style'), { textContent: pageCss }));
 
 const reduce = matchMedia('(prefers-reduced-motion: reduce)');
-let calm = reduce.matches; reduce.addEventListener?.('change', (e) => { calm = e.matches; });
+let calm = reduce.matches;
+function onReduce(e) { calm = e.matches; if (calm) clearEffects(); }
 
 // ───────── layers ─────────
 // The front layer is one fixed canvas over the whole page. A component can also have a back layer: a canvas inside it, behind the control.
@@ -98,7 +99,26 @@ function ensureFront() {
   document.body.append(front.c); front.g = front.c.getContext('2d'); size();
 }
 function size() { dpr = Math.min(2.5, devicePixelRatio || 1); if (front.c) { front.c.width = innerWidth * dpr; front.c.height = innerHeight * dpr; } }
-addEventListener('resize', size);
+let retained = false;
+function onVisibility() { if (document.hidden) clearEffects(); }
+function retain() {
+  if (retained) return;
+  retained = true; calm = reduce.matches;
+  addEventListener('resize', size);
+  document.addEventListener('visibilitychange', onVisibility);
+  reduce.addEventListener?.('change', onReduce);
+}
+function clearEffects() {
+  running = false; cancelAnimationFrame(raf); raf = 0; timers.length = 0;
+  for (const L of layers) { L.live.length = 0; L.dirty = false; if (L.g) { L.g.setTransform(1, 0, 0, 1, 0, 0); L.g.clearRect(0, 0, L.c.width, L.c.height); } }
+}
+function release() {
+  retained = false; clearEffects();
+  removeEventListener('resize', size);
+  document.removeEventListener('visibilitychange', onVisibility);
+  reduce.removeEventListener?.('change', onReduce);
+  front.c?.remove(); front.c = null; front.g = null;
+}
 function backLayer(canvas) { const L = { c: canvas, g: canvas.getContext('2d'), live: [], dirty: false }; layers.push(L); return L; }
 const add = (life, draw, L) => { const p = { t: 0, life, draw }; if (!calm) { L = L || front; if (L === front) ensureFront(); L.live.push(p); start(); } return p; };
 // an effect with no end: it draws every frame until its handle is marked dead. layer puts it on a component's back layer.
@@ -122,7 +142,7 @@ function tick(dt) {
 
 // ───────── the clock ─────────
 // One loop for every component. later() runs on this clock, not on setTimeout, so a film can step it a frame at a time.
-let now = 0, last = 0, running = false;
+let now = 0, last = 0, running = false, raf = 0;
 const frames = new Set(), timers = [];
 const later = (ms, f) => { timers.push({ at: now + ms / 1000, f }); start(); };
 function advance(dt) {
@@ -137,9 +157,9 @@ function loop(ms) {
   const dt = clamp((ms - last) / 1000, 0, 0.034); last = ms;   // a frame's timestamp can be earlier than the moment the loop started
   if (!api.paused) advance(dt);
   if (!frames.size && !timers.length && layers.every((L) => !L.live.length && !L.dirty)) { running = false; return; }
-  requestAnimationFrame(loop);
+  raf = requestAnimationFrame(loop);
 }
-function start() { if (running) return; running = true; last = performance.now(); requestAnimationFrame(loop); }
+function start() { retain(); if (running || calm || document.hidden) return; running = true; last = performance.now(); raf = requestAnimationFrame(loop); }
 
 // ───────── the effects ─────────
 // circles drawn as one shape: outline, shadow tone, then the light side slid up and to the left
@@ -312,7 +332,7 @@ const api = window.SakugaFX = {
   TAU, clamp, lerp, rnd, Spring,
   advance, later, persist, blob, shape, get g() { return g; },
   puff, burst, shards, ring, splash, slash, lines, ticks, donut, wob, kira, sfx, hollow, dotted,
-  at, esc, squashy, Base, define,
+  at, esc, squashy, Base, define, retain, release,
 };
 })();
 // <<< sakuga core

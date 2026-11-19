@@ -1,30 +1,40 @@
-import { ArrowRight, ArrowUpRight, Check, Download, GitBranch, Play, ShieldCheck } from "lucide-react";
-import Image from "next/image";
+import {
+  ArrowDown,
+  ArrowRight,
+  ArrowUpRight,
+  Check,
+  ChevronDown,
+  Clapperboard,
+  Download,
+  GitBranch,
+  Heart,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 import { BentoGrid } from "./landing/bento-grid";
-import { BUILD_URL, CHANGELOG_URL, CHECKSUM_URL, FAQS, METRICS, PLATFORM_ITEMS, RELEASE_URL, REPO_URL, REQUIREMENTS, TECH_ITEMS, VERSION } from "./landing/data";
+import {
+  CHANGELOG_URL,
+  CHECKSUM_URL,
+  FAQS,
+  PLATFORM_ITEMS,
+  RELEASE_URL,
+  REPO_URL,
+  TECH_ITEMS,
+  VERSION,
+} from "./landing/data";
 import { Marquee } from "./landing/marquee";
 import { MotionRoot } from "./landing/motion-root";
+import { Atmosphere } from "./landing/atmosphere";
 import { PipelineBeam } from "./landing/pipeline-beam";
 import { Reveal } from "./landing/reveal";
 import { SakugaCta, SakugaScript } from "./landing/sakuga";
 import { SiteHeader } from "./landing/site-header";
-import { SubtitleSandbox } from "./landing/subtitle-sandbox";
-
-function SectionHead({ kicker, title, body, id }: { kicker: string; title: string; body?: string; id: string }) {
-  return (
-    <Reveal className="section-head">
-      <p className="kicker">{kicker}</p>
-      <h2 id={id}>{title}</h2>
-      {body ? <p className="section-body">{body}</p> : null}
-    </Reveal>
-  );
-}
+import { StudioShowcase } from "./landing/studio-showcase";
 
 function DownloadNote() {
   return (
     <p className="download-note">
-      Bản portable: tải ZIP, giải nén rồi mở app.
-      {" "}<a href={CHECKSUM_URL} target="_blank" rel="noreferrer">Checksum SHA256</a> đi kèm.
+      Windows 10/11 x64 <span>·</span> Portable <span>·</span> Mã nguồn mở MIT
     </p>
   );
 }
@@ -34,140 +44,201 @@ export default function VietSubSite() {
     <MotionRoot>
       <SakugaScript />
       <a href="#main" className="skip-link">
-        Bỏ qua, tới nội dung chính
+        Tới nội dung chính
       </a>
       <SiteHeader />
-
       <main id="main">
         <section className="hero" id="top" aria-labelledby="hero-title">
-          <div className="hero-backdrop" aria-hidden="true" />
+          <Atmosphere />
           <div className="wrap hero-copy">
-            <div className="hero-lead">
-              <a className="release-pill" href={CHANGELOG_URL} target="_blank" rel="noreferrer">
-                <span className="release-tag">v{VERSION}</span>
-                <span className="release-summary">Batch import · Dọn dung lượng · Publish pack</span>
+            <Reveal className="hero-lead">
+              <a
+                className="release-pill"
+                href={CHANGELOG_URL}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span className="release-tag">MỚI · v{VERSION}</span>
+                <span>Không gian sáng tạo 3-trong-1</span>
                 <ArrowUpRight size={14} aria-hidden="true" />
               </a>
               <h1 id="hero-title">
-                Video Trung có hardsub, ra file <span className="hl-sun">.vi.srt</span> đúng từng timestamp.
+                Một ý tưởng.
+                <br />
+                <span className="hero-emphasis">Muôn cách tỏa sáng.</span>
               </h1>
-            </div>
-            <div className="hero-side">
+              <p className="hero-workflow">
+                <span>VietSub</span>
+                <ArrowRight size={12} aria-hidden="true" />
+                <span>Auto Edit</span>
+                <ArrowRight size={12} aria-hidden="true" />
+                <span>Đăng đa nền tảng</span>
+              </p>
               <p className="hero-sub">
-                Dán nhiều link share hoặc chọn cả loạt MP4/MKV. VietSub Studio xử lý lần lượt: tải video, OCR đúng vùng chữ,
-                dịch sang tiếng Việt và giữ nguyên timecode. Khi xong, bạn chọn dọn video và giữ phụ đề cho bước dựng tiếp theo.
+                Từ thước phim bạn yêu đến câu chuyện mang dấu ấn riêng.
+                <br className="desktop-break" /> Liền mạch trong một Creator
+                Workbench. Dành riêng cho bạn.
               </p>
               <div className="hero-actions">
-                <SakugaCta href={RELEASE_URL} ariaLabel={`Tải VietSub Studio v${VERSION} trên GitHub Releases (mở tab mới)`}>
-                  <Download size={19} aria-hidden="true" /> Tải VietSub Studio v{VERSION}
+                <SakugaCta
+                  href={RELEASE_URL}
+                  ariaLabel={`Tải miễn phí v${VERSION} — VietSub Studio trên GitHub Releases (mở tab mới)`}
+                >
+                  <Download size={18} aria-hidden="true" /> Tải miễn phí v
+                  {VERSION} <ArrowUpRight size={17} aria-hidden="true" />
                 </SakugaCta>
                 <a href="#demo" className="btn-ghost btn-lg">
-                  <Play size={16} aria-hidden="true" /> Thử sandbox
+                  Khám phá Studio <ArrowDown size={16} aria-hidden="true" />
                 </a>
               </div>
               <DownloadNote />
-              <ul className="trust">
-                <li>
-                  <Check size={15} aria-hidden="true" /> Windows 10/11 x64, bản portable
-                </li>
-                <li>
-                  <Check size={15} aria-hidden="true" /> Mã nguồn mở MIT
-                </li>
-                <li>
-                  <Check size={15} aria-hidden="true" /> Video xử lý trên máy của bạn
-                </li>
-              </ul>
+            </Reveal>
+          </div>
+          <div className="wrap hero-studio" id="demo">
+            <div className="showcase-label-row">
+              <span className="eyebrow">
+                <span className="live-dot" /> MỘT STUDIO. BA KHẢ NĂNG.
+              </span>
+              <span className="studio-invite">
+                Chạm để khám phá <ArrowDown size={13} aria-hidden="true" />
+              </span>
             </div>
+            <StudioShowcase />
           </div>
-
-          <div className="wrap" id="demo">
-            <SubtitleSandbox />
-            <p className="sandbox-note">
-              Kéo khung vàng lên xuống hoặc dùng phím mũi tên để xem OCR đọc gì. Đây là mô phỏng trên trình duyệt: app thật chạy VideOCR và
-              FFmpeg trên máy bạn.
-            </p>
+          <div className="wrap hero-footnote">
+            <span>Tập trung vào câu chuyện.</span>
+            <span>
+              Để Studio nối những phần còn lại.{" "}
+              <span className="tiny-star" aria-hidden="true">
+                ✦
+              </span>
+            </span>
           </div>
         </section>
 
-        <section className="metrics" aria-labelledby="metrics-title">
+        <section
+          className="section workflow-section"
+          id="pipeline"
+          aria-labelledby="pipeline-title"
+        >
           <div className="wrap">
-            <h2 id="metrics-title" className="sr-only">
-              Mặc định và kiểm thử của v{VERSION}
-            </h2>
-            <dl className="metric-grid">
-              {METRICS.map((m) => (
-                <div key={m.value} className="metric">
-                  <dt>{m.label}</dt>
-                  <dd>{m.value}</dd>
-                </div>
-              ))}
-            </dl>
-            <div className="metrics-cta">
-              <a href={CHANGELOG_URL} target="_blank" rel="noreferrer" className="text-link">
-                Đọc changelog v{VERSION} <ArrowUpRight size={15} aria-hidden="true" />
-              </a>
-              <a href={RELEASE_URL} target="_blank" rel="noreferrer" className="btn-sun-sm">
-                <Download size={16} aria-hidden="true" /> Tải bản portable
-              </a>
-            </div>
-          </div>
-        </section>
-
-        <section className="marquee-section" aria-label="Nguồn video và công nghệ">
-          <Marquee platforms={PLATFORM_ITEMS} tech={TECH_ITEMS} />
-        </section>
-
-        <section className="section" id="pipeline" aria-labelledby="pipeline-title">
-          <div className="wrap">
-            <SectionHead
-              id="pipeline-title"
-              kicker="Quy trình"
-              title="Từ cả loạt video tới từng bộ phụ đề, trong một cửa sổ."
-              body="Workbench gom nguồn, preview, crop và hàng đợi trong một cửa sổ. Chọn một video để chỉnh crop riêng; nhập hàng loạt để dùng crop mặc định."
-            />
+            <Reveal className="section-head centered">
+              <p className="kicker">
+                <span /> TỪ CẢM HỨNG ĐẾN LÊN SÓNG
+              </p>
+              <h2 id="pipeline-title">
+                Giữ mạch sáng tạo.
+                <br />
+                <span className="serif-note">Bớt những bước rời rạc.</span>
+              </h2>
+              <p className="section-body">
+                Dán link, trao cho video một giọng kể mới, rồi đưa câu chuyện
+                đến nhiều nơi hơn. Không phải bắt đầu lại ở mỗi bước.
+              </p>
+            </Reveal>
             <PipelineBeam />
+            <Reveal className="workflow-caption">
+              <ShieldCheck size={15} aria-hidden="true" />
+              <p>
+                Mỗi chặng giữ trạng thái riêng trong project. Bạn luôn là người
+                duyệt nội dung và lựa chọn khi nào xuất bản.
+              </p>
+            </Reveal>
           </div>
         </section>
 
-        <section className="section" id="features" aria-labelledby="features-title">
+        <section
+          className="section features-section"
+          id="features"
+          aria-labelledby="features-title"
+        >
           <div className="wrap">
-            <SectionHead
-              id="features-title"
-              kicker={`Có gì mới trong v${VERSION}`}
-              title="Nhập nhiều hơn. Dọn gọn hơn. Sẵn nội dung để đăng."
-              body="Giữ giao diện Studio Workbench, bổ sung thao tác hàng loạt và các tùy chọn cho bước sau khi xuất sub."
-            />
+            <Reveal className="section-head split-head">
+              <div>
+                <p className="kicker">
+                  <span /> ĐƯỢC CHĂM CHÚT, TỪNG CHI TIẾT
+                </p>
+                <h2 id="features-title">
+                  Mượt ở trải nghiệm.
+                  <br />
+                  <span className="serif-note">Mạnh ở bên trong.</span>
+                </h2>
+              </div>
+              <p className="section-body">
+                Những nâng cấp của v{VERSION} để công việc nhẹ đi — và khoảng
+                trống cho sáng tạo rộng hơn.
+              </p>
+            </Reveal>
             <BentoGrid />
           </div>
         </section>
 
-        <section className="section" id="faq" aria-labelledby="faq-title">
+        <section className="platform-section" aria-labelledby="platform-title">
+          <div className="wrap">
+            <Reveal className="platform-head">
+              <p className="kicker">MỘT CÂU CHUYỆN, NHIỀU ĐIỂM CHẠM</p>
+              <h2 id="platform-title">
+                Được tìm thấy.{" "}
+                <span className="serif-note">Ở nhiều nơi hơn.</span>
+              </h2>
+              <p>
+                Nguồn video quen thuộc, điểm đến đa dạng. Profile riêng cho từng
+                tài khoản.
+              </p>
+            </Reveal>
+          </div>
+          <Marquee platforms={PLATFORM_ITEMS} tech={TECH_ITEMS} />
+          <p className="platform-note wrap">
+            Nguồn tải và kênh đăng có phạm vi khác nhau. Khả năng đăng, quyền
+            riêng tư và xác minh phụ thuộc từng nền tảng; Facebook dùng Page /
+            Meta Business Suite.
+          </p>
+        </section>
+
+        <section
+          className="section faq-section"
+          id="faq"
+          aria-labelledby="faq-title"
+        >
           <div className="wrap faq-layout">
-            <div>
-              <SectionHead id="faq-title" kicker="Trước khi cài" title="Cần gì để chạy, và những câu hay gặp." />
-              <Reveal className="req-card" delay={0.05}>
-                <h3>Bắt buộc</h3>
-                <ul>
-                  {REQUIREMENTS.required.map((r) => (
-                    <li key={r}>
-                      <Check size={15} aria-hidden="true" /> {r}
-                    </li>
-                  ))}
-                </ul>
-                <h3>Nên có</h3>
-                <ul className="is-soft">
-                  {REQUIREMENTS.recommended.map((r) => (
-                    <li key={r}>
-                      <ArrowRight size={15} aria-hidden="true" /> {r}
-                    </li>
-                  ))}
-                </ul>
-              </Reveal>
-            </div>
+            <Reveal className="faq-intro">
+              <p className="kicker">
+                <span /> TRƯỚC KHI BẤM BẮT ĐẦU
+              </p>
+              <h2 id="faq-title">
+                Một vài điều <br />
+                <span className="serif-note">bạn muốn biết.</span>
+              </h2>
+              <p className="section-body">
+                Công cụ tốt bắt đầu từ lời giới thiệu rõ ràng. Đây là những gì
+                Studio làm được — và những gì vẫn cần bạn.
+              </p>
+              <a
+                href={`${REPO_URL}#readme`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-link"
+              >
+                Đọc hướng dẫn trên GitHub{" "}
+                <ArrowUpRight size={15} aria-hidden="true" />
+              </a>
+              <div className="requirements-note">
+                <ShieldCheck size={19} aria-hidden="true" />
+                <p>
+                  <strong>Video xử lý trên máy bạn.</strong>
+                  <br />
+                  Văn bản gửi đến AI bạn chọn; TTS gọi dịch vụ giọng nói. Video
+                  chỉ được tải lên kênh khi bạn yêu cầu đăng.
+                </p>
+              </div>
+            </Reveal>
             <div className="faq-list">
               {FAQS.map((f) => (
                 <details key={f.q} className="faq-item">
-                  <summary>{f.q}</summary>
+                  <summary>
+                    <span>{f.q}</span>
+                    <ChevronDown size={17} aria-hidden="true" />
+                  </summary>
                   <p>{f.a}</p>
                 </details>
               ))}
@@ -175,49 +246,89 @@ export default function VietSubSite() {
           </div>
         </section>
 
-        <section className="final" aria-labelledby="final-title">
-          <div className="wrap final-card">
-            <div>
-              <p className="kicker">VietSub Studio v{VERSION}</p>
-              <h2 id="final-title">Bắt đầu với hàng đợi tiếp theo của bạn.</h2>
+        <section className="final" id="download" aria-labelledby="final-title">
+          <div className="wrap">
+            <Reveal className="final-card">
+              <div className="final-orbit orbit-one" aria-hidden="true" />
+              <div className="final-orbit orbit-two" aria-hidden="true" />
+              <div className="final-symbol" aria-hidden="true">
+                <Clapperboard size={28} strokeWidth={1.4} />
+                <Sparkles size={17} />
+              </div>
+              <p className="kicker">VIETSUB STUDIO · v{VERSION}</p>
+              <h2 id="final-title">
+                Câu chuyện tiếp theo.
+                <br />
+                <span>Hãy để nó là của bạn.</span>
+              </h2>
               <p className="section-body">
-                Mở bản portable v{VERSION}, nhập nhiều video và duyệt từng bộ phụ đề. Tự dọn nguồn và tạo publish pack chỉ chạy khi bạn bật trong Thiết lập.
+                Một đường link. Một chút cảm hứng.
+                <br />
+                Và cả một Studio để bạn bắt đầu.
               </p>
-            </div>
-            <div className="final-actions">
-              <SakugaCta href={RELEASE_URL} ariaLabel={`Tải VietSub Studio v${VERSION} trên GitHub Releases (mở tab mới)`}>
-                <Download size={19} aria-hidden="true" /> Tải VietSub Studio v{VERSION}
-              </SakugaCta>
-              <DownloadNote />
-              <span className="final-meta">
-                <ShieldCheck size={15} aria-hidden="true" /> Windows 10/11 x64 · MIT License
-              </span>
-            </div>
+              <div className="final-actions">
+                <SakugaCta href={RELEASE_URL}>
+                  <Download size={18} aria-hidden="true" /> Tải VietSub Studio v
+                  {VERSION} <ArrowUpRight size={17} aria-hidden="true" />
+                </SakugaCta>
+                <DownloadNote />
+              </div>
+              <p className="final-install">
+                Tải ZIP từ GitHub Releases → giải nén → mở app.
+                <br />
+                <a href={CHECKSUM_URL} target="_blank" rel="noreferrer">
+                  Kiểm tra SHA256 <ArrowUpRight size={11} aria-hidden="true" />
+                </a>
+                <span>
+                  VideOCR, FFmpeg và trình duyệt cài riêng theo nhu cầu.
+                </span>
+              </p>
+            </Reveal>
           </div>
         </section>
       </main>
-
       <footer className="footer">
-        <div className="wrap footer-row">
-          <a href="#top" className="brand">
-            <Image src="/avatar.jpg" width={28} height={28} alt="" className="brand-mark" />
-            <span>VietSub Studio</span>
-          </a>
-          <nav aria-label="Liên kết cuối trang" className="footer-links">
-            <a href={REPO_URL} target="_blank" rel="noreferrer">
-              <GitBranch size={15} aria-hidden="true" /> GitHub
-            </a>
+        <div className="wrap">
+          <div className="footer-main">
+            <div>
+              <a href="#top" className="brand">
+                <span className="brand-symbol">
+                  <Clapperboard
+                    size={21}
+                    strokeWidth={1.7}
+                    aria-hidden="true"
+                  />
+                </span>
+                <span>
+                  VietSub<span className="brand-light"> Studio</span>
+                </span>
+              </a>
+              <p>Không gian cho những câu chuyện mới.</p>
+            </div>
+            <nav aria-label="Liên kết cuối trang">
+              <a href="#demo">
+                Khám phá Studio <ArrowRight size={14} aria-hidden="true" />
+              </a>
+              <a href={REPO_URL} target="_blank" rel="noreferrer">
+                <GitBranch size={14} aria-hidden="true" /> Mã nguồn GitHub
+              </a>
+              <a href={CHANGELOG_URL} target="_blank" rel="noreferrer">
+                Changelog <ArrowUpRight size={13} aria-hidden="true" />
+              </a>
+            </nav>
+          </div>
+          <div className="footer-bottom">
+            <span>
+              VietSub Studio © {new Date().getFullYear()} · MIT License
+            </span>
+            <span>
+              Được làm với sự chăm chút <Heart size={12} aria-hidden="true" />{" "}
+              Sakuga VFX · MIT
+            </span>
             <a href={RELEASE_URL} target="_blank" rel="noreferrer">
-              Release v{VERSION}
+              <Check size={12} aria-hidden="true" /> v{VERSION}
             </a>
-            <a href={BUILD_URL} target="_blank" rel="noreferrer">
-              Kết quả CI
-            </a>
-            <a href={CHANGELOG_URL} target="_blank" rel="noreferrer">
-              Changelog
-            </a>
-          </nav>
-          <p className="footer-note">Mã nguồn mở MIT. Hiệu ứng nút và tab dùng Sakuga VFX (MIT).</p>
+          </div>
         </div>
       </footer>
     </MotionRoot>

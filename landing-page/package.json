@@ -1,6 +1,6 @@
 {
   "name": "vietsub-studio-landing-page",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "description": "Landing page and product documentation for VietSub Studio.",
   "engines": {
@@ -10,8 +10,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "qa:browser": "node scripts/browser-qa.mjs",
+    "qa:a11y": "node scripts/accessibility-qa.mjs",
+    "qa:lifecycle": "node scripts/lifecycle-qa.mjs"
   },
   "type": "module",
   "dependencies": {
@@ -25,12 +28,15 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.65.1",
     "@types/node": "^26.1.2",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@typescript/native": "npm:typescript@^7.0.2",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.6",
+    "prettier": "^3.10.1",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
   }
 }
