@@ -1,4 +1,4 @@
-VIETSUB STUDIO v2.0.1 - 3-IN-1 CREATOR WORKBENCH
+VIETSUB STUDIO v2.0.2 - 3-IN-1 CREATOR WORKBENCH
 ================================================
 
 0. BA WORKSPACE
@@ -7,9 +7,12 @@ VIETSUB STUDIO v2.0.1 - 3-IN-1 CREATOR WORKBENCH
 - Auto Edit can FFmpeg va FFprobe trong PATH: che chu boxblur/delogo/thanh mau, burn ASS,
   font local, banner/logoPNG, khung doc nen mo, tach MP3/WAV/mute, CapCut TTS va render co %/fps/huy.
   Preview nguon khong hien effect; ket qua render nam rieng, khong ghi de video/SRT goc.
-  Toc do 0.5-2x, cao do +/-12 semitone, tuy chon doi cao do theo toc do va nghe mau 3 giay.
+  Toc do video 0.5-2x giu tong nhac nen; cao do +/-12 semitone chi ap dung TTS trong UI moi. Nghe mau 3 giay dung cau dau/cache.
   Xuat goi CapCut Draft la THU NGHIEM: ZIP kem video va draft JSON, co the can relink media.
-  Toc do/tone chinh tiep duoc; subtitle, effect va audio mix da bake. Can kiem tra tren ban CapCut dang dung.
+  Cao do TTS da bake truoc mix; toc do timeline chinh tiep duoc, giu tong nhac nen. Can kiem tra tren ban CapCut dang dung.
+- CapCut TTS mac dinh 3 worker / Edge 5 worker; raw cache theo du an, FFmpeg theo lo 25 cau.
+  Doi pitch/nghe thu/xuat Draft co the dung lai audio. CapCut giam tai khi HTTP 429, deadline 20s/cau.
+  Manifest/API cu thieu tts_change_pitch giu hanh vi cu; luu/chay UI moi chuyen sang pitch rieng TTS.
 - CapCut TTS la HTTP noi bo, chi gui text khi ban yeu cau. Edge/audio-separator la runtime
   Python ngoai tuy chon; app khong tu cai pip/model va khong dong goi ONNX/Demucs/torch.
 - Publish Hub: tao profile rieng tung tai khoan, dang nhap thu cong va bam da xong,
