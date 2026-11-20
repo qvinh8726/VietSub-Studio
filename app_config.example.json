@@ -17,5 +17,8 @@
   "workbench_layout": null,
   "browser_kind": "chrome",
   "browser_path": "",
+  "editor_tts_capcut_workers": 3,
+  "editor_tts_edge_workers": 5,
+  "editor_tts_batch_size": 25,
   "desktop_shortcut_initialized": false
 }

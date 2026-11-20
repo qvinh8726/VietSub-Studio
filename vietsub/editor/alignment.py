@@ -42,12 +42,15 @@ def _milliseconds(value, name: str, *, zero: bool = True) -> int:
 
 
 def parse_srt(contents: str, *, max_text: int = 2000, max_cues: int = 1000,
-              max_total_text: int = 200_000, max_duration_ms: int = 7_200_000) -> list[dict]:
+              max_total_text: int = 200_000, max_duration_ms: int = 7_200_000,
+              allow_empty: bool = False) -> list[dict]:
     """Parse strict SRT, preserving Unicode and multiline text; reject bad input.
 
     A BOM, CRLF, and dot millisecond separators are accepted. Indices must be
     positive/unique, times chronological, and each end greater than its start.
     Invalid blocks are never silently skipped. ``max_text`` is per-cue characters.
+    ``allow_empty`` retains timed empty cues for TTS to omit speech while keeping
+    the original timeline; malformed indices/timestamps still fail validation.
     """
     if not isinstance(contents, str):
         raise AlignmentError("SRT contents must be text")
@@ -68,7 +71,7 @@ def parse_srt(contents: str, *, max_text: int = 2000, max_cues: int = 1000,
     cues, seen, total, previous_start = [], set(), 0, -1
     for position, block in enumerate(blocks, 1):
         lines = block.strip().split("\n")
-        if len(lines) < 3 or not re.fullmatch(r"[0-9]{1,9}", lines[0].strip()):
+        if len(lines) < (2 if allow_empty else 3) or not re.fullmatch(r"[0-9]{1,9}", lines[0].strip()):
             raise AlignmentError(f"Cue {position}: expected an index, timestamps, and text")
         index = int(lines[0].strip())
         if index <= 0 or index in seen:
@@ -83,7 +86,7 @@ def parse_srt(contents: str, *, max_text: int = 2000, max_cues: int = 1000,
         if end <= start or start < previous_start or end > max_duration_ms:
             raise AlignmentError(f"Cue {index}: invalid, unordered, or excessive timing")
         text = "\n".join(line.strip() for line in lines[2:]).strip()
-        if not text or len(text) > max_text:
+        if (not text and not allow_empty) or len(text) > max_text:
             raise AlignmentError(f"Cue {index}: text must contain 1–{max_text} characters")
         total += len(text)
         if total > max_total_text:

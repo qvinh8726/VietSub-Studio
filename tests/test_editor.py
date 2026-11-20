@@ -449,6 +449,61 @@ class EditorAPITests(unittest.TestCase):
             headers = {app.API_TOKEN_HEADER: app.API_TOKEN, 'Origin': 'https://evil.test'}
             self.assertEqual(self.client.post('/api/editor/projects/one/audio-preview', json={}, headers=headers).status_code, 403)
 
+    def test_tts_submission_uses_current_options_and_streams_counts_and_logs(self):
+        _, saved = manifest.save_project(self.project)
+        saved['editor_options'] = normalize({'tts_voice': 'old-voice', 'tts_speed': .75, 'tts_fallback': False})
+        manifest.write_atomic(manifest.path_for(self.project), saved)
+        requested = {'tts_voice': 'BV421_vivn_streaming', 'tts_provider': 'capcut_internal',
+                     'tts_speed': 1.25, 'tts_pitch': 2, 'tts_fallback': True}
+        entered, release = threading.Event(), threading.Event()
+        def execute(identifier, project, options, action, **kwargs):
+            self.assertEqual(action, 'tts')
+            self.assertEqual({key: options[key] for key in requested}, requested)
+            emit = renderer.tts_progress(kwargs['update'])
+            emit({'stage': 'tts_cue_done', 'current': 12, 'completed': 12, 'total': 85, 'percent': 14,
+                  'message': 'Đang tạo giọng: câu 12/85 (14%)'})
+            emit({'stage': 'tts_poll', 'message': 'CapCut HTTP 200; ret=0; status=running'})
+            entered.set()
+            release.wait(3)
+            process.check_cancel(kwargs['cancel'])
+            return {}
+        with (patch.object(app, 'resolve_ffmpeg_executable', return_value='ffmpeg'),
+              patch.object(app, 'resolve_ffprobe_executable', return_value='ffprobe'),
+              patch.object(renderer, 'execute', side_effect=execute)):
+            response = self.client.post('/api/editor/jobs', json={'job_id': 'one', 'action': 'tts', 'options': requested})
+            self.assertEqual(response.status_code, 202, response.get_json())
+            identifier = response.get_json()['id']
+            try:
+                self.assertTrue(entered.wait(2))
+                live = self.client.get('/api/editor/jobs/' + identifier).get_json()
+                self.assertEqual((live['phase'], live['completed'], live['total'], live['percent']), ('tts_poll', 12, 85, 14))
+                self.assertIn('HTTP 200', live['message'])
+                self.assertTrue(any('status=running' in call.args[0] for call in app.log_to_app.call_args_list))
+                stored = manifest.snapshot(self.project)['editor_options']
+                self.assertEqual({key: stored[key] for key in requested}, requested)
+                self.client.post('/api/editor/jobs/' + identifier + '/cancel', json={})
+            finally:
+                release.set()
+                self.jobs.work.join()
+        self.assertEqual(self.jobs.snapshot(identifier)['status'], 'cancelled')
+
+    def test_tts_fallback_false_overrides_saved_true(self):
+        _, saved = manifest.save_project(self.project)
+        saved['editor_options'] = normalize({'tts_voice': 'BV421_vivn_streaming', 'tts_fallback': True})
+        manifest.write_atomic(manifest.path_for(self.project), saved)
+        def execute(identifier, project, options, action, **kwargs):
+            self.assertIs(options['tts_fallback'], False)
+            return {}
+        with (patch.object(app, 'resolve_ffmpeg_executable', return_value='ffmpeg'),
+              patch.object(app, 'resolve_ffprobe_executable', return_value='ffprobe'),
+              patch.object(renderer, 'execute', side_effect=execute)):
+            response = self.client.post('/api/editor/jobs', json={'job_id': 'one', 'action': 'tts',
+                                                                 'options': {'tts_fallback': False}})
+            self.assertEqual(response.status_code, 202, response.get_json())
+            self.jobs.work.join()
+        self.assertEqual(self.jobs.snapshot(response.get_json()['id'])['status'], 'success')
+        self.assertIs(manifest.snapshot(self.project)['editor_options']['tts_fallback'], False)
+
     def test_optional_runtime_absence_does_not_import_heavy_modules(self):
         import sys
         self.assertNotIn("audio_separator.separator", sys.modules)

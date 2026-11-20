@@ -49,6 +49,14 @@
         const options = {...defaults}, errors = {};
         if (!value || typeof value !== 'object' || Array.isArray(value)) return {options, errors: {_form: 'Cấu hình phải là một đối tượng.'}};
         for (const key of Object.keys(defaults)) if (Object.hasOwn(value, key)) options[key] = value[key];
+        // Optional alias negotiates TTS-only pitch while old API responses remain readable.
+        if (Object.hasOwn(value, 'tts_change_pitch')) {
+            options.tts_change_pitch = value.tts_change_pitch;
+            if (typeof value.tts_change_pitch !== 'boolean') errors.tts_change_pitch = 'Giá trị bật / tắt không hợp lệ.';
+            else if (Object.hasOwn(value, 'change_audio_pitch') && value.change_audio_pitch !== value.tts_change_pitch) {
+                errors.tts_change_pitch = 'Hai giá trị cao độ giọng đọc không khớp nhau.';
+            } else options.change_audio_pitch = value.tts_change_pitch;
+        }
         for (const [key, values] of Object.entries(choices)) if (!values.includes(options[key])) errors[key] = 'Lựa chọn không hợp lệ.';
         for (const [key, [min, max]] of Object.entries(ranges)) {
             if (!finite(options[key]) || options[key] < min || options[key] > max) errors[key] = `Nhập số từ ${min} đến ${max}.`;
@@ -231,7 +239,8 @@
         for (const control of optionControls) {
             const error = errors[control.dataset.editorOption];
             control.setAttribute('aria-invalid', String(Boolean(error)));
-            control.setAttribute('aria-describedby', 'editor-form-error');
+            const help = (control.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== 'editor-form-error');
+            control.setAttribute('aria-describedby', [...help, 'editor-form-error'].join(' '));
         }
         const cropError = errors.crop_box || (current?.options.crop_box === null && current.options.mask_mode !== 'none' ? 'Bật vùng che hoặc chọn “Không che” trước khi lưu.' : '');
         if (cropError) errors.crop_box = cropError;
@@ -304,9 +313,14 @@
         for (const chip of $('editor-options-form').querySelectorAll('[data-editor-preset]')) if (chip.dataset.editorPreset) chip.setAttribute('aria-pressed', String(options[chip.dataset.editorPreset] === chip.dataset.presetValue));
         const chips = $('editor-options-form').querySelectorAll('[data-pitch-preset]');
         for (const chip of chips) if (chip.dataset.pitchPreset !== undefined) chip.setAttribute('aria-pressed', String(Number(chip.dataset.pitchPreset) === options.pitch_semitones));
-        // Browser transport previews speed/tone coupling; independent semitones use the FFmpeg sample.
+        // The source player contains no generated speech. New options always
+        // preserve its pitch; only legacy API responses retain tape-style preview.
+        const scoped = Object.hasOwn(options, 'tts_change_pitch');
         if (finite(options.speed) && options.speed >= .5 && options.speed <= 2) video.playbackRate = options.speed;
-        video.preservesPitch = !options.change_audio_pitch;
+        video.preservesPitch = scoped || !options.change_audio_pitch;
+        const help = $('editor-pitch-help');
+        if (help) help.textContent = (scoped ? '' : 'Cấu hình cũ: video nguồn đang xem dùng liên kết cao độ cũ. Lần lưu hoặc xử lý tiếp theo chuyển sang cao độ riêng TTS. ') +
+            'Cao độ và các chip chỉ áp dụng giọng đọc phụ đề (TTS). Bật công tắc để cao độ TTS đổi theo tốc độ video; tắt để giữ tông. Nhạc nền luôn giữ tông khi đổi tốc độ. Nghe thử 3 giây để kiểm tra bản phối; khi tắt TTS, mẫu chỉ có âm thanh gốc.';
     }
     function setAudioOption(key, value) {
         const control = controlByKey[key];
@@ -383,21 +397,40 @@
         const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
         setCrop(adjustCrop(current.options.crop_box, event.shiftKey ? 'se' : 'move', dx, dy));
     }
-    function optionChanged(event) {
-        const control = event.target, key = control.dataset.editorOption;
-        if (!canEdit() || !Object.hasOwn(defaults, key) || key === 'watermark_path') return;
+    function readOption(control) {
+        const key = control.dataset.editorOption;
+        if (!canEdit() || !Object.hasOwn(defaults, key) || key === 'watermark_path') return false;
         const numeric = numericKeys.has(key), raw = numeric ? control.value : '';
         const value = control.type === 'checkbox' ? control.checked : numeric ? (raw.trim() ? Number(raw) : NaN) : control.value;
-        if (Object.is(current.options[key], value) && (!numeric || !Object.hasOwn(current.numericDraft, key) || current.numericDraft[key] === raw)) return;
+        if (Object.is(current.options[key], value) && (!numeric || !Object.hasOwn(current.numericDraft, key) || current.numericDraft[key] === raw)) return false;
         current.options[key] = value;
+        if (key === 'change_audio_pitch' && Object.hasOwn(current.options, 'tts_change_pitch')) current.options.tts_change_pitch = value;
         if (numeric) {
             if (validateOptions({...current.options, [key]: value}).errors[key]) current.numericDraft[key] = raw;
             else delete current.numericDraft[key];
         }
-        if (key === 'tts_provider') {
-            voiceSequence++; current.voicesLoading = false; current.options.tts_voice = ''; renderVoices();
-            $('editor-voices-status').textContent = value === 'edge_tts' ? 'Hai giọng Việt có sẵn; bấm nạp để kiểm tra danh sách mới.' : 'CapCut chỉ nạp giọng khi bạn chủ động bấm nút.';
-        }
+        return true;
+    }
+    function providerChanged(clearVoice = true) {
+        voiceSequence++; current.voicesLoading = false;
+        if (clearVoice) current.options.tts_voice = '';
+        renderVoices();
+        $('editor-voices-status').textContent = current.options.tts_provider === 'edge_tts' ? 'Hai giọng Việt có sẵn; bấm nạp để kiểm tra danh sách mới.' : 'CapCut chỉ nạp giọng khi bạn chủ động bấm nút.';
+    }
+    function optionChanged(event) {
+        if (!readOption(event.target)) return;
+        if (event.target.dataset.editorOption === 'tts_provider') providerChanged();
+        edited(); syncOverlay(); refreshControls();
+    }
+    function syncFormOptions() {
+        if (!canEdit()) return;
+        const provider = current.options.tts_provider;
+        let changed = false;
+        // Capture the visible form atomically, including browser-restored values without input/change.
+        // Do not repaint the voice select until its current selection has also been read.
+        for (const control of optionControls) if (readOption(control)) changed = true;
+        if (!changed) return;
+        if (provider !== current.options.tts_provider) providerChanged(false);
         edited(); syncOverlay(); refreshControls();
     }
     function renderVoices() {
@@ -553,9 +586,12 @@
         finally { record.busy = ''; if (current === record) refreshControls(); }
     }
     function checkedOptions() {
+        syncFormOptions();
         const validation = checkForm();
         if (Object.keys(validation.errors).length) throw new Error('Kiểm tra các trường được đánh dấu trước khi tiếp tục.');
-        return validation.options;
+        // Every new UI request opts into voice-only pitch. Keep legacy DOM/data
+        // keys for integrations and write the explicit alias alongside them.
+        return {...validation.options, tts_change_pitch: validation.options.change_audio_pitch};
     }
     async function save() {
         if ($('editor-save-btn').disabled) return;
@@ -573,6 +609,7 @@
         });
     }
     async function launch(action) {
+        syncFormOptions();
         const button = $(action === 'render' ? 'editor-render-btn' : action === 'tts' ? 'editor-tts-generate-btn' : 'editor-extract-btn');
         if (button.disabled) return;
         return withAction(action, async record => {
@@ -589,6 +626,7 @@
         if (typeof options.tts_voice !== 'string' || !options.tts_voice.trim()) { $('editor-tts-voice').focus(); throw new Error('Chọn giọng đọc. Với CapCut, bấm “Nạp danh sách giọng” trước.'); }
     }
     async function previewTts() {
+        syncFormOptions();
         if ($('editor-tts-preview-btn').disabled) return;
         return withAction('preview', async record => {
             const options = checkedOptions(); requireVoice(options);
@@ -612,7 +650,7 @@
             const task = data.task || data;
             if (!validTask(task, record.jobId) || task.action !== 'audio_preview') throw new Error('Mẫu nghe thử không đúng project.');
             record.task = task; record.previewTask = true; record.pollFailures = 0;
-            if (current === record) { paintTask(); startPolling(record); notify('Đang tạo mẫu 3 giây với tốc độ và cao độ hiện tại…'); }
+            if (current === record) { paintTask(); startPolling(record); notify(options.tts_enabled ? 'Đang tạo mẫu TTS 3 giây với cao độ và tốc độ hiện tại…' : 'Đang tạo mẫu âm thanh gốc 3 giây, giữ tông khi đổi tốc độ…'); }
         });
     }
     async function exportDraft() {
@@ -674,11 +712,14 @@
     function paintTask() {
         const task = current?.task, active = running();
         const percent = task?.status === 'success' ? 100 : finite(task?.percent) ? clamp(task.percent, 0, 100) : 0;
-        $('editor-task-stage').textContent = task ? `${statuses[task.status]}${task.phase ? ` · ${String(task.phase)}` : ''}` : 'Chưa có tác vụ';
+        const phase = task?.phase || task?.stage || '';
+        // Callback messages belong to synthesis; later FFmpeg phases can retain the last message in the task snapshot.
+        const detail = active && String(phase).startsWith('tts') && phase !== 'tts_audio' && typeof task?.message === 'string' && task.message.trim() ? task.message : phase;
+        $('editor-task-stage').textContent = task ? `${statuses[task.status]}${detail ? ` · ${String(detail)}` : ''}` : 'Chưa có tác vụ';
         $('editor-task-percent').textContent = `${Math.round(percent)}%`;
         $('editor-task-fps').textContent = finite(task?.fps) ? `${Number(task.fps.toFixed(1))} fps` : '— fps';
         $('editor-task-progress').setAttribute('aria-valuenow', String(Number(percent.toFixed(1))));
-        $('editor-task-progress').setAttribute('aria-valuetext', `${Math.round(percent)}% · ${task?.phase || statuses[task?.status] || 'Chưa có tác vụ'}`);
+        $('editor-task-progress').setAttribute('aria-valuetext', `${Math.round(percent)}% · ${detail || statuses[task?.status] || 'Chưa có tác vụ'}`);
         $('editor-task-fill').style.width = `${percent}%`; $('editor-task-panel').setAttribute('aria-busy', String(active));
         $('editor-task-retry').hidden = !active || (current?.pollFailures || 0) < 3;
         const warnings = actionableWarnings(task?.warnings);

@@ -249,7 +249,7 @@ export function BentoGrid() {
       <div className="bento-honesty">
         <ScanText size={17} aria-hidden="true" />
         <p>
-          <strong>Đúng những gì có trong v2.0.1.</strong> Xuất MP4, SRT và gói
+          <strong>Đúng những gì có trong v2.0.2.</strong> Xuất MP4, SRT và gói
           CapCut Draft thử nghiệm. Cần kiểm tra với phiên bản CapCut đang dùng;
           không bảo đảm tương thích mọi phiên bản.
         </p>

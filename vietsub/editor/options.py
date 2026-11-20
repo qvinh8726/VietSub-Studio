@@ -40,15 +40,33 @@ NUMBERS = {
 BOOLEANS = ("subtitle_enabled", "watermark_enabled", "tts_enabled", "tts_fallback", "change_audio_pitch", "ducking_enabled")
 
 
+# Presence of this alias selects TTS-only pitch. Old saved/requested options
+# without it retain their global-audio contract; fresh projects use the new mode.
+PITCH_ALIAS = "tts_change_pitch"
+
+
 def normalize(value=None, *, inherited_crop=None, base=None):
     if value is None:
         value = {}
-    if not isinstance(value, dict) or set(value) - set(DEFAULTS):
+    supported = set(DEFAULTS) | {PITCH_ALIAS}
+    if not isinstance(value, dict) or set(value) - supported:
         raise ValueError("Tuỳ chọn Auto Edit không hợp lệ hoặc chứa trường không hỗ trợ.")
     if base is not None and not isinstance(base, dict):
         raise ValueError("Cấu hình editor đã lưu không phải object; giữ nguyên manifest để khôi phục.")
-    saved = {key: val for key, val in (base or {}).items() if key in DEFAULTS}
+    saved = {key: val for key, val in (base or {}).items() if key in supported}
+    for source in (saved, value):
+        if PITCH_ALIAS in source:
+            if type(source[PITCH_ALIAS]) is not bool:
+                raise ValueError(f"{PITCH_ALIAS} phải là boolean.")
+            if "change_audio_pitch" in source and source["change_audio_pitch"] is not source[PITCH_ALIAS]:
+                raise ValueError("tts_change_pitch và change_audio_pitch phải khớp nhau.")
     result = {**copy.deepcopy(DEFAULTS), "crop_box": inherited_crop, **saved, **value}
+    if PITCH_ALIAS in result:
+        # A partial update may use either spelling. Keep both aliases in sync.
+        linked = value.get(PITCH_ALIAS, value.get("change_audio_pitch", result[PITCH_ALIAS]))
+        result[PITCH_ALIAS] = result["change_audio_pitch"] = linked
+    elif not ({"change_audio_pitch", "pitch_semitones"} & (set(saved) | set(value))):
+        result[PITCH_ALIAS] = False
     result["crop_box"] = crop_box(result["crop_box"])
     for key, choices in CHOICES.items():
         if not isinstance(result[key], str) or result[key] not in choices:

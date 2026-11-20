@@ -4,6 +4,12 @@ These steps publish a release that every portable build since v1.3.0 can install
 
 Các bước dưới đây phát hành một bản mà mọi bản portable từ v1.3.0 trở lên tự cài được. Ví dụ dùng `1.5.4`; hãy thay bằng phiên bản bạn phát hành.
 
+## v2.0.2 release gate — 20/11/2026
+
+Người dùng đã duyệt README và toàn bộ thay đổi v2.0.2. Chốt `APP_VERSION`/changelog/landing ở 2.0.2, commit source đã rà soát, push `main` và chỉ gắn tag/phát hành sau khi workflow **Tests and package smoke** của đúng SHA xanh toàn bộ. Lấy artifact `VietSub-Studio-Portable-v2.0.2-release-assets`, kiểm chứng ZIP + `.zip.sha256.txt` bằng release contract rồi xuất bản release thường, đánh dấu Latest và kiểm tra `releases/latest`. Giữ nguyên tag/assets v2.0.1 đã phát hành.
+
+v2.0.2 bổ sung dependency nhẹ `requests` cho keep-alive, vẫn không đóng gói Edge-TTS/tách vocal/model. Chạy `python tools/benchmark_tts.py --cues 85 --latency .15 --output artifacts/tts-benchmark-v2.0.2.json` để đo offline với FFmpeg thật; báo số đo kèm điều kiện, không dùng thay cho live CapCut acceptance. Chế độ pitch mới chỉ tác động TTS, giữ legacy payload không alias theo hợp đồng cũ. Xem [hướng dẫn Auto Edit](<docs/AUTO_EDIT_GUIDE.md>) và [audit cleanup](<docs/v2.0.2-cleanup-audit.md>).
+
 ## v2.0.1 release gate — Creator Workbench
 
 The four-phase implementation and the latest desktop/Soft Cinema integration are released as v2.0.1. Keep the already-published v2.0.0 tag/assets unchanged so the updater can offer this newer version. Historical Phase1/2 notes below describe those approval points, not the current release scope. Run all deterministic QA before publishing; no real account uploads are part of CI.
@@ -17,7 +23,7 @@ node --check static/workbench.js
 node --check static/editor.js
 node --check static/uploader.js
 node --check static/sakuga-vfx.js
-node --test tests/frontend/*.test.mjs
+node --test tests/*.js tests/frontend/*.test.mjs
 python tools/phase3_qa.py --output "$env:TEMP\vietsub-publish-qa"
 ```
 
@@ -59,7 +65,7 @@ Additional acceptance (FFmpeg/Playwright Chromium required):
 python -m compileall -q vietsub
 node --check static/editor.js
 python -m unittest discover -s tests -v
-node --test tests/frontend/*.test.mjs
+node --test tests/*.js tests/frontend/*.test.mjs
 python tools/phase2_qa.py --output "$env:TEMP\vietsub-phase2-qa"
 # Optional live external test, fixed public phrase only; empty output directory:
 python tools/editor_live_smoke.py --live --output "$env:TEMP\vietsub-capcut-live"
@@ -81,7 +87,7 @@ The deterministic UI runner uses a synthetic provider tone for audio alignment/m
    node --check static/app.js
    node --check static/workbench.js
    node --check static/sakuga-vfx.js
-   node --test tests/frontend/*.test.mjs
+   node --test tests/*.js tests/frontend/*.test.mjs
    python tools/workbench_qa.py --output "$env:TEMP\vietsub-workbench-qa"
    ```
 
@@ -150,7 +156,7 @@ Releases are not code-signed yet. Anyone who can publish a release on this repos
    node --check static/app.js
    node --check static/workbench.js
    node --check static/sakuga-vfx.js
-   node --test tests/frontend/*.test.mjs
+   node --test tests/*.js tests/frontend/*.test.mjs
    python tools/workbench_qa.py --output "$env:TEMP\vietsub-workbench-qa"
    ```
 

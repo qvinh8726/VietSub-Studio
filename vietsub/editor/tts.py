@@ -23,14 +23,18 @@ speed, pitch and cache-format version; text never appears in cache metadata.
 from __future__ import annotations
 
 import hashlib
+from html import unescape
 import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import unicodedata
 import wave
 
 from .alignment import AlignmentError, atempo_chain, cue_audio_filter, cue_windows, fit_cue, parse_srt
@@ -85,7 +89,7 @@ def _process(argv, *, cancel=None, timeout=120.0, cwd=None, max_stdout=2 * 1024 
                     raise TTSTimeout("Audio process exceeded its deadline")
                 # Wait on this specific process, not a busy-poll/sleep loop.
                 try:
-                    process.wait(timeout=min(.1, max(.001, deadline - time.monotonic())))
+                    process.wait(timeout=min(.05, max(.001, deadline - time.monotonic())))
                 except subprocess.TimeoutExpired:
                     pass
                 if stdout.tell() > max_stdout or stderr.tell() > 8 * 1024 * 1024:
@@ -128,8 +132,14 @@ class EdgeProvider:
     """Lazy external-runtime adapter; even ordinary installs isolate async imports."""
     provider = "edge_tts"
 
+    concurrent_safe = True
+
     def __init__(self, *, runtime_python=None, cancel=None, timeout=120.0):
         self.runtime_python, self.cancel, self.timeout = runtime_python, cancel, timeout
+        self._available = False
+
+    def fork(self, *, cancel=None, progress=None):
+        return EdgeProvider(runtime_python=self.runtime_python, cancel=cancel, timeout=self.timeout)
 
     def availability(self) -> dict:
         try:
@@ -148,9 +158,12 @@ class EdgeProvider:
                     "reason": "Optional Python runtime/edge-tts could not be checked.", "guidance": _EDGE_GUIDANCE}
 
     def _worker(self, config: dict, output_path):
-        deadline = time.monotonic() + self.timeout
-        if not self.availability()["available"]:
-            raise ProviderUnavailable("Optional Edge provider unavailable. " + _EDGE_GUIDANCE)
+        budget = min(self.timeout, 20.0) if config.get("action") == "synthesize" else self.timeout
+        deadline = time.monotonic() + budget
+        if not self._available:
+            if not self.availability()["available"]:
+                raise ProviderUnavailable("Optional Edge provider unavailable. " + _EDGE_GUIDANCE)
+            self._available = True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TTSTimeout("Edge worker deadline exceeded during runtime check")
@@ -250,6 +263,26 @@ def _atomic_json(path: Path, value):
             temporary.unlink()
 
 
+def audio_demuxer(path):
+    """Only allow audio containers, never auto-probe an untrusted playlist."""
+    with open(path, "rb") as stream:
+        header = stream.read(12)
+    if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return "wav"
+    if header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0):
+        return "mp3"
+    if header.startswith(b"fLaC"):
+        return "flac"
+    raise TTSError("Provider response is not a supported WAV/MP3/FLAC audio artifact")
+
+
+def speech_text(text: str) -> str:
+    """Strip subtitle markup; retain Unicode speech, omit punctuation-only cues."""
+    text = re.sub(r"<[^>]*>|\{\\[^}]*\}", "", unescape(text))
+    text = " ".join(text.replace("\u200b", "").replace("\ufeff", "").split())
+    return text if any(char.isalnum() for char in text) else ""
+
+
 class TTSService:
     """Synchronous service for editor workers, with replaceable provider adapters.
 
@@ -268,7 +301,19 @@ class TTSService:
         self.track_timeout = 1800.0
         self.max_fit_speed = 1.35
         self._deadline = None
-        self.providers = {"capcut_internal": CapCutClient(cancel=cancel, progress=progress),
+        self._cue_progress = {}
+        self._track_active = False
+        self._track_fallback = None
+        self.workers = {"capcut_internal": 3, "edge_tts": 5}
+        self.batch_size = 25
+        self.cache_max_entries = 2048
+        self.cache_max_bytes = 512 * 1024 * 1024
+        self.cache_max_age = 30 * 86400
+        self._raw_only = False
+        self._cache_locks = {}
+        self._adapter_locks = {}
+        self._cache_guard = threading.Lock()
+        self.providers = {"capcut_internal": CapCutClient(cancel=cancel, progress=self._provider_progress),
                           "edge_tts": EdgeProvider(runtime_python=runtime_python, cancel=cancel)}
 
     def register(self, provider: str, adapter):
@@ -297,7 +342,19 @@ class TTSService:
     def _emit(self, **value):
         check_cancel(self.cancel)
         if self.progress:
-            self.progress(value)
+            if self._cue_progress and value.get("message"):
+                value["message"] = f"{self._cue_progress['message']} · {value['message']}"
+            self.progress({**self._cue_progress, **value})
+
+    def _provider_progress(self, value):
+        # Poll/cache/fallback events must keep the last completed cue count.
+        self._emit(**value)
+
+    def _cue_update(self, *, current, completed, total):
+        percent = completed * 100 // total
+        self._cue_progress = {"current": current, "completed": completed, "total": total,
+                              "percent": percent,
+                              "message": f"Đang tạo giọng: câu {current}/{total} ({percent}%)"}
 
     def _ffmpeg(self, arguments):
         timeout = self.process_timeout
@@ -370,10 +427,24 @@ class TTSService:
         if self._deadline is not None and time.monotonic() >= self._deadline:
             raise TTSTimeout("SRT speech track exceeded its bounded deadline")
         if not isinstance(adapter, (CapCutClient, EdgeProvider)):
-            return adapter.synthesize(text, voice, output)
+            if getattr(adapter, "concurrent_safe", False):
+                return adapter.synthesize(text, voice, output)
+            # A parallel CapCut track may fall back to a legacy custom adapter.
+            # All worker copies share these locks; opt-in must apply to it too.
+            with self._cache_guard:
+                lock = self._adapter_locks.setdefault(id(adapter), threading.Lock())
+            while not lock.acquire(timeout=.05):
+                check_cancel(self.cancel)
+                if self._deadline is not None and time.monotonic() >= self._deadline:
+                    raise TTSTimeout("SRT speech track exceeded its bounded deadline")
+            try:
+                check_cancel(self.cancel)
+                return adapter.synthesize(text, voice, output)
+            finally:
+                lock.release()
         adapter.cancel = self.cancel
         if isinstance(adapter, CapCutClient):
-            adapter.progress = self.progress
+            adapter.progress = self._provider_progress
         attribute = "task_timeout" if isinstance(adapter, CapCutClient) else "timeout"
         original = getattr(adapter, attribute)
         try:
@@ -383,16 +454,116 @@ class TTSService:
         finally:
             setattr(adapter, attribute, original)
 
-    def _cache(self, text, voice, provider, speed, pitch) -> dict:
+    def _raw_cache(self, text, voice, provider, *, refresh=False):
+        """Immutable provider audio, independent of timeline, tempo and local pitch.
+
+        Providers currently synthesize at native speed (tts_raw_speed=1). The
+        normalized text and actual provider never appear as plaintext on disk.
+        """
+        from vietsub.manifest import _safe_path
+        text = unicodedata.normalize("NFC", " ".join(validate_text(text).split()))
+        key = cache_key(text, provider, voice, 1, 0)
+        root = self.cache_dir / "raw-v1"
+        _safe_path(str(root))
+        root.mkdir(parents=True, exist_ok=True)
+        cached, metadata = root / (key + ".audio"), root / (key + ".json")
+        with self._cache_guard:
+            lock = self._cache_locks.setdefault(key, threading.Lock())
+        while not lock.acquire(timeout=.05):
+            check_cancel(self.cancel)
+        try:
+            _safe_path(str(cached)); _safe_path(str(metadata))
+            check_cancel(self.cancel)
+            if not refresh and cached.is_file() and metadata.is_file():
+                try:
+                    if metadata.stat().st_size > 16384 or not 0 < cached.stat().st_size <= 128 * 1024 * 1024:
+                        raise ValueError("Cache too large")
+                    data = json.loads(metadata.read_text(encoding="utf-8"))
+                    if (not isinstance(data, dict) or data.get("provider") != provider
+                            or not isinstance(data.get("voice"), str) or not isinstance(data.get("warnings"), list)
+                            or any(not isinstance(w, str) for w in data["warnings"])
+                            or data.get("sha256") != self._digest(cached)):
+                        raise ValueError("Cache mismatch")
+                    audio_demuxer(cached)
+                    os.utime(cached, None)
+                    return {**data, "path": str(cached), "cached": True, "cache_voice": voice}
+                except TTSCancelled:
+                    raise
+                except (TTSError, OSError, ValueError, UnicodeError):
+                    pass
+            self._emit(stage="tts_synthesize", provider=provider)
+            with tempfile.TemporaryDirectory(prefix=".tts-raw-", dir=root) as directory:
+                raw = Path(directory) / "source.audio"
+                response = self._adapter_synthesize(self._provider(provider), text, voice, raw)
+                if (not isinstance(response, dict) or not raw.is_file() or not 0 < raw.stat().st_size <= 128 * 1024 * 1024):
+                    raise TTSError("Provider returned no valid bounded audio file")
+                actual_voice, warnings = response.get("voice"), response.get("warnings", [])
+                if response.get("provider", provider) != provider:
+                    raise TTSError("Provider returned a mismatched provider identity")
+                if (not isinstance(actual_voice, str) or not actual_voice or not isinstance(warnings, list)
+                        or len(warnings) > 20 or any(not isinstance(w, str) or len(w) > 2000 for w in warnings)):
+                    raise TTSError("Provider returned invalid voice/warning metadata")
+                audio_demuxer(raw)
+                data = {"provider": provider, "voice": actual_voice, "warnings": warnings,
+                        "tts_raw_speed": 1, "sha256": self._digest(raw)}
+                check_cancel(self.cancel)
+                os.replace(raw, cached)
+                _atomic_json(metadata, data)
+            return {**data, "path": str(cached), "cached": False, "cache_voice": voice}
+        finally:
+            lock.release()
+
+    def _invalidate_raw(self, raw):
+        """Forget only an owned raw entry that FFmpeg proved undecodable."""
+        from vietsub.manifest import _safe_path
+        path = Path(raw["path"])
+        root = self.cache_dir / "raw-v1"
+        if path.parent.resolve() != root.resolve() or not re.fullmatch(r"[a-f0-9]{64}\.audio", path.name):
+            raise TTSError("Invalid raw cache entry")
+        for owned in (path, path.with_suffix(".json")):
+            _safe_path(str(owned))
+            owned.unlink(missing_ok=True)
+
+    def prune_cache(self):
+        """Evict only verified, hash-named owned cache entries; never follow links."""
         from vietsub.manifest import _safe_path
         _safe_path(str(self.cache_dir))
-        adapter = self._provider(provider)
+        entries = []
+        for root, suffix in ((self.cache_dir, ".wav"), (self.cache_dir / "raw-v1", ".audio")):
+            _safe_path(str(root))
+            if not root.exists():
+                continue
+            for path in root.glob("*" + suffix):
+                if not re.fullmatch(r"[a-f0-9]{64}", path.stem) or path.is_symlink():
+                    continue
+                try:
+                    _safe_path(str(path))
+                    stat = path.stat()
+                    entries.append((stat.st_mtime, stat.st_size, path))
+                except (OSError, ValueError):
+                    continue
+        count, size, cutoff = len(entries), sum(e[1] for e in entries), time.time() - self.cache_max_age
+        for modified, length, path in sorted(entries):
+            if count <= self.cache_max_entries and size <= self.cache_max_bytes and modified >= cutoff:
+                continue
+            for owned in (path, path.with_suffix(".json")):
+                _safe_path(str(owned))
+                owned.unlink(missing_ok=True)
+            count -= 1
+            size -= length
+
+    def _cache(self, text, voice, provider, speed, pitch) -> dict:
+        if self._raw_only:
+            return self._raw_cache(text, voice, provider)
+        from vietsub.manifest import _safe_path
+        _safe_path(str(self.cache_dir))
         key = cache_key(text, provider, voice, speed, pitch)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         cached = self.cache_dir / (key + ".wav")
         metadata = self.cache_dir / (key + ".json")
         _safe_path(str(cached)); _safe_path(str(metadata))
         check_cancel(self.cancel)
+        corrupt = False
         if cached.is_file() and metadata.is_file():
             try:
                 info = _wav_info(cached)
@@ -405,28 +576,23 @@ class TTSService:
                         or data.get("sha256") != self._digest(cached)):
                     raise ValueError("Invalid or mismatched cache metadata")
                 data["warnings"] = [item for item in data["warnings"] if item not in _SUCCESS_NOTICES]
+                os.utime(cached, None)
                 return {**data, **info, "path": str(cached), "cached": True}
             except TTSCancelled:
                 raise
             except (TTSError, OSError, ValueError, UnicodeError):
-                # Atomic regeneration replaces corrupt entries; no fake cache success.
-                pass
-        self._emit(stage="tts_synthesize", provider=provider)
+                corrupt = True  # Don't trust other derivatives of a tampered entry.
+        raw = self._raw_cache(text, voice, provider, refresh=corrupt)
         with tempfile.TemporaryDirectory(prefix=".tts-cue-", dir=self.cache_dir) as directory:
-            raw, normalized = Path(directory) / "source.audio", Path(directory) / "normalized.wav"
-            response = self._adapter_synthesize(adapter, text, voice, raw)
-            if (not isinstance(response, dict) or not raw.is_file() or raw.stat().st_size == 0
-                    or raw.stat().st_size > 128 * 1024 * 1024):
-                raise TTSError("Provider returned no valid bounded audio file")
-            actual_voice = response.get("voice")
-            warnings = response.get("warnings", [])
-            if response.get("provider", provider) != provider:
-                raise TTSError("Provider returned a mismatched provider identity")
-            if (not isinstance(actual_voice, str) or not actual_voice or not isinstance(warnings, list)
-                    or any(not isinstance(item, str) or len(item) > 2000 for item in warnings) or len(warnings) > 20):
-                raise TTSError("Provider returned invalid voice/warning metadata")
-            info = self._canonical(raw, normalized, speed=speed, pitch=pitch)
-            data = {"provider": provider, "voice": actual_voice, "warnings": warnings,
+            normalized = Path(directory) / "normalized.wav"
+            try:
+                info = self._canonical(raw["path"], normalized, speed=speed, pitch=pitch)
+            except (TTSCancelled, TTSTimeout):
+                raise
+            except TTSError:
+                self._invalidate_raw(raw)
+                raise
+            data = {"provider": provider, "voice": raw["voice"], "warnings": raw["warnings"],
                     "sha256": self._digest(normalized)}
             _atomic_json(metadata, data)
             check_cancel(self.cancel)
@@ -447,22 +613,39 @@ class TTSService:
         raise ProviderUnavailable("No safe Edge voice mapping for this CapCut voice; choose an explicit Edge voice")
 
     def _speech(self, text, voice, provider, speed, pitch, allow_fallback):
+        check_cancel(self.cancel)
+        if provider == "capcut_internal" and allow_fallback and self._track_fallback:
+            return self._cache(text, self._track_fallback, "edge_tts", speed, pitch)
         try:
             return self._cache(text, voice, provider, speed, pitch)
         except TTSCancelled:
             raise
         except TTSError as original:
             check_cancel(self.cancel)
-            if not allow_fallback or provider != "capcut_internal":
+            if provider != "capcut_internal":
                 raise
-            fallback_voice = self._fallback_voice(voice)
+            if not allow_fallback:
+                message = f"Không tạo được giọng CapCut: {original}. Chuyển sang Edge-TTS đang tắt; đã dừng tác vụ."
+                self._emit(stage="tts_error", provider=provider, message=message, level="error")
+                raise type(original)(message) from original
+            # Report the reason BEFORE calling Edge, so a slow/missing Edge worker
+            # cannot hide the CapCut failure from the live application log.
+            message = f"CapCut lỗi ({type(original).__name__}): {original}. Đang chuyển sang Edge-TTS."
+            self._emit(stage="tts_fallback", provider="edge_tts", message=message, level="warning")
             try:
+                fallback_voice = self._fallback_voice(voice)
                 result = self._cache(text, fallback_voice, "edge_tts", speed, pitch)
             except TTSCancelled:
                 raise
-            except TTSError:
-                raise ProviderUnavailable("CapCut unavailable and optional Edge fallback failed/unavailable. " + _EDGE_GUIDANCE) from None
-            warning = f"CapCut unavailable ({type(original).__name__}); used optional Edge voice {fallback_voice} instead. Voice/timbre may differ."
+            except TTSError as fallback_error:
+                raise ProviderUnavailable(f"CapCut lỗi: {original}. Không thể chuyển sang Edge-TTS: {fallback_error}. " + _EDGE_GUIDANCE) from None
+            if self._track_active:
+                # Once a provider fails, don't spend another poll budget on every
+                # remaining cue of a long video. A new job tries CapCut afresh.
+                self._track_fallback = fallback_voice
+                self._emit(stage="tts_fallback", provider="edge_tts", level="warning",
+                           message=f"Đã chuyển sang Edge-TTS ({fallback_voice}) cho các câu còn lại của tác vụ; giọng có thể khác CapCut.")
+            warning = f"CapCut unavailable ({type(original).__name__}: {original}); used optional Edge voice {fallback_voice} instead. Voice/timbre may differ."
             return {**result, "warnings": [warning, *result["warnings"]]}
 
     def _publish(self, source, output_path):
@@ -508,6 +691,11 @@ class TTSService:
         self._provider(provider)
         result = self._speech(text, voice, provider, speed, pitch, bool(allow_fallback))
         path = self._publish(result["path"], output_path)
+        try:
+            self.prune_cache()
+        except (OSError, ValueError):
+            # A locked cache entry on Windows must not invalidate good audio.
+            pass
         return {"path": path, "provider": result["provider"], "voice": result["voice"], "warnings": list(result["warnings"])}
 
     def preview(self, text, voice, output_path, **kwargs) -> dict:
@@ -530,6 +718,13 @@ class TTSService:
         with a warning. Empty overlap windows are omitted explicitly. A failed or
         cancelled run never replaces the previous output.
         """
+        adapter = self._provider(provider)
+        if getattr(adapter, "concurrent_safe", False):
+            from .tts_pipeline import synthesize_srt
+            return synthesize_srt(self, srt_path, output_path, voice=voice, provider=provider,
+                                  speed=speed, pitch=pitch, allow_fallback=allow_fallback)
+        # Legacy custom adapters have no thread-safety contract. Keep their serial
+        # execution until they opt in, without altering the public provider API.
         path, output = Path(srt_path), Path(output_path)
         if output.suffix.lower() != ".wav":
             raise ValueError("Aligned SRT output must use .wav")
@@ -537,7 +732,12 @@ class TTSService:
             raise AlignmentError("SRT exceeds the 4 MiB input limit")
         with path.open("r", encoding="utf-8-sig") as stream:
             contents = stream.read(4 * 1024 * 1024 + 1)
-        cues = cue_windows(parse_srt(contents))
+        cues = cue_windows(parse_srt(contents, allow_empty=True))
+        for cue in cues:
+            cue["text"] = speech_text(cue["text"])
+        total = sum(bool(cue["text"] and cue["window_ms"]) for cue in cues)
+        if not total:
+            raise AlignmentError("Phụ đề không có câu chứa chữ hoặc số để tạo giọng; đã bỏ qua các câu rỗng/ký tự đặc biệt.")
         speed, pitch = _number(speed, "speed", .5, 2), _number(pitch, "pitch", -12, 12)
         self._provider(provider)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -560,7 +760,11 @@ class TTSService:
                 frames -= count
 
         previous_deadline = self._deadline
+        previous_progress, previous_active, previous_fallback = self._cue_progress, self._track_active, self._track_fallback
         self._deadline = deadline
+        self._track_active, self._track_fallback = True, None
+        self._cue_update(current=1, completed=0, total=total)
+        completed = 0
         try:
             with tempfile.NamedTemporaryFile(dir=output.parent, prefix=".tts-track-", suffix=".wav", delete=False) as stream:
                 temporary = Path(stream.name)
@@ -569,20 +773,23 @@ class TTSService:
                 track.setsampwidth(2)
                 track.setframerate(SAMPLE_RATE)
                 written = 0
-                for position, cue in enumerate(cues):
+                for cue in cues:
                     checkpoint()
-                    self._emit(stage="tts_cue", provider=provider, current=position + 1, total=len(cues))
                     start_frame = cue["start_ms"] * SAMPLE_RATE // 1000
                     if start_frame > written:
                         write_silence(track, start_frame - written)
                         written = start_frame
                     base = {"index": cue["index"], "start_ms": cue["start_ms"], "end_ms": cue["end_ms"],
                             "window_ms": cue["window_ms"]}
-                    if not cue["window_ms"]:
-                        warning = f"Cue {cue['index']}: no window before next cue; omitted."
+                    if not cue["window_ms"] or not cue["text"]:
+                        warning = (f"Cue {cue['index']}: no window before next cue; omitted." if not cue["window_ms"]
+                                   else f"Câu SRT {cue['index']}: bỏ qua nội dung rỗng/chỉ có ký tự đặc biệt.")
                         warnings.append(warning)
                         records.append({**base, "provider": None, "voice": None, "skipped": True, "warnings": [warning]})
+                        self._emit(stage="tts_skip", provider=provider, message=warning)
                         continue
+                    self._cue_update(current=completed + 1, completed=completed, total=total)
+                    self._emit(stage="tts_cue", provider="edge_tts" if self._track_fallback else provider)
                     result = self._speech(cue["text"], voice, provider, speed, pitch, bool(allow_fallback))
                     checkpoint()
                     providers.add(result["provider"])
@@ -606,6 +813,9 @@ class TTSService:
                     records.append({**base, "provider": result["provider"], "voice": result["voice"],
                                     "fit_speed": fit["speed"], "trimmed": fit["trimmed"], "skipped": False,
                                     "duration_ms": fit["duration_ms"], "warnings": cue_warnings})
+                    completed += 1
+                    self._cue_update(current=completed, completed=completed, total=total)
+                    self._emit(stage="tts_cue_done", provider=result["provider"])
                 duration_frames = max(cue["end_ms"] for cue in cues) * SAMPLE_RATE // 1000
                 write_silence(track, max(0, duration_frames - written))
             checkpoint()
@@ -614,5 +824,6 @@ class TTSService:
                     "warnings": list(dict.fromkeys(warnings)), "cues": records}
         finally:
             self._deadline = previous_deadline
+            self._cue_progress, self._track_active, self._track_fallback = previous_progress, previous_active, previous_fallback
             if temporary is not None and temporary.exists():
                 temporary.unlink()

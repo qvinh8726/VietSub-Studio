@@ -253,10 +253,14 @@ class CapCutTests(unittest.TestCase):
                      completed(payload={}), completed(url="http://audio.example.org/audio"),
                      completed(url="https://127.0.0.1/audio"), completed(status="unknown")]
         for response in responses:
-            client, transport = self.client([Response(created()), Response(response)])
+            unknown = response["data"]["tasks"][0]["status"] == "unknown"
+            replies = [Response(created()), Response(response)]
+            if unknown:
+                replies.append(Response(response))  # One bounded retry for an unknown task state.
+            client, transport = self.client(replies)
             with self.subTest(response=response), self.assertRaises(capcut_tts.TTSError):
                 client.synthesize("Synthetic fixture", VOICE, self.root / "out.mp3")
-            self.assertEqual(len(transport.requests), 2)
+            self.assertEqual(len(transport.requests), 3 if unknown else 2)
         client, _ = self.client([Response(created()), Response(completed()), Response(b"<html>login</html>")])
         with self.assertRaises(capcut_tts.CapCutProtocolError):
             client.synthesize("Synthetic fixture", VOICE, self.root / "out.mp3")

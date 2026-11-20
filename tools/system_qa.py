@@ -136,12 +136,14 @@ def run(output):
                             with zipfile.ZipFile(state['task']['output_path']) as bundle:
                                 name = next(name for name in bundle.namelist() if name.endswith('/draft_content.json'))
                                 draft = json.loads(bundle.read(name)); segment = draft['tracks'][0]['segments'][0]
-                                assert segment['speed'] == 1.5 and segment['is_tone_modify'] is True
+                                assert segment['speed'] == 1.5 and segment['is_tone_modify'] is False
+                                assert draft['vietsub']['pitch_scope'] == 'tts'
+                                assert draft['vietsub']['editor_options']['tts_change_pitch'] is True
                                 assert draft['vietsub']['pitch_semitones_baked'] == 2
                             with page.expect_download() as download:
                                 page.locator('#editor-output-link').click()
                             assert download.value.failure() is None
-                            checks.append({'check':'capcut_draft_archive','native_speed':1.5,'tone_modify':True,'semitones_baked':2})
+                            checks.append({'check':'capcut_draft_archive','native_speed':1.5,'tone_modify':False,'pitch_scope':'tts','semitones_baked':2})
                         # Handoff with confirmed rendered video, no posting.
                         page.locator('#editor-send-publish-btn').click()
                         page.wait_for_function("() => document.querySelector('#workspace-uploader-tab').getAttribute('aria-selected')==='true' && !document.querySelector('#uploader-content-fields').disabled")

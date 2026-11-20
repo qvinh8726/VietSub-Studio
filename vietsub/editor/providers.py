@@ -10,6 +10,17 @@ def service(ffmpeg, ffprobe, cache_dir, *, runtime_python=None, cancel=None, pro
     from .capcut_tts import CapCutClient
     value = TTSService(ffmpeg or "", ffprobe or "", cache_dir, runtime_python=runtime_python or None, cancel=cancel, progress=progress)
     config = config or {}
+    # Deployment-only tuning; never accept arbitrary worker counts from a cue.
+    for provider, key, default, maximum in (("capcut_internal", "editor_tts_capcut_workers", 3, 6),
+                                           ("edge_tts", "editor_tts_edge_workers", 5, 8)):
+        workers = config.get(key, default)
+        if type(workers) is not int or not 1 <= workers <= maximum:
+            raise ValueError(f"{key} phải là số nguyên từ 1 đến {maximum}.")
+        value.workers[provider] = workers
+    batch = config.get("editor_tts_batch_size", 25)
+    if type(batch) is not int or not 1 <= batch <= 30:
+        raise ValueError("editor_tts_batch_size phải là số nguyên từ 1 đến 30.")
+    value.batch_size = batch
     headers = {}
     # Read only explicit operator credentials, never browser/CapCut databases.
     cookie = os.environ.get("VIETSUB_CAPCUT_COOKIE", "")

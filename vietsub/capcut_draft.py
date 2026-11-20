@@ -2,8 +2,8 @@
 
 The desktop JSON fields follow pyCapCut's public model (MIT):
 https://github.com/GuanYixuan/pyCapCut/blob/main/pycapcut/segment.py
-Independent semitones and visual edits are baked once; speed and is_tone_modify
-remain native editable values. No remote service or installed CapCut is required.
+TTS-only pitch and visual edits are baked once; native speed preserves BGM tone.
+Legacy options keep their original global tone flag. No installed CapCut is required.
 """
 import copy
 import json
@@ -29,7 +29,8 @@ def document(name, media, metadata, options):
     segment = {'id': segment_id, 'material_id': material_id,
                'source_timerange': {'start': 0, 'duration': source_duration},
                'target_timerange': {'start': 0, 'duration': target_duration},
-               'speed': options['speed'], 'is_tone_modify': options['change_audio_pitch'],
+               'speed': options['speed'],
+               'is_tone_modify': False if 'tts_change_pitch' in options else options['change_audio_pitch'],
                'volume': 1.0, 'last_nonzero_volume': 1.0, 'visible': True, 'reverse': False,
                'clip': clip, 'uniform_scale': {'on': True, 'value': 1.0},
                'extra_material_refs': [speed_id], 'common_keyframes': [], 'keyframe_refs': [],
@@ -58,7 +59,9 @@ def document(name, media, metadata, options):
             'keyframes': {key: [] for key in ('videos', 'audios', 'texts', 'effects', 'filters', 'stickers', 'adjusts', 'handwrites')},
             'relationships': [], 'keyframe_graph_list': [], 'update_time': int(time.time()),
             'vietsub': {'editor_options': options, 'pitch_semitones_baked': options['pitch_semitones'],
-                        'visual_edits_baked': True, 'audio_mix_baked': True}}
+                        'pitch_scope': 'tts' if 'tts_change_pitch' in options else 'legacy_global',
+                         'tts_speed_pitch_baked': options['speed'] if options.get('tts_change_pitch') else 1.0,
+                         'visual_edits_baked': True, 'audio_mix_baked': True}}
 
 
 def execute(task_id, project, options, *, ffmpeg, ffprobe, fonts_dir, cancel, update,
@@ -75,11 +78,20 @@ def execute(task_id, project, options, *, ffmpeg, ffprobe, fonts_dir, cancel, up
         process.check_cancel(cancel)
         prepared = copy.deepcopy(project)
         prepared['project_dir'] = str(directory)
-        # Independent pitch applies at the original duration. CapCut then applies
-        # speed once to both video and its mixed original/TTS track.
-        bake_options = {**options, 'speed': 1.0, 'change_audio_pitch': False}
+        # Bake the voice pitch at source duration; native timeline speed keeps
+        # original/BGM pitch intact. Preserve the pre-v2.0.2 path for old payloads.
+        scoped = 'tts_change_pitch' in options
+        bake_options = {**options, 'speed': 1.0}
+        # The exported media has its own directory, but speech stays cached at
+        # project level so a new draft/pitch choice does not resubmit every cue.
+        render_args = {'_tts_cache_dir': str(root / '.vietsub-tts-cache')}
+        if scoped:
+            render_args['_tts_pitch_speed'] = options['speed']
+        else:
+            bake_options['change_audio_pitch'] = False
         result = renderer.execute(task_id, prepared, bake_options, 'render', ffmpeg=ffmpeg, ffprobe=ffprobe,
-            fonts_dir=fonts_dir, cancel=cancel, update=update, runtime_python=runtime_python, capcut_config=capcut_config)
+            fonts_dir=fonts_dir, cancel=cancel, update=update, runtime_python=runtime_python, capcut_config=capcut_config,
+            **render_args)
         media = Path(result['output_path'])
         metadata = renderer.probe_media(media, ffprobe)
         draft = document(project.get('project_name') or 'VietSub Studio', media, metadata, options)
@@ -92,11 +104,16 @@ def execute(task_id, project, options, *, ffmpeg, ffprobe, fonts_dir, cancel, up
         (directory / 'project.json').write_text(json.dumps({
             'schema_version': 1, 'project_id': project.get('project_id'), 'editor_options': options,
             'source_duration': metadata['duration'], 'duration': draft['duration']/1_000_000,
-            'media': media.name, 'pitch_semitones_baked': options['pitch_semitones']}, ensure_ascii=False, indent=2), encoding='utf-8')
+            'media': media.name, 'pitch_semitones_baked': options['pitch_semitones'],
+            'pitch_scope': draft['vietsub']['pitch_scope']}, ensure_ascii=False, indent=2), encoding='utf-8')
         (directory / 'HUONG-DAN.txt').write_text(
             'CapCut Draft — VietSub Studio\n'
-            'Tốc độ và công tắc đổi cao độ theo tốc độ là thuộc tính timeline có thể chỉnh tiếp.\n'
-            'Cao độ semitone, phụ đề, che chữ, logo và bản trộn TTS đã được kết xuất vào video.\n'
+            + ('Tốc độ video là thuộc tính timeline có thể chỉnh tiếp, giữ tông âm thanh nền.\n'
+               'Cao độ chỉ áp dụng giọng đọc TTS, đã bake cùng phụ đề, che chữ, logo và bản trộn.\n'
+               'Đổi tốc độ trong CapCut sau khi xuất không tính lại cao độ TTS đã bake.\n' if scoped else
+               'Tốc độ và công tắc đổi cao độ theo tốc độ là thuộc tính timeline có thể chỉnh tiếp.\n'
+               'Cao độ semitone, phụ đề, che chữ, logo và bản trộn TTS đã được kết xuất vào video.\n')
+            +
             'Thư mục này chứa draft_content.json, draft_meta_info.json và media. Sao chép cả thư mục vào thư mục drafts của CapCut desktop khi CapCut đã đóng.\n'
             'Nếu chuyển máy hoặc đổi đường dẫn, dùng Relink để trỏ lại video đi kèm.\n'
             'Tương thích định dạng JSON desktop; cần kiểm tra khi mở trên phiên bản CapCut đang dùng.\n', encoding='utf-8')

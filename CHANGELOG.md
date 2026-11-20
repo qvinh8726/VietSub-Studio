@@ -4,6 +4,27 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-11-20
+
+### TTS song song, cache và độ ổn định
+
+- Tái sử dụng HTTP/TLS qua `requests.Session` và connection pool; tổng hợp mặc định 3 câu CapCut hoặc 5 câu Edge đồng thời, với giới hạn cấu hình an toàn. Giảm tải khi HTTP 429, polling thích ứng 0,15 → 0,25 → 0,4 → 0,8 giây, deadline CapCut tổng 20 giây/câu và kiểm tra hủy mỗi 50 ms khi chờ.
+- Cache audio thô theo provider/giọng/text chuẩn hóa/tốc độ tổng hợp gốc, giữ resource ID của giọng tùy chỉnh. Đổi pitch/tốc độ cục bộ, nghe thử và xuất Draft cùng dự án tái sử dụng cache; audio hỏng được loại bỏ và fallback theo câu. Adapter tùy chỉnh chưa hỗ trợ đồng thời vẫn được gọi tuần tự.
+- Chuẩn hóa và ghép FFmpeg bằng filter script theo lô mặc định 25 câu, giữ thứ tự/timestamp, progress số câu và output tốt trước đó khi hủy/lỗi. Form TTS lấy đúng lựa chọn chưa lưu; log nêu trạng thái HTTP/poll và lý do fallback.
+- Benchmark offline 85 câu với độ trễ provider giả lập 150 ms/câu và FFmpeg thật: tuần tự 24,59 s, CapCut 3 worker 5,74 s (4,28×), Edge 5 worker 4,03 s (6,10×); tiến trình audio giảm 255 xuống 8. Đây không phải cam kết tốc độ dịch vụ live.
+
+### Pitch riêng track giọng đọc
+
+- UI mới áp dụng cao độ riêng TTS trước mix/ducking; original/BGM giữ tông tự nhiên khi đổi tốc độ video. Thêm nhãn rõ phạm vi, chip nhanh và mẫu nghe thử ba giây dùng câu đầu có nội dung/cache.
+- CapCut Draft bake cao độ riêng TTS, giữ native speed và không bật tone-modify cho bản phối. Payload/manifest cũ thiếu alias `tts_change_pitch` giữ hành vi legacy; lưu/chạy từ UI mới chuyển sang phạm vi TTS. Giữ 115 DOM IDs và các hợp đồng API hiện có.
+
+### Tài liệu, repository và phát hành
+
+- Viết lại README tiếng Việt với ba workspace, yêu cầu/thao tác thực tế, portable/SHA256/updater, hướng dẫn source/build, FAQ và credits Sakuga VFX. Đồng bộ landing page và link tải sang v2.0.2.
+- Dọn ba tài liệu lịch sử đã kiểm tra tham chiếu, bổ sung ignore cho QA artifacts; giữ cấu hình, profile, hàng đợi, dữ liệu người dùng và công cụ QA còn sử dụng. Bằng chứng nằm trong `docs/v2.0.2-cleanup-audit.md`.
+- Bổ sung regression concurrency/throttle/cache/cancellation, HTTP pooling và đo tần số để kiểm chứng pitch không đổi BGM; CI chạy cả test frontend lẫn test Node ở root tests. Giữ hợp đồng portable ZIP + `.zip.sha256.txt`; không đóng gói runtime AI/model tùy chọn.
+- CapCut/Edge là dịch vụ online không chính thức; QA bản này dùng provider mô phỏng, không xác nhận uptime live hoặc import thực tế vào CapCut desktop. Lịch Publish Hub vẫn cần app/máy/mạng hoạt động.
+
 ## [2.0.1] - 2026-11-19
 
 ### Creator Workbench integration

@@ -98,6 +98,19 @@ class EditorAPI:
             task["output_url"] = ""
         return task
 
+    def _progress_update(self, identifier, update):
+        """Bridge worker diagnostics to the same live log used by the Nhật ký tab."""
+        last_message = None
+        def report(**values):
+            nonlocal last_message
+            update(**values)
+            message = values.get("message")
+            if message and message != last_message:
+                level = "error" if values.get("level") in {"error", "warning"} else "system"
+                self.app.log_to_app(f"[Auto Edit {identifier[:8]}] {message}", level)
+                last_message = message
+        return report
+
     def _finish(self, result, manifest_path, task, state):
         with manifest.LOCK:
             value = manifest.snapshot(result)
@@ -326,7 +339,7 @@ class EditorAPI:
                 def execute(identifier, cancel, update):
                     return renderer.execute(identifier, task_project, options, action, ffmpeg=ffmpeg, ffprobe=ffprobe,
                                             fonts_dir=os.path.join(self.app.RESOURCE_DIR, "static", "fonts"),
-                                            cancel=cancel, update=update, runtime_python=config.get("editor_runtime_python"),
+                                            cancel=cancel, update=self._progress_update(identifier, update), runtime_python=config.get("editor_runtime_python"),
                                             capcut_config={**config, "separation_model_dir": config.get("editor_separation_model_dir"),
                                                            "separation_model": config.get("editor_separation_model") or "UVR-MDX-NET-Inst_HQ_3.onnx"})
                 target = manifest.path_for(result)
@@ -402,8 +415,9 @@ class EditorAPI:
                 output = Path(self.app.CONFIG_DIR) / "editor-previews" / f"{identifier}.wav"
                 output.parent.mkdir(parents=True, exist_ok=True)
                 service = create_tts_service(ffmpeg, ffprobe, os.path.join(self.app.CONFIG_DIR, "editor-tts-cache"),
-                                             runtime_python=config.get("editor_runtime_python"), cancel=cancel, config=config)
-                result = service.synthesize(text, options["tts_voice"], str(output), provider=options["tts_provider"],
+                                             runtime_python=config.get("editor_runtime_python"), cancel=cancel, config=config,
+                                             progress=renderer.tts_progress(self._progress_update(identifier, update)))
+                result = service.preview(text, options["tts_voice"], str(output), provider=options["tts_provider"],
                                              speed=options["tts_speed"], pitch=options["tts_pitch"], allow_fallback=options["tts_fallback"])
                 return {"output_path": str(output), "output_kind": "audio", "warnings": result.get("warnings", [])}
             task = self.jobs.submit("", "tts_preview", execute)

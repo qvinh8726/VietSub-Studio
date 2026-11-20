@@ -44,7 +44,7 @@ jobs:
           node --check static/uploader.js
           node --check static/sakuga-vfx.js
       - name: Run frontend tests
-        run: node --test tests/frontend/*.test.mjs
+        run: node --test tests/*.js tests/frontend/*.test.mjs
 
   desktop-ui:
     needs: unit-tests

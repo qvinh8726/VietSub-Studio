@@ -10,7 +10,7 @@ import threading
 
 from . import process
 from .options import normalize
-from .audio import audio_effects
+from .audio import track_audio_effects
 
 _ENCODERS = {}
 _ENCODER_LOCK = threading.Lock()
@@ -125,6 +125,16 @@ def progress_reader(duration, update, *, phase="render", offset=0, scale=100):
     return read
 
 
+def tts_progress(update):
+    """Forward cue counters and diagnostics without resetting progress on a poll."""
+    def emit(values):
+        fields = {key: values[key] for key in ("current", "completed", "total", "percent", "provider", "message", "level")
+                  if key in values}
+        fields.update(phase=values.get("stage", "tts"), fps=0)
+        update(**fields)
+    return emit
+
+
 def _encoder_args(encoder):
     return ["-c:v", encoder, "-preset", "p4", "-cq", "23"] if encoder == "h264_nvenc" else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
 
@@ -140,42 +150,51 @@ def _source_audio_timeline(metadata):
     return ','.join(chain)
 
 
-def _audio_graph(has_audio, bg_index, tts_index, options, duration, source_timeline=None):
+def _audio_graph(has_audio, bg_index, tts_index, options, duration, source_timeline=None, *, tts_pitch_speed=None):
     filters = []
     background = f"{bg_index}:a:0" if bg_index is not None else "0:a:0" if has_audio else None
+    voice = f"{tts_index}:a:0" if tts_index is not None else None
     if background == '0:a:0' and source_timeline and options['audio_mode'] != 'mute':
         filters.append(f'[0:a:0]{source_timeline}[sourceaudio]')
         background = 'sourceaudio'
     if options["audio_mode"] == "mute":
         background = None
-    if tts_index is not None and background and not options.get("ducking_enabled", True):
+    if voice and "tts_change_pitch" in options:
+        reference = options.get("speed", 1) if tts_pitch_speed is None else tts_pitch_speed
+        effects = track_audio_effects({**options, "speed": 1}, track="tts", pitch_speed=reference)
+        filters.append(f"[{voice}]{effects}[pitched_voice]")
+        voice = "pitched_voice"
+    if voice and background and not options.get("ducking_enabled", True):
         filters += [f"[{background}]aresample=48000,volume={options['bgm_volume']}[bgm]",
-                    f"[{tts_index}:a:0]aresample=48000,apad,atrim=duration={duration}[voice]",
+                    f"[{voice}]aresample=48000,apad,atrim=duration={duration}[voice]",
                     f"[bgm][voice]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration={duration}[aout]"]
-    elif tts_index is not None and background:
+    elif voice and background:
         filters += [f"[{background}]aresample=48000,volume={options['bgm_volume']}[bgm]",
-                    f"[{tts_index}:a:0]aresample=48000,apad,atrim=duration={duration},asplit=2[side][voice]",
+                    f"[{voice}]aresample=48000,apad,atrim=duration={duration},asplit=2[side][voice]",
                     "[bgm][side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=250[ducked]",
                     f"[ducked][voice]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration={duration}[aout]"]
-    elif tts_index is not None:
-        filters += [f"[{tts_index}:a:0]aresample=48000,apad,atrim=duration={duration}[aout]"]
+    elif voice:
+        filters += [f"[{voice}]aresample=48000,apad,atrim=duration={duration}[aout]"]
     elif background:
         volume = options["bgm_volume"] if options["audio_mode"] == "instrumental" else 1
         filters += [f"[{background}]aresample=48000,volume={volume},apad,atrim=duration={duration}[aout]"]
     if filters:
-        # Mix in the source timeline, then apply one identical transform to both
-        # original/BGM and aligned speech. Silence and delayed starts scale too.
+        # Speech pitch is already applied. Change timeline speed once after the
+        # mix, preserving original/BGM pitch, silence and delayed-start timing.
+        # Payloads without the alias retain the old global transform here.
         filters[-1] = filters[-1].replace("[aout]", "[source_mix]")
         output_duration = duration / options.get("speed", 1)
-        filters.append(f"[source_mix]{audio_effects(options)},apad,atrim=duration={output_duration}[aout]")
+        effects = track_audio_effects(options, track="background")
+        filters.append(f"[source_mix]{effects},apad,atrim=duration={output_duration}[aout]")
     return filters, "[aout]" if filters else None
 
 
 def _audio_file(source, target, options, source_duration, output_duration, *, ffmpeg, cancel,
-                update, timeout, phase, timeline=None, bounded=False):
+                update, timeout, phase, timeline=None, bounded=False, track="background", tts_pitch_speed=None):
     """Export one track with the same effects and timebase as the render mix."""
     chain = timeline or f"asetpts=PTS-STARTPTS,apad,atrim=duration={source_duration}"
-    chain += f",{audio_effects(options)},apad,atrim=duration={output_duration}"
+    effects = track_audio_effects(options, track=track, pitch_speed=tts_pitch_speed)
+    chain += f",{effects},apad,atrim=duration={output_duration}"
     input_args = ["-t", str(source_duration)] if bounded else []
     process.run([ffmpeg, "-hide_banner", "-y", *input_args, "-i", str(source), "-vn", "-af", chain,
                  "-ar", "48000", "-c:a", "pcm_s16le", "-t", str(output_duration),
@@ -184,7 +203,7 @@ def _audio_file(source, target, options, source_duration, output_duration, *, ff
 
 
 def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, cancel, update,
-            runtime_python=None, capcut_config=None):
+            runtime_python=None, capcut_config=None, _tts_pitch_speed=None, _tts_cache_dir=None):
     if not ffmpeg:
         raise RuntimeError("Chưa tìm thấy FFmpeg trong PATH. Cài FFmpeg trước khi Auto Edit.")
     from .filters import build_video_graph
@@ -218,12 +237,21 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
             timeline = _source_audio_timeline({**metadata, "duration": source_seconds})
             if options["tts_enabled"]:
                 from .providers import service as create_tts_service
-                from .subtitles import _parse_srt
-                # One bounded utterance: don't synthesize a whole project's cues
-                # (or wait through a long silent lead-in) for a three-second sample.
-                text = _parse_srt(srt)[0][2][:250].strip()
-                service = create_tts_service(ffmpeg, ffprobe, str(root / ".vietsub-tts-cache"),
-                                             runtime_python=runtime_python, config=capcut_config, cancel=cancel)
+                from .alignment import cue_windows, parse_srt
+                from .tts import speech_text
+                # Use the same speakable cue/normalization as a full track, so
+                # markup and empty leading cues do not bypass its raw cache.
+                source_srt = Path(srt)
+                if source_srt.stat().st_size > 4 * 1024 * 1024:
+                    raise ValueError("SRT vượt giới hạn 4 MiB.")
+                cues = cue_windows(parse_srt(source_srt.read_text(encoding="utf-8-sig"), allow_empty=True))
+                text = next((clean for cue in cues if cue["window_ms"]
+                             if (clean := speech_text(cue["text"]))), "")[:250].strip()
+                if not text:
+                    raise ValueError("Phụ đề không có câu chứa chữ hoặc số để nghe thử.")
+                service = create_tts_service(ffmpeg, ffprobe, str(_tts_cache_dir or root / ".vietsub-tts-cache"),
+                                             runtime_python=runtime_python, config=capcut_config, cancel=cancel,
+                                             progress=tts_progress(update))
                 preview_input = work / "preview-voice.wav"
                 update(phase="tts_preview", percent=0, fps=0)
                 generated = service.preview(text, options["tts_voice"], str(preview_input),
@@ -238,7 +266,8 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
             temporary = work / "preview.wav"
             _audio_file(preview_input, temporary, options, source_seconds, preview_seconds,
                         ffmpeg=ffmpeg, cancel=cancel, update=update, timeout=60,
-                        phase="audio_preview", timeline=timeline, bounded=True)
+                        phase="audio_preview", timeline=timeline, bounded=True,
+                        track="tts" if preview_source == "tts" else "background")
             verified = probe_media(temporary, ffprobe)
             if abs(verified["duration"] - preview_seconds) > .02:
                 raise RuntimeError("Audio nghe thử không đủ ba giây; hãy thử lại.")
@@ -257,7 +286,7 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
             extension = options["audio_format"]
             temporary = work / f"extracted.{extension}"
             codec = ["-c:a", "pcm_s16le"] if extension == "wav" else ["-c:a", "libmp3lame", "-q:a", "2"]
-            process.run([ffmpeg, "-hide_banner", "-y", "-i", source, "-vn", "-af", _source_audio_timeline(metadata) + "," + audio_effects(options) + f",apad,atrim=duration={duration}",
+            process.run([ffmpeg, "-hide_banner", "-y", "-i", source, "-vn", "-af", _source_audio_timeline(metadata) + "," + track_audio_effects(options, track="background") + f",apad,atrim=duration={duration}",
                          *codec, "-progress", "pipe:1", "-nostats", str(temporary)],
                         cancel=cancel, timeout=timeout, on_line=progress_reader(duration, update, phase="extract_audio"))
             result = root / f"{stem}.extracted.{task_id[:10]}.{extension}"
@@ -269,10 +298,8 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
         if action == "tts" or options["tts_enabled"]:
             from .providers import service as create_tts_service
             update(phase="tts", percent=0, fps=0)
-            service = create_tts_service(ffmpeg, ffprobe, str(root / ".vietsub-tts-cache"), runtime_python=runtime_python,
-                                        config=capcut_config, cancel=cancel, progress=lambda values: update(
-                                            phase=values.get("stage", "tts"),
-                                            percent=round(100 * values.get("current", 0) / max(1, values.get("total", 1)), 1), fps=0))
+            service = create_tts_service(ffmpeg, ffprobe, str(_tts_cache_dir or root / ".vietsub-tts-cache"), runtime_python=runtime_python,
+                                        config=capcut_config, cancel=cancel, progress=tts_progress(update))
             tts_path = work / "voice.wav"
             generated = service.synthesize_srt(srt, str(tts_path), voice=options["tts_voice"],
                                                provider=options["tts_provider"], speed=options["tts_speed"],
@@ -281,7 +308,7 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
             if action == "tts":
                 processed = work / "voice-edited.wav"
                 _audio_file(tts_path, processed, options, source_duration, duration, ffmpeg=ffmpeg,
-                            cancel=cancel, update=update, timeout=timeout, phase="tts_audio")
+                            cancel=cancel, update=update, timeout=timeout, phase="tts_audio", track="tts", tts_pitch_speed=_tts_pitch_speed)
                 result = root / f"{stem}.tts.{task_id[:10]}.wav"
                 probe_media(processed, ffprobe)
                 process.check_cancel(cancel); os.replace(processed, result)
@@ -336,7 +363,7 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
         transform = [f"scale={metadata['width']}:{metadata['height']}", 'setsar=1', 'setpts=PTS-STARTPTS']
         video_graph = '[0:v:0]' + ','.join(transform) + '[oriented];' + graph['filter_complex'].replace('[0:v:0]', '[oriented]', 1)
         audio_filters, audio_label = _audio_graph(metadata["has_audio"], background_index, tts_index, options, source_duration,
-                                                  source_timeline=_source_audio_timeline(metadata))
+                                                  source_timeline=_source_audio_timeline(metadata), tts_pitch_speed=_tts_pitch_speed)
         full_graph = video_graph + (";" + ";".join(audio_filters) if audio_filters else "")
         available = detect_encoders(ffmpeg)
         requested = options["encoder"]
@@ -372,7 +399,7 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
         if tts_path:
             processed = work / "voice-edited.wav"
             _audio_file(tts_path, processed, options, source_duration, duration, ffmpeg=ffmpeg,
-                        cancel=cancel, update=update, timeout=timeout, phase="tts_audio")
+                        cancel=cancel, update=update, timeout=timeout, phase="tts_audio", track="tts", tts_pitch_speed=_tts_pitch_speed)
             voice_output = root / f"{stem}.tts.{task_id[:10]}.wav"
             process.check_cancel(cancel); os.replace(processed, voice_output)
             final_paths.append(voice_output); assets["tts_audio"] = str(voice_output)

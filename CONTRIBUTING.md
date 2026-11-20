@@ -13,7 +13,7 @@ Thank you for helping improve VietSub Studio. Cảm ơn bạn đã muốn đóng
    python -m unittest discover -s tests -v
    python -m py_compile app.py automate.py tools/make_release.py
    node --check static/app.js
-   node --test tests/frontend/app.test.mjs
+   node --test tests/*.js tests/frontend/*.test.mjs
    ```
 
    The tests point `APPDATA`, `LOCALAPPDATA`, `VIETSUB_STUDIO_CONFIG_DIR`, and `VIETSUB_STUDIO_DOWNLOAD_DIR` at a temporary folder, so they never read or change your real settings, queue, logs, downloads, browser profiles, old Douzy library, or VideOCR files. The download tests mock the browser, Douyin's share page, and yt-dlp, and only talk to a local test server on `127.0.0.1`. No test starts a real browser.
@@ -36,7 +36,7 @@ Good first contributions include documentation fixes, clearer diagnostics, new u
    python -m unittest discover -s tests -v
    python -m py_compile app.py automate.py tools/make_release.py
    node --check static/app.js
-   node --test tests/frontend/app.test.mjs
+   node --test tests/*.js tests/frontend/*.test.mjs
    ```
 
    Bộ test trỏ `APPDATA`, `LOCALAPPDATA`, `VIETSUB_STUDIO_CONFIG_DIR` và `VIETSUB_STUDIO_DOWNLOAD_DIR` vào một thư mục tạm, nên không đọc hay sửa thiết lập, hàng đợi, log, video tải về, profile trình duyệt, thư viện Douzy cũ hoặc file VideOCR thật của bạn. Test tải video dùng mock cho trình duyệt, trang chia sẻ Douyin và yt-dlp, và chỉ kết nối tới server thử trên `127.0.0.1`. Không test nào mở trình duyệt thật.
