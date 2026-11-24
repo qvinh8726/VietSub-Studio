@@ -43,7 +43,7 @@
     let optionControls = [], controlByKey = {}, capabilitySequence = 0, voiceSequence = 0;
     let pollTimer = 0, pollGeneration = 0, drag = null, observer = null, renderedOutputKey = '';
     let editorGlossaries = [{id: 'default', name: 'Mặc định'}], editorActiveGlossaryId = 'default', editorGlossariesLoaded = false;
-    let hookSequence = 0;
+    let hookSequence = 0, applyPresetSequence = 0;
 
     function validCrop(box) {
         return Boolean(box && typeof box === 'object' && !Array.isArray(box) && cropFields.every(key => finite(box[key])) &&
@@ -532,9 +532,26 @@
     }
     function applyChannelPreset(detail) {
         if (!detail || !detail.editor_options || !current || !canEdit()) return;
+        if (typeof detail.apply_sequence === 'number') {
+            if (detail.apply_sequence < applyPresetSequence) return;
+            applyPresetSequence = detail.apply_sequence;
+        }
+        const targetJobId = typeof detail.target_job_id === 'string' ? detail.target_job_id : null;
+        if (targetJobId && targetJobId !== current.jobId) {
+            notify('Hồ sơ kênh vừa áp dụng cho dự án trước đó; bấm Áp dụng lại nếu muốn áp dụng cho dự án này.');
+            return;
+        }
         const merged = {...detail.editor_options};
-        if (merged.crop_box === null && validCrop(current.options.crop_box)) {
+        if (targetJobId === '' && merged.watermark_path && merged.watermark_path !== current.options.watermark_path) {
+            merged.watermark_path = '';
+            merged.watermark_enabled = false;
+        }
+        const presetLeavesCropUnset = detail.preset_crop_box === null || merged.crop_box === null;
+        if (presetLeavesCropUnset && validCrop(current.options.crop_box)) {
             merged.crop_box = {...current.options.crop_box};
+        } else if (presetLeavesCropUnset && current.options.crop_box === null && current.dirty) {
+            merged.crop_box = null;
+            if (merged.mask_mode !== 'none') merged.mask_mode = 'none';
         }
         const validation = validateOptions(merged);
         if (Object.keys(validation.errors).length) {
@@ -576,8 +593,11 @@
         overlay.hidden = false;
         for (const [key, value] of Object.entries({left: content.left, top: content.top, width: content.width, height: content.height})) overlay.style[key] = `${value}px`;
         overlay.dataset.position = opts.subtitle_position === 'top' ? 'top' : 'bottom';
-        overlay.style.paddingBottom = opts.subtitle_position === 'crop' && validCrop(opts.crop_box)
-            ? `${Math.max(2, Math.round((1 - (opts.crop_box.y + opts.crop_box.height)) * 100))}%` : '4%';
+        const bottomRatio = opts.subtitle_position === 'crop' && validCrop(opts.crop_box)
+            ? clamp(1 - (opts.crop_box.y + opts.crop_box.height), 0.02, 0.9)
+            : 0.04;
+        overlay.style.paddingTop = `${Math.round(content.height * 0.03)}px`;
+        overlay.style.paddingBottom = `${Math.round(content.height * bottomRatio)}px`;
         const mode = opts.subtitle_animation || 'static';
         const duration = Math.max(1, cue.end_ms - cue.start_ms);
         const ratio = clamp((nowMs - cue.start_ms) / duration, 0, 1);
@@ -639,7 +659,12 @@
         }
         overlay.replaceChildren(box);
     }
-    function setSrtStatus(message, state = '') {
+    function setSrtStatus(message, state = '', record = current) {
+        if (record) {
+            record.srtStatusMessage = message;
+            record.srtStatusState = state;
+        }
+        if (record && current !== record) return;
         const el = $('editor-srt-status');
         if (!el) return;
         el.textContent = message;
@@ -651,7 +676,7 @@
         if (!card) return;
         const record = current;
         const hasCues = Boolean(record?.srtCues?.length);
-        card.hidden = !record || (!hasCues && !record.srtLoading);
+        card.hidden = !record || (!hasCues && !record.srtLoading && !record.srtLoadFailed);
         const locked = Boolean(record?.srtLocked || running(record) || record?.srtSaving || record?.busy || record?.recoveryRequired);
         const editable = Boolean(record && hasCues && !locked);
         if ($('editor-srt-count')) $('editor-srt-count').textContent = `${record?.srtCues?.length || 0} câu`;
@@ -716,7 +741,7 @@
         const record = current;
         if (!record || !record.srtCues?.length) {
             list.replaceChildren();
-            if (record) record.srtRowByIndex = [];
+            if (record) { record.srtRowByIndex = []; record.srtInvalidCount = 0; }
             refreshSrtControls();
             return;
         }
@@ -782,9 +807,30 @@
             byIndex[i] = row;
         }
         record.srtRowByIndex = byIndex;
+        record.srtInvalidCount = 0;
         record._lastRowLocked = locked;
         list.replaceChildren(...rows);
         refreshSrtControls();
+    }
+    function scrollRowIntoList(list, row) {
+        if (!list || !row) return;
+        const listHeight = Number(list.clientHeight) || 0;
+        if (listHeight <= 0) return;
+        const viewTop = Number(list.scrollTop) || 0;
+        let rowTop, rowHeight;
+        if (typeof list.getBoundingClientRect === 'function' && typeof row.getBoundingClientRect === 'function') {
+            const lr = list.getBoundingClientRect(), rr = row.getBoundingClientRect();
+            rowTop = rr.top - lr.top - (Number(list.clientTop) || 0) + viewTop;
+            rowHeight = rr.height || Number(row.offsetHeight) || 0;
+        } else {
+            rowTop = Number(row.offsetTop) || 0;
+            rowHeight = Number(row.offsetHeight) || 0;
+        }
+        const viewBottom = viewTop + listHeight, rowBottom = rowTop + rowHeight;
+        let nextScrollTop = viewTop;
+        if (rowTop < viewTop) nextScrollTop = Math.max(0, rowTop);
+        else if (rowBottom > viewBottom) nextScrollTop = Math.max(0, rowBottom - listHeight);
+        if (nextScrollTop !== viewTop) list.scrollTop = nextScrollTop;
     }
     function syncVideoCueTime(scrollIfIdle = true) {
         const record = current;
@@ -799,7 +845,7 @@
             if (newRow) {
                 newRow.dataset.active = 'true';
                 if (scrollIfIdle && list && !list.contains(document.activeElement)) {
-                    newRow.scrollIntoView?.({block: 'nearest', behavior: 'smooth'});
+                    scrollRowIntoList(list, newRow);
                 }
             }
             record.activeCueIndex = nextIdx;
@@ -815,6 +861,7 @@
             const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt`);
             if (record.srtSequence !== sequence) return;
             record.srtLoaded = true;
+            record.srtLoadFailed = false;
             if (!Array.isArray(data?.cues)) {
                 record.srtCues = [];
                 if (current === record) renderSrtList();
@@ -834,17 +881,19 @@
             record.srtLockReason = typeof data.lock_reason === 'string' ? data.lock_reason : '';
             record.srtDirty = false;
             record.srtInvalidCount = 0;
+            record.srtRevision = (record.srtRevision || 0) + 1;
             record.activeCueIndex = -1;
             record.lastLiveSubtitleKey = '';
+            setSrtStatus(record.srtLocked ? record.srtLockReason : `Đã nạp ${record.srtCues.length} câu phụ đề.`, '', record);
             if (current === record) {
-                setSrtStatus(record.srtLocked ? record.srtLockReason : `Đã nạp ${record.srtCues.length} câu phụ đề.`);
                 renderSrtList();
                 syncVideoCueTime(false);
             }
         } catch (error) {
             if (record.srtSequence !== sequence) return;
-            record.srtLoaded = true;
-            if (current === record) setSrtStatus(error.message, 'error');
+            record.srtLoaded = false;
+            record.srtLoadFailed = true;
+            setSrtStatus(error.message, 'error', record);
         } finally {
             if (record.srtSequence === sequence) {
                 record.srtLoading = false;
@@ -855,6 +904,11 @@
     function insertSrtCue() {
         const record = current;
         if (!record || !record.srtCues?.length || record.srtLocked || running(record)) return;
+        const hadFilter = Boolean((record.srtSearch || '').trim());
+        if (hadFilter) {
+            record.srtSearch = '';
+            if ($('editor-srt-search')) $('editor-srt-search').value = '';
+        }
         const cues = record.srtCues;
         const afterIdx = record.selectedCueIndex >= 0 && record.selectedCueIndex < cues.length
             ? record.selectedCueIndex : (record.activeCueIndex >= 0 && record.activeCueIndex < cues.length ? record.activeCueIndex : cues.length - 1);
@@ -877,13 +931,18 @@
         cues.splice(insertAt, 0, {index: insertAt + 1, start_ms, end_ms, text: 'Phụ đề mới', raw_text: ''});
         cues.forEach((cue, i) => { cue.index = i + 1; });
         record.srtDirty = true;
+        record.srtRevision = (record.srtRevision || 0) + 1;
         record.selectedCueIndex = insertAt;
         record.lastLiveSubtitleKey = '';
-        setSrtStatus(`Đã thêm dòng #${insertAt + 1}. Bấm “Lưu SRT” để ghi xuống đĩa.`);
+        setSrtStatus(hadFilter
+            ? `Đã xoá bộ lọc tìm kiếm và thêm dòng #${insertAt + 1}. Bấm “Lưu SRT” để ghi xuống đĩa.`
+            : `Đã thêm dòng #${insertAt + 1}. Bấm “Lưu SRT” để ghi xuống đĩa.`);
         renderSrtList();
         const newRow = record.srtRowByIndex?.[insertAt];
-        const textarea = newRow?.children?.find?.(node => node.dataset?.srtField === 'text');
-        textarea?.focus?.(); textarea?.select?.();
+        scrollRowIntoList($('editor-srt-list'), newRow);
+        const textarea = newRow?.querySelector?.('[data-srt-field="text"]')
+            || [...(newRow?.children || [])].find(node => node.dataset?.srtField === 'text');
+        textarea?.focus?.({preventScroll: true}); textarea?.select?.();
         renderLiveSubtitle();
     }
     function deleteSrtCue(index) {
@@ -897,6 +956,7 @@
         record.srtCues.splice(index, 1);
         record.srtCues.forEach((cue, i) => { cue.index = i + 1; });
         record.srtDirty = true;
+        record.srtRevision = (record.srtRevision || 0) + 1;
         record.activeCueIndex = -1;
         record.selectedCueIndex = Math.min(index, record.srtCues.length - 1);
         record.lastLiveSubtitleKey = '';
@@ -919,6 +979,7 @@
         }
         if (changedCues > 0) {
             record.srtDirty = true;
+            record.srtRevision = (record.srtRevision || 0) + 1;
             record.lastLiveSubtitleKey = '';
             renderSrtList();
             renderLiveSubtitle();
@@ -941,38 +1002,50 @@
         }
         return '';
     }
-    async function saveSrt(record = current) {
+    async function saveSrt(record = current, {targetJobId} = {}) {
         if (!record || !record.srtCues?.length || record.srtSaving || record.srtLocked || running(record)) return false;
+        if (record.srtInvalidCount > 0) {
+            setSrtStatus('Có mốc thời gian SRT không hợp lệ. Hãy sửa các ô báo đỏ trước khi lưu.', 'error', record);
+            if (current === record) notify('Phụ đề SRT có mốc thời gian không hợp lệ; hãy sửa trước khi lưu.', 'error');
+            return false;
+        }
         const localError = validateLocalSrt(record.srtCues);
-        if (localError) { setSrtStatus(localError, 'error'); return false; }
+        if (localError) { setSrtStatus(localError, 'error', record); return false; }
+        const jobId = targetJobId || record.jobId;
+        const revision = record.srtRevision || 0;
         record.srtSaving = true;
         if (current === record) refreshSrtControls();
         try {
             const payload = record.srtCues.map((cue, idx) => ({
                 index: idx + 1, start_ms: cue.start_ms, end_ms: cue.end_ms, text: cue.text,
             }));
-            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt`, {
+            const data = await request(`/api/editor/projects/${encodeURIComponent(jobId)}/srt`, {
                 method: 'PUT', body: JSON.stringify({cues: payload}),
             });
+            record.srtHasBackup = Boolean(data.has_backup);
+            if ((record.srtRevision || 0) !== revision) {
+                setSrtStatus('Đã lưu bản SRT trước đó; các chỉnh sửa mới hơn vẫn chưa lưu.', '', record);
+                return false;
+            }
             if (Array.isArray(data.cues)) {
                 record.srtCues = data.cues.map((cue, idx) => ({
                     index: idx + 1, start_ms: Number(cue.start_ms) || 0, end_ms: Number(cue.end_ms) || 1000,
                     text: String(cue.text || ''), raw_text: typeof cue.raw_text === 'string' ? cue.raw_text : '',
                 }));
             }
-            record.srtHasBackup = Boolean(data.has_backup);
             record.srtDirty = false;
             record.srtInvalidCount = 0;
             record.lastLiveSubtitleKey = '';
+            setSrtStatus(`Đã lưu ${record.srtCues.length} câu phụ đề (đã sao lưu .bak).`, '', record);
             if (current === record) {
-                setSrtStatus(`Đã lưu ${record.srtCues.length} câu phụ đề (đã sao lưu .bak).`);
                 renderSrtList();
                 renderLiveSubtitle();
                 notify('Đã lưu phụ đề SRT. Các thao tác Render / TTS tiếp theo sẽ dùng bản SRT mới.');
             }
             return true;
         } catch (error) {
-            if (current === record) { setSrtStatus(error.message, 'error'); notify(error.message, 'error'); }
+            setSrtStatus(error.message, 'error', record);
+            if (current === record) notify(error.message, 'error');
             return false;
         } finally {
             record.srtSaving = false;
@@ -982,9 +1055,14 @@
     async function applyGlossaryToSrt() {
         const record = current;
         if (!record || !record.srtCues?.length || record.srtSaving || record.srtLocked || running(record)) return;
+        if (record.srtInvalidCount > 0) {
+            setSrtStatus('Có mốc thời gian SRT không hợp lệ. Hãy sửa trước khi áp dụng từ điển.', 'error', record);
+            return;
+        }
         const localError = validateLocalSrt(record.srtCues);
-        if (localError) { setSrtStatus(localError, 'error'); return; }
+        if (localError) { setSrtStatus(localError, 'error', record); return; }
         const glossaryId = $('editor-srt-glossary-select')?.value || editorActiveGlossaryId || 'default';
+        const revision = record.srtRevision || 0;
         record.srtSaving = true;
         refreshSrtControls();
         try {
@@ -994,6 +1072,7 @@
             const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt/apply-glossary`, {
                 method: 'POST', body: JSON.stringify({glossary_id: glossaryId, cues: payload, save: false}),
             });
+            if ((record.srtRevision || 0) !== revision) return;
             if (Array.isArray(data.cues)) {
                 record.srtCues = data.cues.map((cue, idx) => ({
                     index: idx + 1, start_ms: Number(cue.start_ms) || 0, end_ms: Number(cue.end_ms) || 1000,
@@ -1001,17 +1080,20 @@
                 }));
             }
             const changed = Number(data.changed_cues) || 0, reps = Number(data.replacements) || 0;
-            if (changed > 0) record.srtDirty = true;
+            if (changed > 0) {
+                record.srtDirty = true;
+                record.srtRevision = (record.srtRevision || 0) + 1;
+            }
             record.lastLiveSubtitleKey = '';
+            setSrtStatus(changed > 0
+                ? `Đã áp dụng "${data.glossary_name || glossaryId}": sửa ${reps} thuật ngữ ở ${changed} câu. Bấm “Lưu SRT” để ghi xuống đĩa.`
+                : `Bộ từ điển "${data.glossary_name || glossaryId}" không có thuật ngữ nào cần thay đổi.`, '', record);
             if (current === record) {
                 renderSrtList();
                 renderLiveSubtitle();
-                setSrtStatus(changed > 0
-                    ? `Đã áp dụng "${data.glossary_name || glossaryId}": sửa ${reps} thuật ngữ ở ${changed} câu. Bấm “Lưu SRT” để ghi xuống đĩa.`
-                    : `Bộ từ điển "${data.glossary_name || glossaryId}" không có thuật ngữ nào cần thay đổi.`);
             }
         } catch (error) {
-            if (current === record) setSrtStatus(error.message, 'error');
+            setSrtStatus(error.message, 'error', record);
         } finally {
             record.srtSaving = false;
             if (current === record) refreshSrtControls();
@@ -1021,12 +1103,14 @@
         const record = current;
         if (!record || !record.srtHasBackup || record.srtSaving || record.srtLocked || running(record)) return;
         if (typeof window.confirm === 'function' && !window.confirm('Hoàn tác phụ đề SRT về bản sao lưu (.bak) trước lần lưu gần nhất?')) return;
+        const revision = record.srtRevision || 0;
         record.srtSaving = true;
         refreshSrtControls();
         try {
             const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt/restore-backup`, {
                 method: 'POST', body: '{}',
             });
+            if ((record.srtRevision || 0) !== revision) return;
             if (Array.isArray(data.cues)) {
                 record.srtCues = data.cues.map((cue, idx) => ({
                     index: idx + 1, start_ms: Number(cue.start_ms) || 0, end_ms: Number(cue.end_ms) || 1000,
@@ -1035,32 +1119,39 @@
             }
             record.srtDirty = false;
             record.srtInvalidCount = 0;
+            record.srtRevision = (record.srtRevision || 0) + 1;
             record.activeCueIndex = -1;
             record.lastLiveSubtitleKey = '';
+            setSrtStatus('Đã khôi phục phụ đề SRT từ bản sao lưu .bak.', '', record);
             if (current === record) {
                 renderSrtList();
                 syncVideoCueTime(false);
-                setSrtStatus('Đã khôi phục phụ đề SRT từ bản sao lưu .bak.');
                 notify('Đã hoàn tác phụ đề SRT từ bản sao lưu .bak.');
             }
         } catch (error) {
-            if (current === record) setSrtStatus(error.message, 'error');
+            setSrtStatus(error.message, 'error', record);
         } finally {
             record.srtSaving = false;
             if (current === record) refreshSrtControls();
         }
     }
     async function ensureSrtSaved(record) {
-        if (!record?.srtDirty) return true;
+        if (!record) return false;
+        if (record.srtInvalidCount > 0) {
+            setSrtStatus('Có mốc thời gian SRT không hợp lệ. Hãy sửa các ô báo đỏ trước khi tiếp tục.', 'error', record);
+            if (current === record) notify('Phụ đề SRT có mốc thời gian không hợp lệ; đã tạm dừng thao tác.', 'error');
+            return false;
+        }
+        if (!record.srtDirty) return true;
         const ok = typeof window.confirm === 'function'
             ? window.confirm('Phụ đề SRT đang có thay đổi chưa lưu. Bấm OK để lưu SRT rồi chạy tiếp, hoặc Cancel để quay lại kiểm tra.')
             : false;
         if (!ok) {
-            setSrtStatus('Hãy bấm “Lưu SRT” trước khi tạo TTS, Render video hoặc xuất CapCut Draft.', 'error');
-            notify('Phụ đề SRT chưa được lưu; đã tạm dừng thao tác để tránh dùng bản phụ đề cũ.', 'error');
+            setSrtStatus('Hãy bấm “Lưu SRT” trước khi tạo TTS, Render video hoặc xuất CapCut Draft.', 'error', record);
+            if (current === record) notify('Phụ đề SRT chưa được lưu; đã tạm dừng thao tác để tránh dùng bản phụ đề cũ.', 'error');
             return false;
         }
-        return await saveSrt(record);
+        return await saveSrt(record, {targetJobId: record.jobId});
     }
     function endDrag() {
         if (!drag) return;
@@ -1201,7 +1292,7 @@
         try { await navigator.clipboard.writeText(input.value); notify('Đã sao chép lệnh. App không tự chạy hoặc cài đặt gói.'); }
         catch (_) { input.focus(); input.select(); notify('Không truy cập được clipboard. Lệnh đã được chọn; nhấn Ctrl+C để sao chép.', 'error'); }
     }
-    function projectReceived(snapshot) {
+    function projectReceived(snapshot, {refresh = false} = {}) {
         if (!snapshot?.manifest || typeof snapshot.job_id !== 'string' || !snapshot.job_id) return;
         if (!initialized) { pendingSnapshot = snapshot; return; }
         let record = records.get(snapshot.job_id);
@@ -1211,8 +1302,9 @@
             record = {jobId: snapshot.job_id, snapshot, options: {...defaults, crop_box: crop}, dirty: false, revision: 0,
                 loaded: false, loading: false, loadFailed: false, recoveryRequired: false, busy: '', cropError: '', cropDraft: null,
                 numericDraft: {}, draftPersisted: false, lastCrop: crop, task: null, output: null, videoOutput: null, pollFailures: 0,
-                srtCues: [], srtDirty: false, srtLoaded: false, srtLoading: false, srtSaving: false, srtHasRaw: false,
-                srtHasBackup: false, srtLocked: false, srtLockReason: '', srtSearch: '', srtInvalidCount: 0,
+                srtCues: [], srtDirty: false, srtLoaded: false, srtLoading: false, srtLoadFailed: false, srtSaving: false, srtRevision: 0,
+                srtHasRaw: false, srtHasBackup: false, srtLocked: false, srtLockReason: '', srtSearch: '', srtInvalidCount: 0,
+                srtStatusMessage: '', srtStatusState: '',
                 activeCueIndex: -1, selectedCueIndex: -1, srtRowByIndex: [], lastLiveSubtitleKey: '',
                 hooks: [], hooksBusy: false};
             restoreDraft(record); records.set(record.jobId, record);
@@ -1221,14 +1313,33 @@
         if (current !== record) {
             endDrag(); stopPolling(); voiceSequence++; hookSequence++; current = record; renderedOutputKey = null;
             if ($('editor-srt-search')) $('editor-srt-search').value = record.srtSearch || '';
-            if ($('editor-hooks-status')) $('editor-hooks-status').textContent = '';
+            if ($('editor-srt-replace')) $('editor-srt-replace').value = '';
+            if ($('editor-srt-status')) {
+                $('editor-srt-status').textContent = record.srtStatusMessage || '';
+                $('editor-srt-status').dataset.state = record.srtStatusState || '';
+            }
+            if ($('editor-hooks-status')) {
+                $('editor-hooks-status').textContent = '';
+                $('editor-hooks-status').dataset.state = '';
+            }
             writeForm(); paintTask(); paintOutput(); renderSrtList(); renderHooksList(record); syncVideoCueTime(false);
             if (record.task && running(record)) startPolling(record);
         } else { updateCropSummary(); refreshControls(); syncOverlay(); }
         $('editor-empty').hidden = true; $('editor-project').hidden = false;
         $('editor-project-status').textContent = snapshot.ready ? 'Project sẵn sàng cho Auto Edit.' : 'Project thiếu video hoặc phụ đề Việt.';
-        if (!record.loaded && !record.loading) loadProject(record);
-        else if (changed) notify(record.dirty ? 'Đã khôi phục bản chỉnh sửa chưa lưu của project.' : 'Đã nhận cấu hình Auto Edit của project.');
+        if (refresh || (!record.loaded && !record.loading)) {
+            const promise = loadProject(record);
+            if (refresh && !record.srtDirty && record.snapshot?.availability?.translated_srt === true) {
+                loadSrt(record, {force: true});
+            }
+            return promise;
+        }
+        if (changed) {
+            if (record.srtLoadFailed && !record.srtLoading && record.snapshot?.availability?.translated_srt === true) {
+                loadSrt(record);
+            }
+            notify(record.dirty ? 'Đã khôi phục bản chỉnh sửa chưa lưu của project.' : 'Đã nhận cấu hình Auto Edit của project.');
+        }
     }
     async function loadProject(record) {
         const sequence = record.loadSequence = (record.loadSequence || 0) + 1;
@@ -1313,13 +1424,14 @@
         syncFormOptions();
         const button = $(action === 'render' ? 'editor-render-btn' : action === 'tts' ? 'editor-tts-generate-btn' : 'editor-extract-btn');
         if (button.disabled) return;
-        if ((action === 'render' || action === 'tts') && !(await ensureSrtSaved(current))) return;
         return withAction(action, async record => {
+            const targetJobId = record.jobId;
             const options = checkedOptions();
             if (action === 'tts' || (action === 'render' && options.tts_enabled)) requireVoice(options);
-            const data = await request('/api/editor/jobs', {method: 'POST', body: JSON.stringify({job_id: record.jobId, action, options}), timeoutMs: 30000});
+            if ((action === 'render' || action === 'tts') && !(await ensureSrtSaved(record))) return;
+            const data = await request('/api/editor/jobs', {method: 'POST', body: JSON.stringify({job_id: targetJobId, action, options}), timeoutMs: 30000});
             const task = data.task || data;
-            if (!validTask(task, record.jobId) || task.action !== action) throw new Error('Máy chủ trả về tác vụ Auto Edit không hợp lệ.');
+            if (!validTask(task, targetJobId) || task.action !== action) throw new Error('Máy chủ trả về tác vụ Auto Edit không hợp lệ.');
             record.task = task; record.pollFailures = 0; record.previewTask = false; acceptOutput(record, task);
             if (current === record) { paintTask(); paintOutput(); startPolling(record); notify('Đã gửi tác vụ. Bạn có thể tiếp tục chỉnh bản nháp mà không ảnh hưởng tác vụ đang chạy.'); }
         });
@@ -1344,28 +1456,30 @@
     }
     async function previewAudio() {
         if ($('editor-audio-preview').disabled) return;
-        if (current?.options?.tts_enabled && !(await ensureSrtSaved(current))) return;
         return withAction('audio_preview', async record => {
+            const targetJobId = record.jobId;
             const options = checkedOptions();
             if (options.tts_enabled) requireVoice(options);
-            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/audio-preview`, {
+            if (options.tts_enabled && !(await ensureSrtSaved(record))) return;
+            const data = await request(`/api/editor/projects/${encodeURIComponent(targetJobId)}/audio-preview`, {
                 method: 'POST', timeoutMs: 30000, body: JSON.stringify({options})});
             const task = data.task || data;
-            if (!validTask(task, record.jobId) || task.action !== 'audio_preview') throw new Error('Mẫu nghe thử không đúng project.');
+            if (!validTask(task, targetJobId) || task.action !== 'audio_preview') throw new Error('Mẫu nghe thử không đúng project.');
             record.task = task; record.previewTask = true; record.pollFailures = 0;
             if (current === record) { paintTask(); startPolling(record); notify(options.tts_enabled ? 'Đang tạo mẫu TTS 3 giây với cao độ và tốc độ hiện tại…' : 'Đang tạo mẫu âm thanh gốc 3 giây, giữ tông khi đổi tốc độ…'); }
         });
     }
     async function exportDraft() {
         if ($('editor-draft-btn').disabled) return;
-        if (!(await ensureSrtSaved(current))) return;
         return withAction('capcut_draft', async record => {
+            const targetJobId = record.jobId;
             const options = checkedOptions();
             if (options.tts_enabled) requireVoice(options);
-            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/capcut-draft`, {
+            if (!(await ensureSrtSaved(record))) return;
+            const data = await request(`/api/editor/projects/${encodeURIComponent(targetJobId)}/capcut-draft`, {
                 method: 'POST', timeoutMs: 30000, body: JSON.stringify({options})});
             const task = data.task || data;
-            if (!validTask(task, record.jobId) || task.action !== 'capcut_draft') throw new Error('Tác vụ Draft không hợp lệ.');
+            if (!validTask(task, targetJobId) || task.action !== 'capcut_draft') throw new Error('Tác vụ Draft không hợp lệ.');
             record.task = task; record.previewTask = false; record.pollFailures = 0;
             if (current === record) { paintTask(); startPolling(record); notify('Đang chuẩn bị CapCut Draft với cấu hình đã chọn…'); }
         });
@@ -1565,6 +1679,7 @@
                 if (!Number.isInteger(idx) || idx < 0 || idx >= current.srtCues.length) return;
                 current.srtCues[idx].text = target.value;
                 current.srtDirty = true;
+                current.srtRevision = (current.srtRevision || 0) + 1;
                 current.lastLiveSubtitleKey = '';
                 refreshSrtControls();
                 renderLiveSubtitle();
@@ -1597,6 +1712,7 @@
                 if (field === 'start') cue.start_ms = parsed; else cue.end_ms = parsed;
                 target.value = formatSrtTimestamp(parsed);
                 current.srtDirty = true;
+                current.srtRevision = (current.srtRevision || 0) + 1;
                 current.lastLiveSubtitleKey = '';
                 setSrtStatus(`Đã cập nhật mốc thời gian câu #${idx + 1}. Bấm “Lưu SRT” để ghi xuống đĩa.`);
                 refreshSrtControls();
@@ -1632,12 +1748,7 @@
         $('editor-runtime-refresh').addEventListener('click', loadCapabilities);
         $('editor-runtime-save')?.addEventListener('click', saveRuntime);
         for (const prefix of ['edge', 'separator']) $(`editor-runtime-${prefix}-copy`).addEventListener('click', () => copyCommand(prefix));
-        $('editor-refresh-project').addEventListener('click', () => {
-            if (!current) return;
-            const promise = loadProject(current);
-            if (!current.srtDirty && current.snapshot?.availability?.translated_srt === true) loadSrt(current, {force: true});
-            return promise;
-        });
+        // app.js already owns #editor-refresh-project -> Workbench refresh -> projectReceived(..., {refresh: true}).
         if (typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(() => { endDrag(); syncOverlay(); }); observer.observe($('editor-source-surface')); }
         refreshControls(); loadCapabilities();
         if (pendingSnapshot) { const snapshot = pendingSnapshot; pendingSnapshot = null; projectReceived(snapshot); }
@@ -1649,7 +1760,7 @@
             cropDraft: current?.cropDraft ? {...current.cropDraft} : null, cropError: current?.cropError || '',
             numericDraft: current ? {...current.numericDraft} : {}, draftPersisted: Boolean(current?.draftPersisted),
             output: current?.output ? clone(current.output) : null, videoOutput: current?.videoOutput ? clone(current.videoOutput) : null,
-            srtDirty: Boolean(current?.srtDirty), srtCount: current?.srtCues?.length || 0,
+            srtDirty: Boolean(current?.srtDirty), srtCount: current?.srtCues?.length || 0, srtInvalidCount: current?.srtInvalidCount || 0,
             activeCueIndex: current ? current.activeCueIndex : -1, srtHasBackup: Boolean(current?.srtHasBackup)}),
         helpers: {actionableWarnings, estimatedDuration, defaults, validateOptions, validCrop, containRect, adjustCrop, safeOutputUrl, validTask, draftStorageKey, validatedDraft,
             formatSrtTimestamp, parseSrtTimestamp, findActiveCueIndex, sliceWordsBalanced}};

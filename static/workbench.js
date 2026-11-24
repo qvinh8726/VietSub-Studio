@@ -229,7 +229,7 @@
         workspacePanel(name).setAttribute('aria-busy', String(state === 'loading'));
         $(`${name}-refresh-project`).disabled = state === 'loading' || !projects[name];
     }
-    function projectReceived(name, snapshot) {
+    function projectReceived(name, snapshot, options = {}) {
         if (!initialized || !projects.hasOwnProperty(name) || !snapshot?.manifest) return;
         projects[name] = snapshot;
         const manifest = snapshot.manifest, assets = manifest.assets || {}, metadata = manifest.metadata || {}, source = manifest.source || {};
@@ -260,8 +260,8 @@
         $(`${name}-empty`).hidden = true; $(`${name}-project`).hidden = false;
         projectStatus(name, snapshot.ready === true ? 'Đã nhận project · chỉ chuẩn bị, chưa render / upload.' : 'Project thiếu video hoặc SRT; hãy khôi phục file trước khi tiếp tục.', snapshot.ready === true ? 'ready' : 'error');
         // Auto Edit owns its draft and task state; never repaint its form from queue polling.
-        if (name === 'editor') window.VietSubEditor?.projectReceived(snapshot);
-        if (name === 'uploader') window.VietSubUploader?.projectReceived(snapshot);
+        if (name === 'editor') window.VietSubEditor?.projectReceived(snapshot, options);
+        if (name === 'uploader') window.VietSubUploader?.projectReceived(snapshot, options);
         adapter.projectReceived?.(name, snapshot);
     }
     function setDrawer(open) {

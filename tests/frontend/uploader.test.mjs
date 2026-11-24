@@ -453,3 +453,150 @@ test('channel preset event applies valid profiles, upload mode, and visibility w
     assert.equal(h.elements['uploader-confirm-public'].checked, false, 'public confirmation must stay manual');
 });
 
+test('H-15: paintProfiles memoizes cards across polls, preserves textarea focus/draft and user-collapsed YouTube details', async () => {
+    let sessionStatus = 'running';
+    const ytProfile = profile({
+        id: ids[0], platform: 'youtube', name: 'Kênh YT API', upload_method: 'youtube_api', session_status: 'ready',
+        youtube_api: {configured: true, connected: true, channel_title: 'Channel 1', token_expires_at: 9999999999, scopes: []},
+    });
+    const ttProfile = profile({id: ids[1], platform: 'tiktok', name: 'Kênh TikTok', session_status: 'ready'});
+    const h = harness({
+        initialProfiles: [ytProfile, ttProfile],
+        initialJobs: [queueTask({id: 'up-1', profile_id: ids[1], platform: 'tiktok', status: 'running', percent: 30})],
+        handler: (url, opts) => {
+            if (url === '/api/uploader/queue' && opts.method === 'GET') {
+                return {jobs: [queueTask({id: 'up-1', profile_id: ids[1], platform: 'tiktok', status: sessionStatus, percent: 55})]};
+            }
+        },
+    });
+    // Upgrade #uploader-profile-list with real-DOM in-place child patching methods to verify zero detachment!
+    const list = h.elements['uploader-profile-list'];
+    let replaceChildrenCount = 0;
+    const origReplaceChildren = list.replaceChildren.bind(list);
+    list.replaceChildren = (...nodes) => { replaceChildrenCount += 1; return origReplaceChildren(...nodes); };
+    list.insertBefore = (node, ref) => {
+        const idx = list.children.indexOf(ref);
+        if (idx < 0) list.children.push(node); else list.children.splice(idx, 0, node);
+        node.parentElement = list; return node;
+    };
+    list.replaceChild = (next, prev) => {
+        const idx = list.children.indexOf(prev);
+        if (idx >= 0) { list.children[idx] = next; next.parentElement = list; prev.parentElement = null; }
+        return prev;
+    };
+    list.removeChild = (child) => {
+        const idx = list.children.indexOf(child);
+        if (idx >= 0) { list.children.splice(idx, 1); child.parentElement = null; }
+        return child;
+    };
+    Object.defineProperty(list, 'lastChild', {get() { return list.children[list.children.length - 1] || null; }});
+
+    await h.init(); await h.receive();
+    const ytCardBefore = list.children[0];
+    const details = h.find('uploader-profile-list', el => el.tagName === 'DETAILS');
+    const jsonArea = h.find('uploader-profile-list', el => el.dataset.uploaderFocus === `yt-json-${ids[0]}`);
+    assert.ok(details && details.open === true, 'youtube_api details opens by default initially');
+    assert.ok(jsonArea, 'textarea must expose uploaderFocus token');
+
+    // User types into textarea and explicitly collapses <details>.
+    jsonArea.focus();
+    jsonArea.value = '{"installed":{"client_id":"abc.apps.googleusercontent.com","client_secret":"secret123"}}';
+    await jsonArea.emit('input').done;
+    details.open = false;
+    await details.emit('toggle').done;
+
+    const beforeReplaceCalls = replaceChildrenCount;
+    // Poll tick 1: nothing changed for YouTube card -> exact same DOM node, focus, value, and collapsed details!
+    await h.poll();
+    assert.equal(list.children[0], ytCardBefore, 'Unchanged YouTube card must not be recreated on poll');
+    assert.equal(h.document.activeElement, jsonArea, 'Focus inside textarea must survive poll');
+    assert.equal(jsonArea.value.includes('abc.apps.googleusercontent.com'), true);
+    assert.equal(details.open, false, 'User-collapsed details must remain closed on poll');
+    assert.equal(replaceChildrenCount, beforeReplaceCalls, 'In-place reconciliation must avoid replaceChildren');
+
+    // Poll tick 2: TikTok job completes (only card #2 changes!) -> YouTube card #1 STILL not detached or rebuilt!
+    sessionStatus = 'success';
+    await h.poll();
+    assert.equal(list.children[0], ytCardBefore, 'Updating profile #2 must not rebuild profile #1');
+    assert.equal(h.document.activeElement, jsonArea, 'Focus inside profile #1 textarea survives profile #2 update');
+    assert.equal(details.open, false);
+
+    // Even when profile #1 itself rebuilds (clicking "Nạp từ JSON" fails/succeeds), user's details state and draft work cleanly.
+    const parseBtn = h.find('uploader-profile-list', el => el.dataset.uploaderFocus === `yt-parse-${ids[0]}`);
+    await parseBtn.emit('click').done;
+    const cidInput = h.find('uploader-profile-list', el => el.dataset.uploaderFocus === `yt-cid-${ids[0]}`);
+    assert.equal(cidInput.value, 'abc.apps.googleusercontent.com');
+});
+
+test('M-15: channel preset event before profiles load retains valid UUIDs and reconciles once profiles arrive', async () => {
+    const profilesDeferred = deferred();
+    const h = harness({
+        handler: (url, opts) => {
+            if (url === '/api/uploader/profiles' && opts.method === 'GET') return profilesDeferred.promise;
+        },
+    });
+    const initDone = h.init();
+    await settle();
+    await h.receive();
+
+    // Preset applied BEFORE /api/uploader/profiles finishes loading.
+    await h.document.emit('vietsub:apply-channel-preset', {
+        detail: {
+            preset_name: 'Kênh Sớm',
+            apply_sequence: 2,
+            publish_defaults: {
+                profile_ids: [ids[0], '33333333-3333-4333-8333-333333333333'],
+                upload_mode: 'assisted',
+                visibility: 'private',
+            },
+        },
+    }).done;
+    assert.deepEqual(plain(h.uploader.state().selected), [ids[0], '33333333-3333-4333-8333-333333333333']);
+
+    // Stale lower sequence event is ignored.
+    await h.document.emit('vietsub:apply-channel-preset', {
+        detail: {
+            preset_name: 'Cũ', apply_sequence: 1,
+            publish_defaults: {profile_ids: [], upload_mode: 'auto', visibility: 'draft'},
+        },
+    }).done;
+    assert.equal(h.uploader.state().upload_mode, 'assisted');
+
+    // Now profiles finish loading -> unknown UUID pruned, known ids[0] preserved!
+    profilesDeferred.resolve({profiles: [profile({id: ids[0], name: 'Kênh 1'})]});
+    await initDone; await settle();
+    assert.deepEqual(plain(h.uploader.state().selected), [ids[0]]);
+});
+
+test('Phase 2 assisted confirm-submitted, failed_step, and debug trace download render with safety warning', async () => {
+    const assistedJob = queueTask({
+        id: 'up-assisted', profile_id: ids[0], platform: 'youtube', status: 'awaiting_user_submit',
+        phase: 'awaiting_user_submit', step: 'submit', upload_mode: 'assisted', debug_mode: true, percent: 85,
+        awaiting_deadline: Math.floor(Date.now() / 1000) + 420,
+    });
+    const failedJob = queueTask({
+        id: 'up-failed', profile_id: ids[0], platform: 'youtube', status: 'error',
+        phase: 'error', step: 'fill_metadata', failed_step: 'fill_metadata', upload_mode: 'auto', debug_mode: true, percent: 50,
+        error: 'Selector timeout', trace_url: '/api/uploader/queue/up-failed/trace?signature=ok',
+    });
+    const h = harness({
+        initialJobs: [assistedJob, failedJob],
+        handler: (url, opts) => {
+            if (url === '/api/uploader/queue/up-assisted/confirm-submitted' && opts.method === 'POST') {
+                return {job: {...assistedJob, status: 'success', percent: 100}};
+            }
+        },
+    });
+    await h.init(); await h.receive();
+    const confirmBtn = h.find('uploader-publish-jobs', el => el.dataset.uploaderFocus === 'confirm-up-assisted');
+    assert.ok(confirmBtn, 'awaiting_user_submit job must show confirm-submitted button');
+    const traceLink = h.find('uploader-publish-jobs', el => el.tagName === 'A' && el.href?.includes('/trace?signature=ok'));
+    assert.ok(traceLink, 'debug trace link must be rendered for signed same-origin trace URL');
+    const failedText = h.find('uploader-publish-jobs', el => el.className === 'uploader-job-step-failed');
+    assert.ok(failedText && failedText.textContent.includes('4/7'));
+
+    await confirmBtn.emit('click').done; await settle();
+    assert.ok(h.calls.some(c => c.url === '/api/uploader/queue/up-assisted/confirm-submitted' && c.options.method === 'POST'));
+    assert.equal(h.uploader.state().jobs.find(j => j.id === 'up-assisted').status, 'success');
+});
+

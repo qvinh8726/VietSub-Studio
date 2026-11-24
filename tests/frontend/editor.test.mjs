@@ -45,7 +45,7 @@ function harness({handler, capabilities = caps(), withWorkbench = false, storage
         const attrs = {}, captures = new Set(), classes = new Set();
         const el = Object.assign(eventTarget(), {id, tagName: tag.toUpperCase(), attributes: attrs, dataset: {}, children: [], parentElement: null,
             hidden: false, disabled: false, checked: false, value: '', textContent: '', type: '', labels: [],
-            clientWidth: 800, clientHeight: 400, offsetHeight: 30, videoWidth: 0, videoHeight: 0,
+            clientWidth: 800, clientHeight: 400, clientTop: 0, scrollTop: 0, offsetTop: 0, offsetHeight: 30, videoWidth: 0, videoHeight: 0,
             paused: true, currentTime: 0, duration: NaN, readyState: 0, isConnected: true, loads: 0, selections: 0,
             style: {setProperty(key, value) { this[key] = value; }},
             classList: {add: key => classes.add(key), remove: key => classes.delete(key), contains: key => classes.has(key),
@@ -57,6 +57,19 @@ function harness({handler, capabilities = caps(), withWorkbench = false, storage
             get options() { return this.children.filter(child => child.tagName === 'OPTION'); },
             focus() { document.activeElement = this; }, select() { this.selections++; },
             contains(other) { return this === other || this.children.some(child => child.contains(other)); },
+            querySelector(selector) {
+                const attr = /^\[data-([a-z-]+)="([^"]+)"\]$/.exec(selector);
+                const key = attr ? attr[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()) : null;
+                const walk = parent => {
+                    for (const child of parent.children) {
+                        if (key && child.dataset?.[key] === attr[2]) return child;
+                        const nested = walk(child);
+                        if (nested) return nested;
+                    }
+                    return null;
+                };
+                return walk(this);
+            },
             querySelectorAll(selector) {
                 const all = [];
                 const walk = parent => { for (const child of parent.children) { if (selector === '[data-editor-option]' ? child.dataset.editorOption : true) all.push(child); walk(child); } };
@@ -114,6 +127,13 @@ function harness({handler, capabilities = caps(), withWorkbench = false, storage
     if (withWorkbench) vm.runInContext(workbench, context, {filename: 'static/workbench.js'});
     vm.runInContext(source, context, {filename: 'static/editor.js'});
     const editor = window.VietSubEditor;
+    // In standalone editor tests without workbench.js, mirror Workbench's single refresh bridge.
+    if (!withWorkbench) {
+        elements['editor-refresh-project'].addEventListener('click', () => {
+            const id = editor.state().job_id;
+            if (id) return editor.projectReceived(snapshot(id), {refresh: true});
+        });
+    }
     function change(id, value, type = 'input') {
         const control = elements[id];
         if (control.type === 'checkbox') control.checked = value; else control.value = String(value);
@@ -910,6 +930,200 @@ test('AI hook suggestions render chips, apply to Top Banner with live preview, a
     approx(h.editor.state().options.crop_box.y, .64);
     assert.equal(h.elements['editor-banner-text'].value, 'Hook hồ sơ kênh');
     assert.equal(h.elements['editor-live-banner'].hidden, false);
+});
+
+test('H-13: srtInvalidCount resets on renderSrtList, blocks ensureSrtSaved, and pins targetJobId inside withAction across fast project switch', async () => {
+    const sampleCues = [
+        {index: 1, start_ms: 200, end_ms: 2000, text: 'Câu một', raw_text: ''},
+        {index: 2, start_ms: 2200, end_ms: 4000, text: 'Câu hai', raw_text: ''},
+    ];
+    const putDeferred = deferred();
+    const jobPosts = [];
+    const h = harness({handler: (url, opts) => {
+        if (url.endsWith('/srt') && (!opts?.method || opts.method === 'GET')) {
+            return {job_id: url.split('/')[4], cues: sampleCues, has_raw: false, has_backup: false, locked: false};
+        }
+        if (url === '/api/editor/projects/job-a/srt' && opts.method === 'PUT') return putDeferred.promise;
+        if (url === '/api/editor/jobs' && opts.method === 'POST') {
+            const body = JSON.parse(opts.body);
+            jobPosts.push(body);
+            return task({job_id: body.job_id});
+        }
+    }});
+    h.window.confirm = () => true;
+    await h.init(); await h.receive(snapshot('job-a'));
+
+    // Enter invalid timestamp -> locks Save SRT AND blocks Render via ensureSrtSaved.
+    const startInput = h.elements['editor-srt-list'].children[0].children[0].children[1];
+    startInput.value = 'not-a-time';
+    await h.elements['editor-srt-list'].emit('change', {target: startInput}).done;
+    assert.equal(h.editor.state().srtInvalidCount, 1);
+    assert.equal(h.elements['editor-srt-save-btn'].disabled, true);
+
+    await h.elements['editor-render-btn'].emit('click').done;
+    assert.equal(jobPosts.length, 0, 'Render must not proceed while an SRT timestamp is invalid');
+
+    // Re-rendering SRT list via search resets srtInvalidCount cleanly instead of deadlocking Save button.
+    h.elements['editor-srt-search'].value = 'Câu';
+    await h.elements['editor-srt-search'].emit('input').done;
+    assert.equal(h.editor.state().srtInvalidCount, 0);
+    h.elements['editor-srt-search'].value = '';
+    await h.elements['editor-srt-search'].emit('input').done;
+
+    // Make SRT dirty on job-a, click Render, verify busy locks immediately and switching to job-b still renders job-a!
+    const ta = h.elements['editor-srt-list'].children[0].querySelector('[data-srt-field="text"]');
+    ta.value = 'Câu một đã sửa';
+    await h.elements['editor-srt-list'].emit('input', {target: ta}).done;
+    assert.equal(h.elements['editor-srt-save-btn'].disabled, false);
+
+    const launching = h.elements['editor-render-btn'].emit('click');
+    await settle();
+    assert.equal(h.editor.state().busy, 'render');
+    // Second rapid click while PUT /srt is in flight is ignored.
+    await h.elements['editor-render-btn'].emit('click').done;
+    // User switches to job-b before PUT /srt resolves.
+    await h.receive(snapshot('job-b'));
+    assert.equal(h.editor.state().job_id, 'job-b');
+    putDeferred.resolve({job_id: 'job-a', cues: [{...sampleCues[0], text: 'Câu một đã sửa'}, sampleCues[1]], has_backup: true});
+    await launching.done; await settle();
+
+    assert.equal(jobPosts.length, 1);
+    assert.equal(jobPosts[0].job_id, 'job-a', 'Render must use pinned job-a, never newly visible job-b');
+    assert.equal(h.editor.state().task, null, 'job-b must remain untouched');
+});
+
+test('H-14: applyChannelPreset guards target_job_id, apply_sequence, and preserves user-dragged crop_box when preset_crop_box is null', async () => {
+    const h = harness();
+    await h.init(); await h.receive(snapshot('job-a'));
+    // User drags crop box on Workspace 2 to a custom unsaved region.
+    h.change('editor-crop-x', '20'); h.change('editor-crop-y', '50');
+    h.change('editor-crop-width', '60'); h.change('editor-crop-height', '25');
+    approx(h.editor.state().options.crop_box.x, 0.2);
+
+    // Server returned manifest crop_box in editor_options, but preset itself left crop_box: null (preset_crop_box: null).
+    await h.document.emit('vietsub:apply-channel-preset', {
+        detail: {
+            preset_name: 'Kênh 9:16',
+            target_job_id: 'job-a',
+            apply_sequence: 2,
+            preset_crop_box: null,
+            editor_options: {...plain(helpers.defaults), reframe: 'vertical', crop_box: {x: 0.04, y: 0.64, width: 0.92, height: 0.3}, subtitle_animation: 'word_pop'},
+        },
+    }).done;
+    assert.equal(h.editor.state().options.reframe, 'vertical');
+    approx(h.editor.state().options.crop_box.x, 0.2);
+    approx(h.editor.state().options.crop_box.y, 0.5);
+
+    // Out-of-order apply_sequence (1 < 2) is ignored.
+    await h.document.emit('vietsub:apply-channel-preset', {
+        detail: {
+            preset_name: 'Cũ', target_job_id: 'job-a', apply_sequence: 1, preset_crop_box: null,
+            editor_options: {...plain(helpers.defaults), reframe: 'original'},
+        },
+    }).done;
+    assert.equal(h.editor.state().options.reframe, 'vertical');
+
+    // Switch to job-b -> preset event targeted at job-a with job-a watermark MUST NOT contaminate job-b.
+    await h.receive(snapshot('job-b'));
+    await h.document.emit('vietsub:apply-channel-preset', {
+        detail: {
+            preset_name: 'Logo A', target_job_id: 'job-a', apply_sequence: 3, preset_crop_box: null,
+            editor_options: {...plain(helpers.defaults), watermark_enabled: true, watermark_path: 'C:/job-a/.vietsub-assets/watermark-preset-abc.png'},
+        },
+    }).done;
+    assert.equal(h.editor.state().options.watermark_path, '');
+    assert.equal(h.editor.state().options.watermark_enabled, false);
+});
+
+test('H-15 & M-15 & L-01: px live subtitle padding, scrollTop without scrollIntoView, querySelector focus, search clear on add, loadSrt retry, saveSrt revision guard, project switch reset, single refresh listener, and CSS tokens', async () => {
+    let srtAttempts = 0;
+    const saveDeferred = deferred();
+    const h = harness({handler: (url, opts) => {
+        if (url === '/api/editor/projects/job-a/srt' && (!opts?.method || opts.method === 'GET')) {
+            srtAttempts += 1;
+            if (srtAttempts === 1) return {response: {ok: false, status: 503, json: async () => ({error: 'Tạm thời lỗi đọc SRT'})}};
+            return {job_id: 'job-a', cues: [
+                {index: 1, start_ms: 0, end_ms: 2000, text: 'Câu đầu tiên', raw_text: ''},
+                {index: 2, start_ms: 2500, end_ms: 5000, text: 'Câu thứ hai', raw_text: ''},
+            ], has_raw: false, has_backup: false, locked: false};
+        }
+        if (url === '/api/editor/projects/job-a/srt' && opts.method === 'PUT') return saveDeferred.promise;
+    }});
+    await h.init(); await h.receive(snapshot('job-a'));
+    // First loadSrt failed -> card stays visible with error and allows retry when switching back!
+    assert.equal(srtAttempts, 1);
+    assert.equal(h.elements['editor-srt-card'].hidden, false);
+    assert.match(h.elements['editor-srt-status'].textContent, /lỗi đọc SRT/);
+
+    // Switch to job-b -> #editor-srt-status and #editor-srt-replace reset cleanly.
+    h.elements['editor-srt-replace'].value = 'old-replacement';
+    await h.receive(snapshot('job-b', {availability: {video: true, translated_srt: false}}));
+    assert.equal(h.elements['editor-srt-replace'].value, '');
+    assert.equal(h.elements['editor-srt-status'].textContent, '');
+
+    // Switch back to job-a -> automatically retries loadSrt() and succeeds!
+    await h.receive(snapshot('job-a'));
+    assert.equal(srtAttempts, 2);
+    assert.equal(h.editor.state().srtCount, 2);
+
+    // H-15: paddingBottom uses px from content.height (450px * 0.06 = 27px for crop y=0.64, h=0.30).
+    const video = h.elements['editor-video'];
+    video.hidden = false; video.videoWidth = 1920; video.videoHeight = 1080;
+    video.rect = {left: 0, top: 0, width: 800, height: 450};
+    video.currentTime = 0.5;
+    await video.emit('timeupdate').done;
+    assert.equal(h.elements['editor-live-subtitle'].style.paddingBottom, '27px');
+    h.change('editor-subtitle-position', 'bottom', 'change');
+    assert.equal(h.elements['editor-live-subtitle'].style.paddingBottom, '18px');
+
+    // H-15: switching active cue adjusts list.scrollTop directly and NEVER calls scrollIntoView.
+    const list = h.elements['editor-srt-list'];
+    list.clientHeight = 100; list.scrollTop = 0;
+    list.rect = {left: 0, top: 200, width: 400, height: 100};
+    let scrollIntoViewCalls = 0;
+    const row2 = list.children[1];
+    row2.rect = {left: 0, top: 380, width: 400, height: 60};
+    row2.scrollIntoView = () => { scrollIntoViewCalls += 1; };
+    video.currentTime = 3.0;
+    await video.emit('timeupdate').done;
+    assert.equal(scrollIntoViewCalls, 0);
+    assert.equal(list.scrollTop, 140);
+
+    // M-15: insertSrtCue clears active search filter and focuses textarea via querySelector.
+    h.elements['editor-srt-search'].value = 'không khớp';
+    await h.elements['editor-srt-search'].emit('input').done;
+    assert.equal(list.children.length, 0);
+    await h.elements['editor-srt-add-btn'].emit('click').done;
+    assert.equal(h.elements['editor-srt-search'].value, '');
+    assert.equal(h.editor.state().srtCount, 3);
+    assert.equal(h.document.activeElement?.dataset?.srtField, 'text');
+
+    // M-15: saveSrt revision guard preserves newer edits made while PUT /srt is in flight.
+    const saving = h.elements['editor-srt-save-btn'].emit('click');
+    await settle();
+    const ta0 = h.elements['editor-srt-list'].children[0].querySelector('[data-srt-field="text"]');
+    ta0.value = 'Chỉnh sửa mới hơn lúc đang lưu';
+    await h.elements['editor-srt-list'].emit('input', {target: ta0}).done;
+    saveDeferred.resolve({job_id: 'job-a', cues: [{index: 1, start_ms: 0, end_ms: 2000, text: 'Bản cũ trên server'}], has_backup: true});
+    await saving.done;
+    assert.equal(h.editor.state().srtDirty, true);
+    assert.equal(h.elements['editor-srt-list'].children[0].querySelector('[data-srt-field="text"]').value, 'Chỉnh sửa mới hơn lúc đang lưu');
+
+    // M-15: withWorkbench: true -> #editor-refresh-project has only 1 click listener (from workbench.js, not editor.js).
+    const wbHarness = harness({withWorkbench: true});
+    const refreshes = [];
+    wbHarness.window.VietSubWorkbench.init({
+        request: async () => ({}), notify() {}, endCropDrag() {},
+        refreshProject(name, id) { refreshes.push([name, id]); },
+    });
+    await wbHarness.init();
+    assert.equal((wbHarness.elements['editor-refresh-project'].listeners.get('click') || []).length, 1);
+
+    // L-01: style.css has no undefined var(--bg) / var(--sans) and sets display: grid on glossary & preset blocks.
+    assert.equal(css.includes('var(--bg)'), false);
+    assert.equal(css.includes('var(--sans)'), false);
+    assert.match(css, /\.glossary-settings\s*\{[^}]*display:\s*grid/);
+    assert.match(css, /\.channel-presets-settings\s*\{[^}]*display:\s*grid/);
 });
 
 

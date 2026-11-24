@@ -10,41 +10,73 @@ import vm from 'node:vm';
 const APP_JS = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
 function makeElement(id = '') {
-    return {
-        id, hidden: false, textContent: '', className: '', disabled: false, value: '', innerHTML: '',
+    const el = {
+        id, tagName: id.toUpperCase(), hidden: false, textContent: '', className: '', disabled: false, value: '', innerHTML: '',
         style: {}, dataset: {}, children: [], options: [], attributes: {}, onclick: null,
-        checked: false, indeterminate: false, listeners: {}, isConnected: true,
+        checked: false, indeterminate: false, listeners: {}, isConnected: true, files: [],
         showModal() { this.open = true; }, close() { this.open = false; },
         setAttribute(name, value) { this.attributes[name] = String(value); },
         getAttribute(name) { return this.attributes[name]; },
         removeAttribute(name) { delete this.attributes[name]; },
-        appendChild(child) { this.children.push(child); return child; },
-        append(...nodes) { this.children.push(...nodes); },
-        replaceChildren(...nodes) { this.children = [...nodes]; },
+        appendChild(child) { this.children.push(child); child.parentElement = this; return child; },
+        append(...nodes) { for (const child of nodes) this.appendChild(child); },
+        replaceChildren(...nodes) { this.children = []; for (const child of nodes) this.appendChild(child); },
         addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); },
-        dispatch(type, event = {}) { for (const listener of this.listeners[type] || []) listener({target: this, ...event}); },
-        querySelector() { return makeElement(); },
+        dispatch(type, event = {}) { return Promise.all((this.listeners[type] || []).map(listener => listener({target: this, ...event}))); },
+        querySelectorAll(selector) {
+            const matched = [];
+            const walk = node => {
+                for (const child of node.children || []) {
+                    if (
+                        (selector === 'input[data-glossary-field]' && child.tagName === 'INPUT' && child.dataset?.glossaryField) ||
+                        (selector === 'input[type="checkbox"]' && child.tagName === 'INPUT' && child.type === 'checkbox') ||
+                        (selector === 'input[data-glossary-field="source"]' && child.tagName === 'INPUT' && child.dataset?.glossaryField === 'source')
+                    ) matched.push(child);
+                    walk(child);
+                }
+            };
+            walk(this);
+            return matched;
+        },
+        querySelector(selector) {
+            const found = this.querySelectorAll(selector);
+            return found[0] || makeElement();
+        },
         classList: { toggle() {}, add() {}, remove() {} },
-        pause() {}, load() {}, focus() {}, scrollIntoView() {}, remove() {},
+        pause() {}, load() {}, focus() {}, select() {}, scrollIntoView() {}, remove() {},
         click() { this.clicked = (this.clicked || 0) + 1; },
         get firstChild() { return this.children[0]; },
     };
+    return el;
 }
 
-function loadApp({ fetch, confirm = () => true, pywebview, workbench } = {}) {
-    const elements = {};
+function loadApp({ fetch, confirm = () => true, pywebview, workbench, editor } = {}) {
+    const elements = {}, docListeners = {}, windowListeners = {}, dispatchedEvents = [];
     const document = {
         getElementById(id) { return (elements[id] ??= makeElement(id)); },
         querySelector(selector) { return { content: selector.includes('api-token') ? 'token' : '1.6.2' }; },
-        createElement(tag) { return makeElement(tag); },
+        createElement(tag) { const el = makeElement(tag); el.tagName = tag.toUpperCase(); return el; },
+        addEventListener(type, listener) { (docListeners[type] ??= []).push(listener); },
+        dispatchEvent(event) {
+            dispatchedEvents.push(event);
+            for (const listener of docListeners[event.type] || []) listener(event);
+            return true;
+        },
     };
-    const window = { addEventListener() {}, matchMedia: () => ({ matches: true }), confirm, scrollTo() {}, pywebview, VietSubWorkbench: workbench };
+    class CustomEvent { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
+    const window = {
+        addEventListener(type, listener) { (windowListeners[type] ??= []).push(listener); },
+        emit(type, event = {}) { return Promise.all((windowListeners[type] || []).map(fn => fn(event))); },
+        matchMedia: () => ({ matches: true }), confirm, scrollTo() {}, pywebview, VietSubWorkbench: workbench, VietSubEditor: editor,
+    };
+    const safeTimeout = (fn, delay, ...args) => { const t = setTimeout(fn, delay, ...args); t.unref?.(); return t; };
+    const safeInterval = (fn, delay, ...args) => { const t = setInterval(fn, delay, ...args); t.unref?.(); return t; };
     const context = vm.createContext({
-        document, window, fetch, console, Headers, AbortController, FormData, URL, File,
-        setTimeout, clearTimeout, setInterval, clearInterval, JSON, Date, Math,
+        document, window, fetch, console, Headers, AbortController, FormData, URL, File, CustomEvent,
+        setTimeout: safeTimeout, clearTimeout, setInterval: safeInterval, clearInterval, JSON, Date, Math,
     });
     vm.runInContext(APP_JS, context, { filename: 'static/app.js' });
-    return { context, elements, run: code => vm.runInContext(code, context) };
+    return { context, elements, document, window, dispatchedEvents, run: code => vm.runInContext(code, context) };
 }
 
 test('a request that never settles fails after its timeout and shows the disconnected banner', async () => {
@@ -675,4 +707,185 @@ test('queue mutation invalidates an in-flight handoff without switching to remov
     assert.deepEqual(wb.switches, []); assert.deepEqual(wb.received, []);
     assert.equal(app.run('pendingHandoffs.size'), 0);
     assert.match(wb.statuses.at(-1)[1], /Hàng đợi đã thay đổi/);
+});
+
+test('H-14: opening settings restores preset glossary_id even when channel-presets resolves before glossaries', async () => {
+    let resolveGlossaries;
+    const presetStore = {
+        active_id: 'p1',
+        presets: [{
+            id: 'p1', name: 'Kênh Tiên Hiệp', description: '', glossary_id: 'g-tien-hiep',
+            editor_options: {reframe: 'vertical', mask_mode: 'boxblur', crop_box: null, subtitle_animation: 'word_pop', subtitle_highlight_color: '#ffd54a', subtitle_max_words_per_chunk: 4},
+            publish_defaults: {profile_ids: [], upload_mode: 'assisted', visibility: 'private', confirm_public_auto: false},
+        }],
+        resolved_warnings: {},
+    };
+    const app = loadApp({
+        fetch: (url) => {
+            if (url === '/api/glossaries') return new Promise(resolve => { resolveGlossaries = resolve; });
+            if (url === '/api/channel-presets') return Promise.resolve(jsonResponse(presetStore));
+            if (url === '/api/uploader/profiles') return Promise.resolve(jsonResponse({profiles: []}));
+            return Promise.resolve(jsonResponse({}));
+        },
+    });
+    await app.window.emit('load');
+    const glossariesPending = app.run('loadGlossaries()');
+    await app.run('loadChannelPresets({withProfiles: true})');
+    // Before glossaries arrive, dropdown temporarily fell back to default.
+    assert.equal(app.elements['setting-preset-glossary'].value, 'default');
+    // When glossaries finally arrive, the listener must restore the preset's real glossary_id.
+    resolveGlossaries(jsonResponse({
+        active_id: 'default',
+        profiles: [
+            {id: 'default', name: 'Mặc định', style_note: '', entries: []},
+            {id: 'g-tien-hiep', name: 'Tiên Hiệp', style_note: 'ta-ngươi', entries: [{source: '剑', target: 'Kiếm', note: ''}]},
+        ],
+    }));
+    await glossariesPending;
+    assert.equal(app.elements['setting-preset-glossary'].value, 'g-tien-hiep');
+
+    // Manual user selection on #setting-preset-glossary survives later glossaries-updated events.
+    app.elements['setting-preset-glossary'].value = 'default';
+    await app.elements['setting-preset-glossary'].dispatch('change');
+    app.run(`renderGlossaryStore({active_id: 'default', profiles: [
+        {id: 'default', name: 'Mặc định', style_note: '', entries: []},
+        {id: 'g-tien-hiep', name: 'Tiên Hiệp', style_note: '', entries: []},
+        {id: 'g-game', name: 'Game', style_note: '', entries: []}
+    ]})`);
+    assert.equal(app.elements['setting-preset-glossary'].value, 'default');
+});
+
+test('M-15: saving channel preset preserves existing profile_ids when uploader profiles failed or did not load yet', async () => {
+    const savedBodies = [];
+    const presetStore = {
+        active_id: 'p1',
+        presets: [{
+            id: 'p1', name: 'Kênh Shorts', description: '', glossary_id: 'default',
+            editor_options: {reframe: 'vertical', mask_mode: 'boxblur', crop_box: null, subtitle_animation: 'word_pop', subtitle_highlight_color: '#ffd54a', subtitle_max_words_per_chunk: 4},
+            publish_defaults: {profile_ids: ['11111111-1111-4111-8111-111111111111'], upload_mode: 'assisted', visibility: 'private', confirm_public_auto: false},
+        }],
+        resolved_warnings: {},
+    };
+    const app = loadApp({
+        fetch: (url, opts = {}) => {
+            if (url === '/api/channel-presets') return Promise.resolve(jsonResponse(presetStore));
+            if (url === '/api/uploader/profiles') return Promise.reject(new Error('offline'));
+            if (url === '/api/channel-presets/p1' && opts.method === 'PUT') {
+                savedBodies.push(JSON.parse(opts.body));
+                return Promise.resolve(jsonResponse(presetStore));
+            }
+            return Promise.resolve(jsonResponse({}));
+        },
+    });
+    await app.run('loadChannelPresets({withProfiles: true})');
+    assert.equal(app.elements['setting-preset-profiles'].dataset.profilesLoaded, 'false');
+    await app.run('saveCurrentChannelPreset()');
+    assert.equal(savedBodies.length, 1);
+    assert.deepEqual(savedBodies[0].publish_defaults.profile_ids, ['11111111-1111-4111-8111-111111111111']);
+});
+
+test('M-15: uploading preset watermark preserves unsaved form edits and capture button gates empty preset and filters NaN', async () => {
+    const presetStore = {
+        active_id: 'p1',
+        presets: [{
+            id: 'p1', name: 'Kênh Cũ', description: 'Mô tả cũ', glossary_id: 'default',
+            editor_options: {reframe: 'original', mask_mode: 'boxblur', crop_box: null, font_size: 48, blur_strength: 8, subtitle_animation: 'static', subtitle_highlight_color: '#ffd54a', subtitle_max_words_per_chunk: 4, watermark_path: '', watermark_enabled: false},
+            publish_defaults: {profile_ids: [], upload_mode: 'assisted', visibility: 'private', confirm_public_auto: false},
+        }],
+        resolved_warnings: {},
+    };
+    const editorMock = {
+        state: () => ({options: {reframe: 'vertical', mask_mode: 'delogo', crop_box: {x: 0.1, y: 0.7, width: 0.8, height: 0.2}, font_size: NaN, blur_strength: Infinity, subtitle_animation: 'word_pop', subtitle_highlight_color: '#00ff88', subtitle_max_words_per_chunk: 5, banner_text: 'Hook mới'}}),
+        helpers: {defaults: {font_size: 48, blur_strength: 8}},
+    };
+    const app = loadApp({
+        editor: editorMock,
+        fetch: (url, opts = {}) => {
+            if (url === '/api/channel-presets/p1/watermark' && opts.method === 'POST') {
+                const updated = JSON.parse(JSON.stringify(presetStore));
+                updated.presets[0].editor_options.watermark_path = 'C:/cfg/channel-presets-assets/p1/logo.png';
+                updated.presets[0].editor_options.watermark_enabled = true;
+                return Promise.resolve(jsonResponse(updated));
+            }
+            return Promise.resolve(jsonResponse({}));
+        },
+    });
+    // Without any preset, capture button is disabled and no-ops cleanly.
+    app.run('renderChannelPresetsStore({active_id: "", presets: [], resolved_warnings: {}})');
+    assert.equal(app.elements['setting-preset-capture-btn'].disabled, true);
+    app.run('captureCurrentEditorOptionsIntoPreset()');
+    assert.equal(app.run('presetEditorDraft'), null);
+
+    // Load preset, edit form fields unsaved, then upload watermark PNG -> form edits survive.
+    app.run(`renderChannelPresetsStore(${JSON.stringify(presetStore)})`);
+    assert.equal(app.elements['setting-preset-capture-btn'].disabled, false);
+    app.elements['setting-preset-name'].value = 'Tên Đang Sửa Dở';
+    app.elements['setting-preset-banner'].value = 'Banner Đang Gõ';
+    app.elements['setting-preset-watermark-file'].files = [new File([new Uint8Array([137, 80, 78, 71])], 'logo.png', {type: 'image/png'})];
+    await app.run('uploadChannelPresetWatermark()');
+    assert.equal(app.elements['setting-preset-name'].value, 'Tên Đang Sửa Dở');
+    assert.equal(app.elements['setting-preset-banner'].value, 'Banner Đang Gõ');
+    assert.equal(app.run('presetEditorDraft.watermark_path'), 'C:/cfg/channel-presets-assets/p1/logo.png');
+    assert.match(app.elements['setting-preset-watermark-status'].textContent, /Đã gắn logo PNG/);
+
+    // Capture Auto Edit options strips NaN/Infinity and retains preset's own watermark.
+    app.run('captureCurrentEditorOptionsIntoPreset()');
+    const draft = plain(app.run('presetEditorDraft'));
+    assert.equal(draft.font_size, 48);
+    assert.equal(draft.blur_strength, 8);
+    assert.equal(draft.crop_box, null);
+    assert.equal(draft.watermark_path, 'C:/cfg/channel-presets-assets/p1/logo.png');
+    assert.equal(draft.reframe, 'vertical');
+});
+
+test('H-14 & M-15: applyChannelPreset attaches target_job_id, preset_crop_box, apply_sequence and ignores stale responses; glossary/preset loaders guard out-of-order responses', async () => {
+    const pendingApply = [], pendingGlossary = [];
+    const app = loadApp({
+        fetch: (url, opts = {}) => {
+            if (url === '/api/glossaries' && (!opts.method || opts.method === 'GET')) {
+                return new Promise(resolve => pendingGlossary.push(resolve));
+            }
+            if (url.endsWith('/apply') && opts.method === 'POST') {
+                return new Promise(resolve => pendingApply.push({url, body: JSON.parse(opts.body), resolve}));
+            }
+            return Promise.resolve(jsonResponse({}));
+        },
+    });
+    // Out-of-order glossary GET: slow #1 cannot overwrite fast #2.
+    const g1 = app.run('loadGlossaries()');
+    const g2 = app.run('loadGlossaries()');
+    pendingGlossary[1](jsonResponse({active_id: 'g2', profiles: [{id: 'default', name: 'Mặc định', entries: []}, {id: 'g2', name: 'Mới Nhất', entries: []}]}));
+    await g2;
+    pendingGlossary[0](jsonResponse({active_id: 'default', profiles: [{id: 'default', name: 'Cũ Kỹ', entries: []}]}));
+    await g1;
+    assert.equal(app.run('glossaryStore.active_id'), 'g2');
+    assert.equal(app.run('glossaryStore.profiles[0].name'), 'Mặc định');
+
+    // Out-of-order applyChannelPreset: only #2 dispatches event with target_job_id & apply_sequence & preset_crop_box.
+    app.run("workspaceProjects.editor = 'job-a'");
+    const a1 = app.run("applyChannelPreset('p1')");
+    const a2 = app.run("applyChannelPreset('p2')");
+    assert.equal(pendingApply.length, 2);
+    assert.equal(pendingApply[0].body.job_id, 'job-a');
+    pendingApply[1].resolve(jsonResponse({
+        preset_id: 'p2', preset_name: 'Hồ sơ 2',
+        editor_options: {reframe: 'vertical', crop_box: {x: 0.1, y: 0.7, width: 0.8, height: 0.2}},
+        publish_defaults: {profile_ids: [], upload_mode: 'assisted', visibility: 'private'},
+        presets_store: {active_id: 'p2', presets: [{id: 'p2', name: 'Hồ sơ 2', glossary_id: 'default', editor_options: {crop_box: null}, publish_defaults: {}}], resolved_warnings: {}},
+        warnings: [],
+    }));
+    await a2;
+    pendingApply[0].resolve(jsonResponse({
+        preset_id: 'p1', preset_name: 'Hồ sơ 1 cũ',
+        editor_options: {reframe: 'original', crop_box: null},
+        publish_defaults: {profile_ids: [], upload_mode: 'assisted', visibility: 'private'},
+        warnings: [],
+    }));
+    await a1;
+    const applyEvents = app.dispatchedEvents.filter(e => e.type === 'vietsub:apply-channel-preset');
+    assert.equal(applyEvents.length, 1);
+    assert.equal(applyEvents[0].detail.preset_id, 'p2');
+    assert.equal(applyEvents[0].detail.target_job_id, 'job-a');
+    assert.equal(applyEvents[0].detail.apply_sequence, 2);
+    assert.equal(applyEvents[0].detail.preset_crop_box, null);
 });

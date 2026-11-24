@@ -30,10 +30,10 @@
     const activeSessions = new Set(['queued', 'running', 'needs_verification']);
     const sessionStatuses = new Set(['queued', 'running', 'needs_verification', 'success', 'error', 'cancelled']);
     const draftStorageKey = 'vietsub.uploader.drafts.v1', maxStoredDrafts = 10, maxDraftBytes = 262144;
-    const records = new Map(), storedDrafts = new Map(), sessions = new Map(), profileBusy = new Set(), queueBusy = new Set(), ytDrafts = new Map();
+    const records = new Map(), storedDrafts = new Map(), sessions = new Map(), profileBusy = new Set(), queueBusy = new Set(), ytDrafts = new Map(), profileCardCache = new Map();
     let initialized = false, pendingSnapshot = null, current = null, lastProject = null, capabilities = null, profiles = [], jobs = [];
-    let profilesLoading = false, queueLoading = false, mediaBusy = false, createBusy = false, capabilitySequence = 0, profileSequence = 0, queueSequence = 0;
-    let navigation = 0, mediaSequence = 0, pollTimer = 0, pollFailures = 0, queueMutation = 0, profilesError = '', queueError = '';
+    let profilesLoading = false, profilesLoaded = false, queueLoading = false, mediaBusy = false, createBusy = false, capabilitySequence = 0, profileSequence = 0, queueSequence = 0;
+    let navigation = 0, mediaSequence = 0, pollTimer = 0, pollFailures = 0, queueMutation = 0, profilesError = '', queueError = '', lastPresetSequence = 0, paintedProfilesEmpty = null;
     const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u0020\u007f/\\?#]/.test(value) && value !== '.' && value !== '..';
     const uuid = value => typeof value === 'string' && /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value);
     const object = value => Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -324,13 +324,26 @@
         try {
             const data = await request('/api/uploader/profiles'); if (sequence !== profileSequence) return;
             if (!Array.isArray(data.profiles) || !data.profiles.every(validProfile) || new Set(data.profiles.map(item => item.id)).size !== data.profiles.length) throw new Error('Danh sách tài khoản không hợp lệ.');
-            profiles = data.profiles.map(item => ({ ...item, session_status: item.session_status === 'alive' ? 'ready' : item.session_status })); profilesError = ''; $('uploader-profiles-status').textContent = `${profiles.length} profile cục bộ. Chỉ profile sẵn sàng mới được xếp hàng đăng.`;
+            profiles = data.profiles.map(item => ({ ...item, session_status: item.session_status === 'alive' ? 'ready' : item.session_status }));
+            profilesLoaded = true;
+            profilesError = '';
+            const knownIds = new Set(profiles.map(item => item.id));
+            for (const record of records.values()) {
+                if (!record.pendingPresetProfiles) continue;
+                record.pendingPresetProfiles = false;
+                const filtered = [...record.selected].filter(id => knownIds.has(id));
+                if (filtered.length !== record.selected.size) {
+                    record.selected = new Set(filtered);
+                    persist(record);
+                }
+            }
+            $('uploader-profiles-status').textContent = `${profiles.length} profile cục bộ. Chỉ profile sẵn sàng mới được xếp hàng đăng.`;
         } catch (error) { if (sequence === profileSequence) { profilesError = error.message; $('uploader-profiles-status').textContent = error.message; } }
         finally { if (sequence === profileSequence) { profilesLoading = false; paintProfiles(); refreshControls(); } }
     }
     function getYtDraft(profileId) {
         let draft = ytDrafts.get(profileId);
-        if (!draft) { draft = { client_id: '', client_secret: '', raw_json: '', open: false, message: '' }; ytDrafts.set(profileId, draft); }
+        if (!draft) { draft = { client_id: '', client_secret: '', raw_json: '', open: null, message: '', version: 0 }; ytDrafts.set(profileId, draft); }
         return draft;
     }
     async function updateProfileMethod(profile, uploadMethod) {
@@ -339,7 +352,11 @@
         try {
             const updated = await request(`/api/uploader/profiles/${encodeURIComponent(profile.id)}/config`, { method: 'POST', body: JSON.stringify({ upload_method: uploadMethod }) });
             if (!validProfile(updated)) throw new Error('App chưa xác nhận cấu hình phương thức đăng.');
-            if (uploadMethod === 'youtube_api') getYtDraft(profile.id).open = true;
+            if (uploadMethod === 'youtube_api') {
+                const draft = getYtDraft(profile.id);
+                draft.open = true;
+                draft.version = (draft.version || 0) + 1;
+            }
             await loadProfiles();
             notify(uploadMethod === 'youtube_api'
                 ? 'Đã chuyển tài khoản YouTube sang YouTube Data API v3 (OAuth2). Hãy lưu Client ID/Secret và kết nối OAuth2.'
@@ -353,12 +370,13 @@
         let payload;
         if (draft.raw_json.trim() && (!draft.client_id.trim() || !draft.client_secret.trim())) {
             const parsed = parseYoutubeClientSecretJson(draft.raw_json);
-            if (parsed.error) { draft.message = parsed.error; paintProfiles(); return; }
+            if (parsed.error) { draft.message = parsed.error; draft.version = (draft.version || 0) + 1; paintProfiles(); return; }
             payload = { client_secret_json: draft.raw_json };
         } else {
             payload = { client_id: draft.client_id.trim(), client_secret: draft.client_secret.trim() };
             if (!payload.client_id || !payload.client_secret) {
                 draft.message = 'Nhập Client ID và Client Secret, hoặc dán client_secret.json (Desktop app) rồi bấm Nạp từ JSON.';
+                draft.version = (draft.version || 0) + 1;
                 paintProfiles();
                 return;
             }
@@ -368,10 +386,10 @@
             const updated = await request(`/api/uploader/profiles/${encodeURIComponent(profile.id)}/youtube-oauth/config`, { method: 'POST', body: JSON.stringify(payload) });
             if (!validProfile(updated)) throw new Error('App chưa xác nhận cấu hình YouTube OAuth2.');
             draft.client_id = ''; draft.client_secret = ''; draft.raw_json = ''; draft.message = 'Đã mã hoá và lưu OAuth Client cục bộ (DPAPI). Bấm “Kết nối Google OAuth2” để cấp quyền.';
-            draft.open = true;
+            draft.open = true; draft.version = (draft.version || 0) + 1;
             await loadProfiles();
             notify('Đã lưu OAuth Client YouTube (mã hoá DPAPI). Chưa đăng video.');
-        } catch (error) { draft.message = error.message; notify(error.message, 'error'); }
+        } catch (error) { draft.message = error.message; draft.version = (draft.version || 0) + 1; notify(error.message, 'error'); }
         finally { profileBusy.delete(profile.id); paintProfiles(); refreshControls(); }
     }
     async function startYoutubeOAuth(profile) {
@@ -405,7 +423,7 @@
         const draft = getYtDraft(profile.id);
         const yt = object(profile.youtube_api) ? profile.youtube_api : { configured: false, connected: false, channel_title: '' };
         const details = node('details', '', 'uploader-yt-api-panel');
-        if (draft.open || isYoutubeApiProfile(profile)) details.open = true;
+        details.open = draft.open === null ? isYoutubeApiProfile(profile) : Boolean(draft.open);
         details.addEventListener('toggle', () => { draft.open = details.open; });
         details.appendChild(node('summary', 'YouTube Data API v3 (tùy chọn · ổn định hơn trình duyệt)'));
 
@@ -414,6 +432,7 @@
         const select = node('select', '', 'select-input');
         select.disabled = locked;
         select.dataset.uploaderFocus = `yt-method-${profile.id}`;
+        select.setAttribute('aria-label', `Phương thức đăng cho ${profile.name}`);
         for (const [val, label] of [['browser', 'Trình duyệt (Playwright)'], ['youtube_api', 'YouTube Data API v3 (OAuth2)']]) {
             const opt = node('option', label); opt.value = val; opt.selected = (profile.upload_method || 'browser') === val; select.appendChild(opt);
         }
@@ -433,6 +452,8 @@
         jsonInput.placeholder = 'Dán nhanh nội dung client_secret.json (loại Desktop app / installed)…';
         jsonInput.value = draft.raw_json;
         jsonInput.disabled = locked;
+        jsonInput.dataset.uploaderFocus = `yt-json-${profile.id}`;
+        jsonInput.setAttribute('aria-label', `Nội dung client_secret.json cho ${profile.name}`);
         jsonInput.addEventListener('input', () => { draft.raw_json = jsonInput.value; });
         details.appendChild(jsonInput);
 
@@ -440,6 +461,7 @@
         idInput.type = 'text'; idInput.autocomplete = 'off'; idInput.placeholder = 'Client ID (xxx.apps.googleusercontent.com)';
         idInput.value = draft.client_id; idInput.disabled = locked;
         idInput.dataset.uploaderFocus = `yt-cid-${profile.id}`;
+        idInput.setAttribute('aria-label', `YouTube OAuth Client ID cho ${profile.name}`);
         idInput.addEventListener('input', () => { draft.client_id = idInput.value; });
         details.appendChild(idInput);
 
@@ -447,6 +469,7 @@
         secretInput.type = 'password'; secretInput.autocomplete = 'off'; secretInput.placeholder = 'Client Secret (lưu mã hoá DPAPI)';
         secretInput.value = draft.client_secret; secretInput.disabled = locked;
         secretInput.dataset.uploaderFocus = `yt-csec-${profile.id}`;
+        secretInput.setAttribute('aria-label', `YouTube OAuth Client Secret cho ${profile.name}`);
         secretInput.addEventListener('input', () => { draft.client_secret = secretInput.value; });
         details.appendChild(secretInput);
 
@@ -455,10 +478,10 @@
         const bar = node('div', '', 'uploader-profile-actions');
         const loadJsonBtn = button('Nạp từ JSON', () => {
             const parsed = parseYoutubeClientSecretJson(draft.raw_json);
-            if (parsed.error) { draft.message = parsed.error; paintProfiles(); return; }
+            if (parsed.error) { draft.message = parsed.error; draft.version = (draft.version || 0) + 1; paintProfiles(); return; }
             draft.client_id = parsed.client_id; draft.client_secret = parsed.client_secret;
             draft.message = 'Đã trích xuất Client ID & Client Secret từ JSON. Bấm “Lưu OAuth Client” để lưu mã hoá DPAPI.';
-            draft.open = true; paintProfiles();
+            draft.open = true; draft.version = (draft.version || 0) + 1; paintProfiles();
         }, locked, 'btn-ghost');
         loadJsonBtn.dataset.uploaderFocus = `yt-parse-${profile.id}`;
         bar.appendChild(loadJsonBtn);
@@ -479,55 +502,142 @@
         details.appendChild(bar);
         return details;
     }
+    function profileCardSignature(profile) {
+        const ytApi = isYoutubeApiProfile(profile);
+        const locked = profileLocked(profile.id);
+        const selected = Boolean(current?.selected.has(profile.id));
+        const selectable = profile.session_status === 'ready' && (!ytApi || profile.youtube_api?.connected === true) && !locked;
+        const checkboxDisabled = !current || Boolean(current.busy) || current.uncertain || (!selected && !selectable);
+        const task = [...sessions.values()].find(value => value.profile_id === profile.id);
+        const draft = profile.platform === 'youtube' ? ytDrafts.get(profile.id) : null;
+        return JSON.stringify([
+            profile.id, profile.platform, profile.name, profile.session_status, profile.detail || '',
+            profile.upload_method || 'browser', profile.youtube_api || null,
+            Boolean(capabilities?.browser_available), locked, profileBusy.has(profile.id),
+            selected, checkboxDisabled,
+            task ? [task.id, task.action, task.status, task.error || ''] : null,
+            draft ? [draft.message || '', draft.version || 0] : null,
+        ]);
+    }
+    function buildProfileCard(profile) {
+        const row = node('article', '', 'uploader-profile-card'); row.dataset.selected = String(Boolean(current?.selected.has(profile.id)));
+        row.dataset.profileId = profile.id;
+        const label = node('label', '', 'uploader-check'), input = node('input'), description = node('span');
+        input.type = 'checkbox'; input.checked = Boolean(current?.selected.has(profile.id)); input.dataset.uploaderFocus = `select-${profile.id}`;
+        const ytApi = isYoutubeApiProfile(profile);
+        const selectable = profile.session_status === 'ready' && (!ytApi || profile.youtube_api?.connected === true) && !profileLocked(profile.id);
+        input.disabled = !current || Boolean(current.busy) || current.uncertain || (!input.checked && !selectable);
+        input.addEventListener('change', () => { if (!current || input.disabled || current.busy || current.uncertain) return; input.checked ? current.selected.add(profile.id) : current.selected.delete(profile.id); touched(current); paintProfiles(); });
+        description.appendChild(node('strong', profile.name));
+        const methodTag = ytApi ? ' · API v3' : '';
+        description.appendChild(node('span', `${platformLabels[profile.platform]}${methodTag} · ${sessionLabels[profile.session_status]}`));
+        label.appendChild(input); label.appendChild(description); row.appendChild(label);
+        if (typeof profile.detail === 'string' && profile.detail) row.appendChild(node('p', profile.detail, 'uploader-profile-detail'));
+        const actions = node('div', '', 'uploader-profile-actions'), locked = profileLocked(profile.id);
+        for (const [action, text] of [['login', 'Đăng nhập thủ công'], ['check', 'Kiểm tra phiên'], ['delete', 'Xoá profile']]) {
+            const disabled = locked || (action === 'login' && !capabilities?.browser_available) || (action === 'check' && !ytApi && !capabilities?.browser_available);
+            const el = button(text, () => profileAction(profile, action), disabled, action === 'delete' ? 'btn-danger' : 'btn-ghost');
+            el.dataset.uploaderFocus = `${action}-${profile.id}`; actions.appendChild(el);
+        }
+        row.appendChild(actions);
+        if (profile.platform === 'youtube') {
+            row.appendChild(buildYoutubeApiPanel(profile, locked));
+        }
+        const task = [...sessions.values()].find(value => value.profile_id === profile.id);
+        if (task) {
+            const panel = node('div', '', 'uploader-session');
+            const heading = task.action === 'youtube_oauth'
+                ? 'Kết nối Google OAuth2 (loopback cục bộ)'
+                : task.action === 'login'
+                    ? 'Đăng nhập thủ công trong cửa sổ riêng của app'
+                    : 'Kiểm tra phiên cục bộ';
+            panel.appendChild(node('strong', heading));
+            panel.appendChild(node('p', `${task.id} · ${statuses[task.status] || task.status}${task.error ? ' · ' + task.error : ''}`, 'uploader-session-detail'));
+            if (activeSessions.has(task.status)) {
+                const bar = node('div', '', 'uploader-profile-actions');
+                if (task.action === 'login') bar.appendChild(button('Tôi đã đăng nhập xong · kiểm tra', () => sessionAction(task, 'finish'), profileBusy.has(profile.id), 'btn-secondary'));
+                bar.appendChild(button('Huỷ phiên thao tác', () => sessionAction(task, 'cancel'), profileBusy.has(profile.id), 'btn-danger')); panel.appendChild(bar);
+            }
+            row.appendChild(panel);
+        }
+        return row;
+    }
     function paintProfiles() {
         if (!initialized) return;
-        const list = $('uploader-profile-list'), rows = [], focused = document.activeElement?.dataset?.uploaderFocus;
-        for (const profile of profiles) {
-            const row = node('article', '', 'uploader-profile-card'); row.dataset.selected = String(Boolean(current?.selected.has(profile.id)));
-            const label = node('label', '', 'uploader-check'), input = node('input'), description = node('span');
-            input.type = 'checkbox'; input.checked = Boolean(current?.selected.has(profile.id)); input.dataset.uploaderFocus = `select-${profile.id}`;
-            const ytApi = isYoutubeApiProfile(profile);
-            const selectable = profile.session_status === 'ready' && (!ytApi || profile.youtube_api?.connected === true) && !profileLocked(profile.id);
-            input.disabled = !current || Boolean(current.busy) || current.uncertain || (!input.checked && !selectable);
-            input.addEventListener('change', () => { if (!current || input.disabled || current.busy || current.uncertain) return; input.checked ? current.selected.add(profile.id) : current.selected.delete(profile.id); touched(current); paintProfiles(); });
-            description.appendChild(node('strong', profile.name));
-            const methodTag = ytApi ? ' · API v3' : '';
-            description.appendChild(node('span', `${platformLabels[profile.platform]}${methodTag} · ${sessionLabels[profile.session_status]}`));
-            label.appendChild(input); label.appendChild(description); row.appendChild(label);
-            if (typeof profile.detail === 'string' && profile.detail) row.appendChild(node('p', profile.detail, 'uploader-profile-detail'));
-            const actions = node('div', '', 'uploader-profile-actions'), locked = profileLocked(profile.id);
-            for (const [action, text] of [['login', 'Đăng nhập thủ công'], ['check', 'Kiểm tra phiên'], ['delete', 'Xoá profile']]) {
-                const disabled = locked || (action === 'login' && !capabilities?.browser_available) || (action === 'check' && !ytApi && !capabilities?.browser_available);
-                const el = button(text, () => profileAction(profile, action), disabled, action === 'delete' ? 'btn-danger' : 'btn-ghost');
-                el.dataset.uploaderFocus = `${action}-${profile.id}`; actions.appendChild(el);
-            }
-            row.appendChild(actions);
-            if (profile.platform === 'youtube') {
-                row.appendChild(buildYoutubeApiPanel(profile, locked));
-            }
-            const task = [...sessions.values()].find(value => value.profile_id === profile.id);
-            if (task) {
-                const panel = node('div', '', 'uploader-session');
-                const heading = task.action === 'youtube_oauth'
-                    ? 'Kết nối Google OAuth2 (loopback cục bộ)'
-                    : task.action === 'login'
-                        ? 'Đăng nhập thủ công trong cửa sổ riêng của app'
-                        : 'Kiểm tra phiên cục bộ';
-                panel.appendChild(node('strong', heading));
-                panel.appendChild(node('p', `${task.id} · ${statuses[task.status] || task.status}${task.error ? ' · ' + task.error : ''}`, 'uploader-session-detail'));
-                if (activeSessions.has(task.status)) {
-                    const bar = node('div', '', 'uploader-profile-actions');
-                    if (task.action === 'login') bar.appendChild(button('Tôi đã đăng nhập xong · kiểm tra', () => sessionAction(task, 'finish'), profileBusy.has(profile.id), 'btn-secondary'));
-                    bar.appendChild(button('Huỷ phiên thao tác', () => sessionAction(task, 'cancel'), profileBusy.has(profile.id), 'btn-danger')); panel.appendChild(bar);
-                }
-                row.appendChild(panel);
-            }
-            rows.push(row);
+        const list = $('uploader-profile-list');
+        if (!profiles.length) {
+            const emptySig = profilesLoading ? 'loading' : 'empty';
+            if (paintedProfilesEmpty === emptySig && list.children.length === 1) return;
+            profileCardCache.clear();
+            paintedProfilesEmpty = emptySig;
+            list.replaceChildren(node('p', profilesLoading ? 'Đang đọc profile…' : 'Chưa có profile. Chọn nền tảng và đặt tên để tạo; app không tự mở đăng nhập.', 'field-help'));
+            return;
         }
-        if (!rows.length) rows.push(node('p', profilesLoading ? 'Đang đọc profile…' : 'Chưa có profile. Chọn nền tảng và đặt tên để tạo; app không tự mở đăng nhập.', 'field-help'));
-        list.replaceChildren(...rows);
-        // Keep keyboard focus stable across status polls without stealing it from another workspace.
-        if (focused) list.querySelectorAll('input, button, select').forEach(el => { if (el.dataset.uploaderFocus === focused && !el.disabled) el.focus({ preventScroll: true }); });
+        paintedProfilesEmpty = null;
+        const nextEntries = [];
+        let allUnchanged = list.children.length === profiles.length;
+        for (let i = 0; i < profiles.length; i++) {
+            const profile = profiles[i];
+            const sig = profileCardSignature(profile);
+            const cached = profileCardCache.get(profile.id);
+            const reused = Boolean(cached && cached.sig === sig);
+            if (!reused || list.children[i] !== cached.node) allUnchanged = false;
+            nextEntries.push({ profile, sig, cached, reused });
+        }
+        if (allUnchanged) return;
+
+        const activeEl = document.activeElement;
+        const focused = activeEl?.dataset?.uploaderFocus;
+        const selStart = typeof activeEl?.selectionStart === 'number' ? activeEl.selectionStart : null;
+        const selEnd = typeof activeEl?.selectionEnd === 'number' ? activeEl.selectionEnd : null;
+
+        const nextIds = new Set(profiles.map(p => p.id));
+        const keptNodes = new Set();
+        const replacedOldToNew = new Map();
+        const rows = [];
+        for (const entry of nextEntries) {
+            let cardNode;
+            if (entry.reused) {
+                cardNode = entry.cached.node;
+                keptNodes.add(cardNode);
+            } else {
+                cardNode = buildProfileCard(entry.profile);
+                if (entry.cached?.node) replacedOldToNew.set(entry.cached.node, cardNode);
+            }
+            profileCardCache.set(entry.profile.id, { sig: entry.sig, node: cardNode });
+            rows.push(cardNode);
+        }
+        for (const id of [...profileCardCache.keys()]) {
+            if (!nextIds.has(id)) profileCardCache.delete(id);
+        }
+
+        if (typeof list.insertBefore === 'function' && typeof list.replaceChild === 'function' && typeof list.removeChild === 'function') {
+            for (const child of [...list.children]) {
+                if (!keptNodes.has(child) && !replacedOldToNew.has(child)) list.removeChild(child);
+            }
+            for (let i = 0; i < rows.length; i++) {
+                const desired = rows[i], existing = list.children[i];
+                if (existing === desired) continue;
+                if (existing && replacedOldToNew.get(existing) === desired) list.replaceChild(desired, existing);
+                else if (existing) list.insertBefore(desired, existing);
+                else list.appendChild(desired);
+            }
+            while (list.children.length > rows.length) list.removeChild(list.lastChild);
+        } else {
+            list.replaceChildren(...rows);
+        }
+
+        // Keep keyboard focus stable across status polls without stealing it from another workspace or interrupting unchanged inputs.
+        if (focused && (!document.activeElement || !list.contains(document.activeElement) || document.activeElement.dataset?.uploaderFocus !== focused)) {
+            list.querySelectorAll('input, textarea, button, select').forEach(el => {
+                if (el.dataset.uploaderFocus === focused && !el.disabled) {
+                    el.focus({ preventScroll: true });
+                    if (selStart !== null && selEnd !== null && typeof el.setSelectionRange === 'function') {
+                        try { el.setSelectionRange(selStart, selEnd); } catch (_) {}
+                    }
+                }
+            });
+        }
     }
     function validSession(task, profileId) { return object(task) && validId(task.id) && task.profile_id === profileId && ['login', 'check', 'probe', 'youtube_oauth'].includes(task.action) && sessionStatuses.has(task.status); }
     async function createProfile(event) {
@@ -861,18 +971,29 @@
         $('uploader-confirm-public').addEventListener('change', refreshControls);
         $('uploader-source-ack').addEventListener('change', () => { if (current && !$('uploader-source-ack').disabled) { current.sourceConfirmed = $('uploader-source-ack').checked; touched(current); } });
         document.addEventListener('vietsub:apply-channel-preset', event => {
-            const pub = event?.detail?.publish_defaults;
+            const detail = event?.detail;
+            const pub = detail?.publish_defaults;
             if (!pub || !current || current.busy || current.uncertain) return;
-            const knownIds = new Set(profiles.map(item => item.id));
-            const validIds = Array.isArray(pub.profile_ids) ? pub.profile_ids.filter(id => knownIds.has(id)) : [];
-            current.selected = new Set(validIds);
+            if (typeof detail.apply_sequence === 'number') {
+                if (detail.apply_sequence < lastPresetSequence) return;
+                lastPresetSequence = detail.apply_sequence;
+            }
+            const rawIds = Array.isArray(pub.profile_ids) ? pub.profile_ids.filter(uuid) : [];
+            if (profilesLoaded) {
+                const knownIds = new Set(profiles.map(item => item.id));
+                current.selected = new Set(rawIds.filter(id => knownIds.has(id)));
+                current.pendingPresetProfiles = false;
+            } else {
+                current.selected = new Set(rawIds);
+                current.pendingPresetProfiles = rawIds.length > 0;
+            }
             if (uploadModes.includes(pub.upload_mode)) current.uploadMode = pub.upload_mode;
             if (modes.includes(pub.visibility)) current.visibility = pub.visibility;
             touched(current);
             paintProfiles();
             paintMetadata();
             refreshControls();
-            notify(`Đã đồng bộ tài khoản và chế độ đăng từ hồ sơ "${event.detail.preset_name || ''}"${current.visibility === 'public' ? ' (vẫn cần xác nhận công khai thủ công trước khi đăng).' : '.'}`);
+            notify(`Đã đồng bộ tài khoản và chế độ đăng từ hồ sơ "${detail.preset_name || ''}"${current.visibility === 'public' ? ' (vẫn cần xác nhận công khai thủ công trước khi đăng).' : '.'}`);
         });
         // app.js already owns this click -> Workbench refresh -> projectReceived. No second refresh listener here.
         $('uploader-video').addEventListener('error', () => { $('uploader-video-status').textContent = 'Trình duyệt không phát được video. Bản nháp vẫn giữ; kiểm tra lại file trước khi đăng.'; });

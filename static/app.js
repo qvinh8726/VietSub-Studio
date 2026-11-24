@@ -49,9 +49,16 @@
         let translationInstructionPresets = {};
         let glossaryStore = {active_id: 'default', profiles: [{id: 'default', name: 'Mặc định', style_note: '', entries: []}]};
         let glossariesLoaded = false;
+        let glossaryLoadSequence = 0;
         let channelPresetsStore = {active_id: '', presets: [], resolved_warnings: {}};
+        let presetLoadSequence = 0;
+        let applyPresetSequence = 0;
         let presetEditorDraft = null;
+        let presetGlossaryDesired = 'default';
+        let presetGlossaryTouched = false;
         let presetUploaderProfiles = [];
+        let presetUploaderProfilesLoaded = false;
+        let presetUploaderProfilesFailed = false;
         let connectionOk = true;
         let cancellingJobId = '';
         let translationProviderName = 'Gemini';
@@ -866,7 +873,7 @@
                 const data = await fetchJson(`/api/projects/${encodeURIComponent(jobId)}?workspace=${encodeURIComponent(workspace)}`);
                 if (sequence !== projectReadSequence[workspace] || workspaceProjects[workspace] !== jobId) return;
                 validateProjectSnapshot(data, jobId, workspace);
-                window.VietSubWorkbench?.projectReceived(workspace, data);
+                window.VietSubWorkbench?.projectReceived(workspace, data, {refresh: true});
             } catch (error) {
                 if (sequence !== projectReadSequence[workspace]) return;
                 window.VietSubWorkbench?.projectStatus(workspace, error.message, 'error');
@@ -1402,96 +1409,114 @@
 
         async function loadGlossaries() {
             if (!byId('setting-glossary-select')) return;
+            const sequence = ++glossaryLoadSequence;
             const status = byId('setting-glossary-status');
             if (status) status.textContent = 'Đang nạp từ điển…';
             try {
                 const data = await fetchJson('/api/glossaries');
+                if (sequence !== glossaryLoadSequence) return;
                 glossariesLoaded = true;
                 renderGlossaryStore(data);
                 if (status) status.textContent = `${glossaryStore.profiles.length} bộ từ điển`;
             } catch (error) {
+                if (sequence !== glossaryLoadSequence) return;
                 if (status) status.textContent = error.message;
             }
         }
 
         async function activateGlossary(id) {
             if (!id) return;
-            const status = byId('setting-glossary-status');
-            try {
-                const data = await fetchJson('/api/glossaries/active', {method: 'POST', body: JSON.stringify({active_id: id})});
-                renderGlossaryStore(data);
-                if (status) status.textContent = 'Đã chuyển bộ từ điển đang dùng.';
-                showToast(`Đang dùng bộ từ điển: ${currentGlossaryProfile().name}.`);
-            } catch (error) {
-                if (status) status.textContent = error.message;
-                showToast(error.message, 'error');
-            }
+            await runOnce('glossary-crud', async () => {
+                const status = byId('setting-glossary-status');
+                try {
+                    const data = await fetchJson('/api/glossaries/active', {method: 'POST', body: JSON.stringify({active_id: id})});
+                    glossaryLoadSequence += 1;
+                    glossariesLoaded = true;
+                    renderGlossaryStore(data);
+                    if (status) status.textContent = 'Đã chuyển bộ từ điển đang dùng.';
+                    showToast(`Đang dùng bộ từ điển: ${currentGlossaryProfile().name}.`);
+                } catch (error) {
+                    if (status) status.textContent = error.message;
+                    showToast(error.message, 'error');
+                }
+            });
         }
 
         async function createGlossaryProfile() {
-            const profiles = glossaryStore.profiles || [];
-            let idx = profiles.length + 1;
-            let candidate = `Bộ từ điển ${idx}`;
-            while (profiles.some(item => item.name === candidate)) { idx += 1; candidate = `Bộ từ điển ${idx}`; }
-            try {
-                const data = await fetchJson('/api/glossaries', {
-                    method: 'POST',
-                    body: JSON.stringify({name: candidate, style_note: '', entries: [], activate: true}),
-                });
-                glossariesLoaded = true;
-                renderGlossaryStore(data);
-                const nameInput = byId('setting-glossary-name');
-                if (nameInput) { nameInput.focus(); nameInput.select?.(); }
-                showToast(`Đã tạo bộ từ điển "${candidate}".`);
-            } catch (error) {
-                showToast(error.message, 'error');
-            }
+            await runOnce('glossary-crud', async () => {
+                const profiles = glossaryStore.profiles || [];
+                let idx = profiles.length + 1;
+                let candidate = `Bộ từ điển ${idx}`;
+                while (profiles.some(item => item.name === candidate)) { idx += 1; candidate = `Bộ từ điển ${idx}`; }
+                try {
+                    const data = await fetchJson('/api/glossaries', {
+                        method: 'POST',
+                        body: JSON.stringify({name: candidate, style_note: '', entries: [], activate: true}),
+                    });
+                    glossaryLoadSequence += 1;
+                    glossariesLoaded = true;
+                    renderGlossaryStore(data);
+                    const nameInput = byId('setting-glossary-name');
+                    if (nameInput) { nameInput.focus(); nameInput.select?.(); }
+                    showToast(`Đã tạo bộ từ điển "${candidate}".`);
+                } catch (error) {
+                    showToast(error.message, 'error');
+                }
+            });
         }
 
         async function saveCurrentGlossary() {
-            const profile = currentGlossaryProfile();
-            const name = (byId('setting-glossary-name')?.value || '').trim();
-            const styleNote = (byId('setting-glossary-style')?.value || '').trim();
-            const list = byId('setting-glossary-entries');
-            if (!name) { showToast('Tên bộ từ điển không được để trống.', 'error'); return; }
-            const entries = [];
-            for (const row of (list?.children || [])) {
-                const inputs = [...(row.querySelectorAll?.('input[data-glossary-field]') || row.children || [])];
-                const byField = {};
-                for (const input of inputs) if (input.dataset?.glossaryField) byField[input.dataset.glossaryField] = (input.value || '').trim();
-                if (!byField.source && !byField.target && !byField.note) continue;
-                if (!byField.source || !byField.target) {
-                    showToast('Mỗi dòng thuật ngữ cần có đủ cả "Thuật ngữ gốc" và "Bản dịch chuẩn".', 'error');
-                    return;
+            await runOnce('glossary-crud', async () => {
+                const profile = currentGlossaryProfile();
+                const name = (byId('setting-glossary-name')?.value || '').trim();
+                const styleNote = (byId('setting-glossary-style')?.value || '').trim();
+                const list = byId('setting-glossary-entries');
+                if (!name) { showToast('Tên bộ từ điển không được để trống.', 'error'); return; }
+                const entries = [];
+                for (const row of (list?.children || [])) {
+                    const inputs = [...(row.querySelectorAll?.('input[data-glossary-field]') || row.children || [])];
+                    const byField = {};
+                    for (const input of inputs) if (input.dataset?.glossaryField) byField[input.dataset.glossaryField] = (input.value || '').trim();
+                    if (!byField.source && !byField.target && !byField.note) continue;
+                    if (!byField.source || !byField.target) {
+                        showToast('Mỗi dòng thuật ngữ cần có đủ cả "Thuật ngữ gốc" và "Bản dịch chuẩn".', 'error');
+                        return;
+                    }
+                    entries.push({source: byField.source, target: byField.target, note: byField.note || ''});
                 }
-                entries.push({source: byField.source, target: byField.target, note: byField.note || ''});
-            }
-            const status = byId('setting-glossary-status');
-            try {
-                const data = await fetchJson(`/api/glossaries/${encodeURIComponent(profile.id)}`, {
-                    method: 'PUT',
-                    body: JSON.stringify({name, style_note: styleNote, entries}),
-                });
-                renderGlossaryStore(data);
-                if (status) status.textContent = 'Đã lưu từ điển.';
-                showToast(`Đã lưu bộ từ điển "${name}" (${entries.length} mục).`);
-            } catch (error) {
-                if (status) status.textContent = error.message;
-                showToast(error.message, 'error');
-            }
+                const status = byId('setting-glossary-status');
+                try {
+                    const data = await fetchJson(`/api/glossaries/${encodeURIComponent(profile.id)}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({name, style_note: styleNote, entries}),
+                    });
+                    glossaryLoadSequence += 1;
+                    glossariesLoaded = true;
+                    renderGlossaryStore(data);
+                    if (status) status.textContent = 'Đã lưu từ điển.';
+                    showToast(`Đã lưu bộ từ điển "${name}" (${entries.length} mục).`);
+                } catch (error) {
+                    if (status) status.textContent = error.message;
+                    showToast(error.message, 'error');
+                }
+            });
         }
 
         async function deleteCurrentGlossary() {
             const profile = currentGlossaryProfile();
             if (!profile || profile.id === 'default') return;
             if (!window.confirm(`Xoá bộ từ điển "${profile.name}"?`)) return;
-            try {
-                const data = await fetchJson(`/api/glossaries/${encodeURIComponent(profile.id)}`, {method: 'DELETE'});
-                renderGlossaryStore(data);
-                showToast(`Đã xoá bộ từ điển "${profile.name}".`);
-            } catch (error) {
-                showToast(error.message, 'error');
-            }
+            await runOnce('glossary-crud', async () => {
+                try {
+                    const data = await fetchJson(`/api/glossaries/${encodeURIComponent(profile.id)}`, {method: 'DELETE'});
+                    glossaryLoadSequence += 1;
+                    glossariesLoaded = true;
+                    renderGlossaryStore(data);
+                    showToast(`Đã xoá bộ từ điển "${profile.name}".`);
+                } catch (error) {
+                    showToast(error.message, 'error');
+                }
+            });
         }
 
         function currentChannelPreset() {
@@ -1508,9 +1533,12 @@
             if (!isPublicAuto && byId('setting-preset-confirm-public-auto')) byId('setting-preset-confirm-public-auto').checked = false;
         }
 
-        function syncPresetGlossaryDropdown(chosenId = 'default') {
+        function syncPresetGlossaryDropdown(chosenId) {
             const select = byId('setting-preset-glossary');
             if (!select) return;
+            const target = chosenId ?? (presetGlossaryTouched
+                ? (select.value || presetGlossaryDesired || 'default')
+                : (currentChannelPreset()?.glossary_id || presetGlossaryDesired || 'default'));
             const profiles = Array.isArray(glossaryStore?.profiles) && glossaryStore.profiles.length
                 ? glossaryStore.profiles : [{id: 'default', name: 'Mặc định'}];
             const nodes = profiles.map(p => {
@@ -1519,12 +1547,22 @@
                 return opt;
             });
             select.replaceChildren(...nodes);
-            select.value = profiles.some(p => p.id === chosenId) ? chosenId : 'default';
+            select.value = profiles.some(p => p.id === target) ? target : 'default';
         }
 
         function renderPresetUploaderProfiles(selectedIds = []) {
             const container = byId('setting-preset-profiles');
             if (!container) return;
+            if (!presetUploaderProfilesLoaded) {
+                container.dataset.profilesLoaded = 'false';
+                const notice = document.createElement('small');
+                notice.textContent = presetUploaderProfilesFailed
+                    ? 'Không nạp được danh sách tài khoản Publish Hub; danh sách tài khoản đã lưu của hồ sơ vẫn được giữ nguyên.'
+                    : 'Đang nạp danh sách tài khoản Publish Hub…';
+                container.replaceChildren(notice);
+                return;
+            }
+            container.dataset.profilesLoaded = 'true';
             const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
             if (!presetUploaderProfiles.length) {
                 const empty = document.createElement('small');
@@ -1549,13 +1587,16 @@
         function renderChannelPresetEditor(preset) {
             const hasPreset = Boolean(preset);
             presetEditorDraft = hasPreset ? JSON.parse(JSON.stringify(preset.editor_options || {})) : null;
+            presetGlossaryDesired = preset?.glossary_id || 'default';
+            presetGlossaryTouched = false;
             if (byId('setting-preset-delete-btn')) byId('setting-preset-delete-btn').disabled = !hasPreset;
             if (byId('setting-preset-apply-btn')) byId('setting-preset-apply-btn').disabled = !hasPreset;
             if (byId('setting-preset-save-btn')) byId('setting-preset-save-btn').disabled = !hasPreset;
+            if (byId('setting-preset-capture-btn')) byId('setting-preset-capture-btn').disabled = !hasPreset;
             if (byId('setting-preset-watermark-file')) byId('setting-preset-watermark-file').disabled = !hasPreset;
             if (byId('setting-preset-name')) byId('setting-preset-name').value = preset?.name || '';
             if (byId('setting-preset-desc')) byId('setting-preset-desc').value = preset?.description || '';
-            syncPresetGlossaryDropdown(preset?.glossary_id || 'default');
+            syncPresetGlossaryDropdown(presetGlossaryDesired);
             const opts = preset?.editor_options || {};
             if (byId('setting-preset-reframe')) byId('setting-preset-reframe').value = opts.reframe || 'original';
             if (byId('setting-preset-mask-mode')) byId('setting-preset-mask-mode').value = opts.mask_mode || 'boxblur';
@@ -1577,7 +1618,7 @@
             if (byId('setting-preset-warnings')) byId('setting-preset-warnings').textContent = warnings.join(' ');
         }
 
-        function renderChannelPresetsStore(data) {
+        function renderChannelPresetsStore(data, {preserveFormForId = ''} = {}) {
             if (data && Array.isArray(data.presets)) {
                 channelPresetsStore = {
                     active_id: data.active_id || '',
@@ -1613,57 +1654,118 @@
                 sSelect.replaceChildren(...sNodes);
                 const chosen = presets.some(p => p.id === prev) ? prev : (channelPresetsStore.active_id || presets[0]?.id || '');
                 sSelect.value = chosen;
-                renderChannelPresetEditor(currentChannelPreset());
+                const activePreset = currentChannelPreset();
+                if (preserveFormForId && activePreset && activePreset.id === preserveFormForId) {
+                    const opts = activePreset.editor_options || {};
+                    if (!presetEditorDraft || typeof presetEditorDraft !== 'object') {
+                        presetEditorDraft = JSON.parse(JSON.stringify(opts));
+                    } else {
+                        presetEditorDraft.watermark_path = opts.watermark_path || '';
+                        presetEditorDraft.watermark_enabled = Boolean(opts.watermark_enabled);
+                    }
+                    if (byId('setting-preset-watermark-status')) {
+                        byId('setting-preset-watermark-status').textContent = opts.watermark_path
+                            ? 'Đã gắn logo PNG riêng cho hồ sơ kênh.' : 'Chưa gắn logo PNG riêng.';
+                    }
+                    const warnings = channelPresetsStore.resolved_warnings?.[activePreset.id] || [];
+                    if (byId('setting-preset-warnings')) byId('setting-preset-warnings').textContent = warnings.join(' ');
+                } else {
+                    renderChannelPresetEditor(activePreset);
+                }
             }
         }
 
         async function loadChannelPresets({withProfiles = false} = {}) {
             if (!byId('queue-channel-preset') && !byId('setting-preset-select')) return;
+            const sequence = ++presetLoadSequence;
             try {
                 const tasks = [fetchJson('/api/channel-presets')];
-                if (withProfiles) tasks.push(fetchJson('/api/uploader/profiles').catch(() => ({profiles: []})));
-                const [presetData, profileData] = await Promise.all(tasks);
-                if (withProfiles && Array.isArray(profileData?.profiles)) presetUploaderProfiles = profileData.profiles;
+                if (withProfiles) {
+                    tasks.push(fetchJson('/api/uploader/profiles').then(
+                        data => ({ok: true, data}),
+                        () => ({ok: false, data: null}),
+                    ));
+                }
+                const [presetData, profileResult] = await Promise.all(tasks);
+                if (sequence !== presetLoadSequence) return;
+                if (withProfiles) {
+                    if (profileResult?.ok && Array.isArray(profileResult.data?.profiles)) {
+                        presetUploaderProfiles = profileResult.data.profiles;
+                        presetUploaderProfilesLoaded = true;
+                        presetUploaderProfilesFailed = false;
+                    } else if (!presetUploaderProfilesLoaded) {
+                        presetUploaderProfilesFailed = true;
+                    }
+                }
                 renderChannelPresetsStore(presetData);
                 if (byId('setting-preset-status')) byId('setting-preset-status').textContent = `${channelPresetsStore.presets.length} hồ sơ`;
             } catch (error) {
+                if (sequence !== presetLoadSequence) return;
                 if (byId('setting-preset-status')) byId('setting-preset-status').textContent = error.message;
             }
         }
 
         async function createChannelPreset() {
-            const presets = channelPresetsStore.presets || [];
-            let idx = presets.length + 1;
-            let name = `Hồ sơ kênh ${idx}`;
-            while (presets.some(p => p.name === name)) { idx += 1; name = `Hồ sơ kênh ${idx}`; }
-            try {
-                const data = await fetchJson('/api/channel-presets', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        name, description: '', glossary_id: glossaryStore.active_id || 'default',
-                        editor_options: {reframe: 'vertical', mask_mode: 'boxblur', crop_box: null, subtitle_animation: 'word_pop', subtitle_highlight_color: '#ffd54a', subtitle_max_words_per_chunk: 4},
-                        publish_defaults: {profile_ids: [], upload_mode: 'assisted', visibility: 'private', confirm_public_auto: false},
-                        activate: true,
-                    }),
-                });
-                renderChannelPresetsStore(data);
-                if (byId('setting-preset-select') && data.preset?.id) {
-                    byId('setting-preset-select').value = data.preset.id;
-                    renderChannelPresetEditor(currentChannelPreset());
+            await runOnce('channel-preset-crud', async () => {
+                const presets = channelPresetsStore.presets || [];
+                let idx = presets.length + 1;
+                let name = `Hồ sơ kênh ${idx}`;
+                while (presets.some(p => p.name === name)) { idx += 1; name = `Hồ sơ kênh ${idx}`; }
+                try {
+                    const data = await fetchJson('/api/channel-presets', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            name, description: '', glossary_id: glossaryStore.active_id || 'default',
+                            editor_options: {reframe: 'vertical', mask_mode: 'boxblur', crop_box: null, subtitle_animation: 'word_pop', subtitle_highlight_color: '#ffd54a', subtitle_max_words_per_chunk: 4},
+                            publish_defaults: {profile_ids: [], upload_mode: 'assisted', visibility: 'private', confirm_public_auto: false},
+                            activate: true,
+                        }),
+                    });
+                    presetLoadSequence += 1;
+                    renderChannelPresetsStore(data);
+                    if (byId('setting-preset-select') && data.preset?.id) {
+                        byId('setting-preset-select').value = data.preset.id;
+                        renderChannelPresetEditor(currentChannelPreset());
+                    }
+                    const nameInput = byId('setting-preset-name');
+                    if (nameInput) { nameInput.focus(); nameInput.select?.(); }
+                    showToast(`Đã tạo hồ sơ kênh "${name}".`);
+                } catch (error) { showToast(error.message, 'error'); }
+            });
+        }
+
+        function sanitizePresetEditorOptions(rawOpts, fallbackOpts = {}) {
+            const editorDefaults = window.VietSubEditor?.helpers?.defaults || {};
+            const cleaned = {};
+            for (const [key, value] of Object.entries(rawOpts || {})) {
+                if (typeof value === 'number' && !Number.isFinite(value)) {
+                    const fallback = fallbackOpts?.[key] ?? editorDefaults[key];
+                    if (typeof fallback === 'number' && Number.isFinite(fallback)) cleaned[key] = fallback;
+                    continue;
                 }
-                const nameInput = byId('setting-preset-name');
-                if (nameInput) { nameInput.focus(); nameInput.select?.(); }
-                showToast(`Đã tạo hồ sơ kênh "${name}".`);
-            } catch (error) { showToast(error.message, 'error'); }
+                if (value === null && key !== 'crop_box') {
+                    const fallback = fallbackOpts?.[key] ?? editorDefaults[key];
+                    if (fallback !== undefined && fallback !== null) cleaned[key] = fallback;
+                    continue;
+                }
+                cleaned[key] = typeof value === 'object' && value !== null ? JSON.parse(JSON.stringify(value)) : value;
+            }
+            return cleaned;
         }
 
         function captureCurrentEditorOptionsIntoPreset() {
+            const preset = currentChannelPreset();
+            if (!preset) {
+                showToast('Hãy tạo hoặc chọn một hồ sơ kênh trước khi lấy tuỳ chọn Auto Edit.', 'error');
+                return;
+            }
             const editorState = window.VietSubEditor?.state?.();
             if (!editorState?.options) {
                 showToast('Hãy mở một dự án trong Auto Edit trước để lấy cấu hình hiện tại.', 'error');
                 return;
             }
-            const captured = JSON.parse(JSON.stringify(editorState.options));
+            const fallbackOpts = presetEditorDraft || preset.editor_options || {};
+            const captured = sanitizePresetEditorOptions(editorState.options, fallbackOpts);
             captured.crop_box = null;
             // Watermark paths are project-scoped; keep the preset's own watermark asset if any.
             const existingWm = presetEditorDraft?.watermark_path || '';
@@ -1680,44 +1782,56 @@
         }
 
         async function saveCurrentChannelPreset() {
-            const preset = currentChannelPreset();
-            if (!preset) return;
-            const name = (byId('setting-preset-name')?.value || '').trim();
-            if (!name) { showToast('Tên hồ sơ kênh không được để trống.', 'error'); return; }
-            const description = (byId('setting-preset-desc')?.value || '').trim();
-            const glossary_id = byId('setting-preset-glossary')?.value || 'default';
-            const baseOpts = JSON.parse(JSON.stringify(presetEditorDraft || preset.editor_options || {}));
-            baseOpts.reframe = byId('setting-preset-reframe')?.value || 'original';
-            baseOpts.mask_mode = byId('setting-preset-mask-mode')?.value || 'boxblur';
-            baseOpts.crop_box = null;
-            baseOpts.subtitle_animation = byId('setting-preset-sub-anim')?.value || 'static';
-            baseOpts.subtitle_highlight_color = byId('setting-preset-sub-highlight')?.value || '#ffd54a';
-            baseOpts.subtitle_max_words_per_chunk = Number(byId('setting-preset-sub-max-words')?.value || 4);
-            baseOpts.banner_text = (byId('setting-preset-banner')?.value || '').trim();
-            const container = byId('setting-preset-profiles');
-            const selectedProfiles = [];
-            for (const label of (container?.children || [])) {
-                const cb = label.querySelector?.('input[type="checkbox"]') || label.children?.[0];
-                if (cb?.checked && cb.value) selectedProfiles.push(cb.value);
-            }
-            const upload_mode = byId('setting-preset-upload-mode')?.value || 'assisted';
-            const visibility = byId('setting-preset-visibility')?.value || 'private';
-            const confirm_public_auto = byId('setting-preset-confirm-public-auto')?.checked === true;
-            try {
-                const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}`, {
-                    method: 'PUT',
-                    body: JSON.stringify({
-                        name, description, glossary_id, editor_options: baseOpts,
-                        publish_defaults: {profile_ids: selectedProfiles, upload_mode, visibility, confirm_public_auto},
-                    }),
-                });
-                renderChannelPresetsStore(data);
-                if (byId('setting-preset-status')) byId('setting-preset-status').textContent = 'Đã lưu hồ sơ.';
-                showToast(`Đã lưu hồ sơ kênh "${name}".`);
-            } catch (error) {
-                if (byId('setting-preset-status')) byId('setting-preset-status').textContent = error.message;
-                showToast(error.message, 'error');
-            }
+            await runOnce('channel-preset-crud', async () => {
+                const preset = currentChannelPreset();
+                if (!preset) return;
+                const name = (byId('setting-preset-name')?.value || '').trim();
+                if (!name) { showToast('Tên hồ sơ kênh không được để trống.', 'error'); return; }
+                const description = (byId('setting-preset-desc')?.value || '').trim();
+                const glossary_id = presetGlossaryTouched
+                    ? (byId('setting-preset-glossary')?.value || 'default')
+                    : (glossariesLoaded ? (byId('setting-preset-glossary')?.value || preset.glossary_id || 'default') : (preset.glossary_id || 'default'));
+                const baseOpts = sanitizePresetEditorOptions(presetEditorDraft || preset.editor_options || {}, preset.editor_options || {});
+                baseOpts.reframe = byId('setting-preset-reframe')?.value || 'original';
+                baseOpts.mask_mode = byId('setting-preset-mask-mode')?.value || 'boxblur';
+                baseOpts.crop_box = null;
+                baseOpts.subtitle_animation = byId('setting-preset-sub-anim')?.value || 'static';
+                baseOpts.subtitle_highlight_color = byId('setting-preset-sub-highlight')?.value || '#ffd54a';
+                const parsedMaxWords = Number(byId('setting-preset-sub-max-words')?.value);
+                baseOpts.subtitle_max_words_per_chunk = Number.isInteger(parsedMaxWords) && parsedMaxWords >= 2 && parsedMaxWords <= 8 ? parsedMaxWords : 4;
+                baseOpts.banner_text = (byId('setting-preset-banner')?.value || '').trim();
+                let selectedProfiles;
+                if (!presetUploaderProfilesLoaded) {
+                    selectedProfiles = Array.isArray(preset.publish_defaults?.profile_ids)
+                        ? [...preset.publish_defaults.profile_ids] : [];
+                } else {
+                    const container = byId('setting-preset-profiles');
+                    selectedProfiles = [];
+                    for (const label of (container?.children || [])) {
+                        const cb = label.querySelector?.('input[type="checkbox"]') || label.children?.[0];
+                        if (cb?.checked && cb.value) selectedProfiles.push(cb.value);
+                    }
+                }
+                const upload_mode = byId('setting-preset-upload-mode')?.value || 'assisted';
+                const visibility = byId('setting-preset-visibility')?.value || 'private';
+                const confirm_public_auto = byId('setting-preset-confirm-public-auto')?.checked === true;
+                try {
+                    const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({
+                            name, description, glossary_id, editor_options: baseOpts,
+                            publish_defaults: {profile_ids: selectedProfiles, upload_mode, visibility, confirm_public_auto},
+                        }),
+                    });
+                    presetLoadSequence += 1;
+                    renderChannelPresetsStore(data);
+                    if (byId('setting-preset-status')) byId('setting-preset-status').textContent = 'Đã lưu hồ sơ.';
+                    showToast(`Đã lưu hồ sơ kênh "${name}".`);
+                } catch (error) {
+                    if (byId('setting-preset-status')) byId('setting-preset-status').textContent = error.message;
+                    showToast(error.message, 'error');
+                }
+            });
         }
 
         async function uploadChannelPresetWatermark() {
@@ -1725,43 +1839,70 @@
             const input = byId('setting-preset-watermark-file');
             const file = input?.files?.[0];
             if (!preset || !file) return;
-            try {
-                const body = new FormData();
-                body.append('image', file);
-                const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}/watermark`, {method: 'POST', body, timeoutMs: 60000});
-                renderChannelPresetsStore(data);
-                showToast(`Đã lưu logo PNG cho hồ sơ "${preset.name}".`);
-            } catch (error) {
-                showToast(error.message, 'error');
-            } finally {
-                input.value = '';
-            }
+            await runOnce('channel-preset-crud', async () => {
+                try {
+                    const body = new FormData();
+                    body.append('image', file);
+                    const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}/watermark`, {method: 'POST', body, timeoutMs: 60000});
+                    presetLoadSequence += 1;
+                    renderChannelPresetsStore(data, {preserveFormForId: preset.id});
+                    showToast(`Đã lưu logo PNG cho hồ sơ "${preset.name}". Bản nháp form vẫn được giữ nguyên.`);
+                } catch (error) {
+                    showToast(error.message, 'error');
+                } finally {
+                    input.value = '';
+                }
+            });
         }
 
         async function deleteCurrentChannelPreset() {
             const preset = currentChannelPreset();
             if (!preset || !window.confirm(`Xoá hồ sơ kênh "${preset.name}"?`)) return;
-            try {
-                const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}`, {method: 'DELETE'});
-                renderChannelPresetsStore(data);
-                showToast(`Đã xoá hồ sơ kênh "${preset.name}".`);
-            } catch (error) { showToast(error.message, 'error'); }
+            await runOnce('channel-preset-crud', async () => {
+                try {
+                    const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}`, {method: 'DELETE'});
+                    presetLoadSequence += 1;
+                    renderChannelPresetsStore(data);
+                    showToast(`Đã xoá hồ sơ kênh "${preset.name}".`);
+                } catch (error) { showToast(error.message, 'error'); }
+            });
         }
 
         async function applyChannelPreset(presetId) {
             if (!presetId) return;
+            const sequence = ++applyPresetSequence;
+            const targetJobId = workspaceProjects.editor || '';
+            const previousPreset = (channelPresetsStore.presets || []).find(item => item.id === presetId) || null;
             try {
                 const payload = {activate: true};
-                if (workspaceProjects.editor) payload.job_id = workspaceProjects.editor;
+                if (targetJobId) payload.job_id = targetJobId;
                 const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(presetId)}/apply`, {
                     method: 'POST', body: JSON.stringify(payload),
                 });
-                if (data.glossary_store) renderGlossaryStore(data.glossary_store);
-                if (data.presets_store) renderChannelPresetsStore(data.presets_store);
-                document.dispatchEvent(new CustomEvent('vietsub:apply-channel-preset', {detail: data}));
+                if (sequence !== applyPresetSequence) return;
+                if (data.glossary_store) {
+                    glossaryLoadSequence += 1;
+                    glossariesLoaded = true;
+                    renderGlossaryStore(data.glossary_store);
+                }
+                if (data.presets_store) {
+                    presetLoadSequence += 1;
+                    renderChannelPresetsStore(data.presets_store);
+                }
+                const matchedPreset = (data.presets_store?.presets || channelPresetsStore.presets || []).find(item => item.id === presetId) || previousPreset;
+                const presetCropBox = matchedPreset?.editor_options?.crop_box ?? null;
+                const detail = {
+                    ...data,
+                    target_job_id: targetJobId,
+                    apply_sequence: sequence,
+                    preset_crop_box: presetCropBox,
+                };
+                document.dispatchEvent(new CustomEvent('vietsub:apply-channel-preset', {detail}));
                 const warn = Array.isArray(data.warnings) && data.warnings.length ? ` (${data.warnings[0]})` : '';
                 showToast(`Đã áp dụng hồ sơ kênh "${data.preset_name}" cho cả 3 Workspace.${warn}`);
-            } catch (error) { showToast(error.message, 'error'); }
+            } catch (error) {
+                if (sequence === applyPresetSequence) showToast(error.message, 'error');
+            }
         }
 
         async function testTranslationApi() {
@@ -2033,10 +2174,13 @@
                 byId('queue-channel-preset').addEventListener('change', async event => {
                     const id = event.target.value || '';
                     if (byId('queue-apply-preset-btn')) byId('queue-apply-preset-btn').disabled = !id;
-                    try {
-                        const data = await fetchJson('/api/channel-presets/active', {method: 'POST', body: JSON.stringify({active_id: id})});
-                        renderChannelPresetsStore(data);
-                    } catch (error) { showToast(error.message, 'error'); }
+                    await runOnce('channel-preset-active', async () => {
+                        try {
+                            const data = await fetchJson('/api/channel-presets/active', {method: 'POST', body: JSON.stringify({active_id: id})});
+                            presetLoadSequence += 1;
+                            renderChannelPresetsStore(data);
+                        } catch (error) { showToast(error.message, 'error'); }
+                    });
                 });
                 byId('queue-apply-preset-btn').onclick = () => applyChannelPreset(byId('queue-channel-preset').value);
                 byId('queue-auto-edit').addEventListener('change', () => {
@@ -2051,6 +2195,10 @@
             }
             if (byId('setting-preset-select')) {
                 byId('setting-preset-select').addEventListener('change', () => renderChannelPresetEditor(currentChannelPreset()));
+                byId('setting-preset-glossary')?.addEventListener('change', event => {
+                    presetGlossaryDesired = event.target.value || 'default';
+                    presetGlossaryTouched = true;
+                });
                 byId('setting-preset-new-btn').onclick = createChannelPreset;
                 byId('setting-preset-apply-btn').onclick = () => applyChannelPreset(byId('setting-preset-select').value);
                 byId('setting-preset-delete-btn').onclick = deleteCurrentChannelPreset;
@@ -2059,7 +2207,12 @@
                 byId('setting-preset-watermark-file').addEventListener('change', uploadChannelPresetWatermark);
                 byId('setting-preset-upload-mode').addEventListener('change', updatePresetPublicConfirmVisibility);
                 byId('setting-preset-visibility').addEventListener('change', updatePresetPublicConfirmVisibility);
-                document.addEventListener('vietsub:glossaries-updated', () => syncPresetGlossaryDropdown(byId('setting-preset-glossary')?.value || 'default'));
+                document.addEventListener('vietsub:glossaries-updated', () => {
+                    const desired = presetGlossaryTouched
+                        ? (byId('setting-preset-glossary')?.value || presetGlossaryDesired || 'default')
+                        : (currentChannelPreset()?.glossary_id || presetGlossaryDesired || 'default');
+                    syncPresetGlossaryDropdown(desired);
+                });
             }
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
             byId('setting-api-base-url').addEventListener('change', saveSettings); byId('setting-api-model').addEventListener('change', saveSettings); byId('setting-api-key').addEventListener('change', saveSettings);
