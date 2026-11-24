@@ -876,3 +876,40 @@ test('inline SRT editor refuses to delete the last remaining cue and retains srt
     assert.match(h.elements['editor-srt-status'].textContent, /bị khoá/);
 });
 
+test('AI hook suggestions render chips, apply to Top Banner with live preview, and apply channel preset cleanly', async () => {
+    const h = harness({handler: (url, opts) => {
+        if (url === '/api/editor/projects/job-a/suggest-hooks' && opts.method === 'POST') {
+            return {job_id: 'job-a', hooks: ['Cú twist cuối gây sốc!', 'Một chiêu định càn khôn!', 'Đừng bỏ lỡ giây thứ 10!'], provider: 'DeepSeek API', model: 'deepseek-chat'};
+        }
+    }});
+    await h.init(); await h.receive();
+    const video = h.elements['editor-video'];
+    video.hidden = false; video.videoWidth = 1080; video.videoHeight = 1920;
+    video.rect = {left: 0, top: 0, width: 800, height: 450};
+
+    await h.elements['editor-suggest-hooks-btn'].emit('click').done;
+    assert.equal(h.elements['editor-hooks-list'].hidden, false);
+    assert.equal(h.elements['editor-hooks-list'].children.length, 3);
+    const chip = h.elements['editor-hooks-list'].children[0];
+    assert.equal(chip.dataset.hookText, 'Cú twist cuối gây sốc!');
+
+    await h.elements['editor-hooks-list'].emit('click', {target: chip}).done;
+    assert.equal(h.elements['editor-banner-text'].value, 'Cú twist cuối gây sốc!');
+    assert.equal(h.editor.state().options.banner_text, 'Cú twist cuối gây sốc!');
+    assert.equal(h.elements['editor-live-banner'].hidden, false);
+
+    // Apply channel preset event updates animation/reframe while preserving project's crop_box when preset crop_box is null
+    await h.document.emit('vietsub:apply-channel-preset', {
+        detail: {
+            preset_name: 'Kênh 9:16',
+            editor_options: {...plain(helpers.defaults), reframe: 'vertical', crop_box: null, subtitle_animation: 'word_pop', banner_text: 'Hook hồ sơ kênh'},
+        },
+    }).done;
+    assert.equal(h.editor.state().options.reframe, 'vertical');
+    assert.equal(h.editor.state().options.subtitle_animation, 'word_pop');
+    approx(h.editor.state().options.crop_box.y, .64);
+    assert.equal(h.elements['editor-banner-text'].value, 'Hook hồ sơ kênh');
+    assert.equal(h.elements['editor-live-banner'].hidden, false);
+});
+
+

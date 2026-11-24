@@ -860,6 +860,20 @@
         $('uploader-scheduled-at').addEventListener('input', () => { if (current && !$('uploader-scheduled-at').disabled) { current.scheduledLocal = $('uploader-scheduled-at').value; touched(current); } });
         $('uploader-confirm-public').addEventListener('change', refreshControls);
         $('uploader-source-ack').addEventListener('change', () => { if (current && !$('uploader-source-ack').disabled) { current.sourceConfirmed = $('uploader-source-ack').checked; touched(current); } });
+        document.addEventListener('vietsub:apply-channel-preset', event => {
+            const pub = event?.detail?.publish_defaults;
+            if (!pub || !current || current.busy || current.uncertain) return;
+            const knownIds = new Set(profiles.map(item => item.id));
+            const validIds = Array.isArray(pub.profile_ids) ? pub.profile_ids.filter(id => knownIds.has(id)) : [];
+            current.selected = new Set(validIds);
+            if (uploadModes.includes(pub.upload_mode)) current.uploadMode = pub.upload_mode;
+            if (modes.includes(pub.visibility)) current.visibility = pub.visibility;
+            touched(current);
+            paintProfiles();
+            paintMetadata();
+            refreshControls();
+            notify(`Đã đồng bộ tài khoản và chế độ đăng từ hồ sơ "${event.detail.preset_name || ''}"${current.visibility === 'public' ? ' (vẫn cần xác nhận công khai thủ công trước khi đăng).' : '.'}`);
+        });
         // app.js already owns this click -> Workbench refresh -> projectReceived. No second refresh listener here.
         $('uploader-video').addEventListener('error', () => { $('uploader-video-status').textContent = 'Trình duyệt không phát được video. Bản nháp vẫn giữ; kiểm tra lại file trước khi đăng.'; });
         window.addEventListener('beforeunload', beforeUnload);

@@ -43,6 +43,7 @@
     let optionControls = [], controlByKey = {}, capabilitySequence = 0, voiceSequence = 0;
     let pollTimer = 0, pollGeneration = 0, drag = null, observer = null, renderedOutputKey = '';
     let editorGlossaries = [{id: 'default', name: 'Mặc định'}], editorActiveGlossaryId = 'default', editorGlossariesLoaded = false;
+    let hookSequence = 0;
 
     function validCrop(box) {
         return Boolean(box && typeof box === 'object' && !Array.isArray(box) && cropFields.every(key => finite(box[key])) &&
@@ -358,6 +359,10 @@
         $('editor-action-help').textContent = reason;
         $('editor-render-btn').title = reason || 'Render video bằng cấu hình hiện tại';
         $('editor-options-form').setAttribute('aria-busy', String(current?.busy === 'save' || current?.loading === true));
+        if ($('editor-suggest-hooks-btn')) {
+            $('editor-suggest-hooks-btn').disabled = !editable || busy || Boolean(current?.hooksBusy) || current?.snapshot?.availability?.translated_srt !== true;
+            $('editor-suggest-hooks-btn').textContent = current?.hooksBusy ? 'Đang gợi ý Hook…' : 'AI gợi ý Hook';
+        }
         refreshSrtControls();
     }
     function writeForm() {
@@ -445,6 +450,105 @@
             rect.dataset.maskMode = current.options.mask_mode;
         }
         renderLiveSubtitle(content);
+        renderLiveBanner(content);
+    }
+    function renderLiveBanner(cachedContent = null) {
+        if (!initialized) return;
+        const overlay = $('editor-live-banner'), video = $('editor-video');
+        if (!overlay) return;
+        const record = current, content = cachedContent || sourceContent();
+        const text = (record?.options?.banner_text || '').trim();
+        if (!record || !text || video.hidden || !content) {
+            overlay.hidden = true;
+            return;
+        }
+        const opts = record.options;
+        const resolution = record.snapshot.manifest?.source_resolution;
+        const sourceH = video.videoHeight || resolution?.height || 1080;
+        const scaledSize = Math.max(11, Math.min(34, Math.round((opts.font_size || 48) * 0.72 * (content.height / sourceH))));
+        overlay.hidden = false;
+        for (const [key, value] of Object.entries({left: content.left, top: content.top, width: content.width, height: content.height})) overlay.style[key] = `${value}px`;
+        overlay.dataset.position = opts.banner_position === 'bottom' ? 'bottom' : 'top';
+        const bar = document.createElement('span');
+        bar.className = 'editor-live-banner-box';
+        bar.style.fontFamily = `'${opts.font || 'Be Vietnam Pro'}', sans-serif`;
+        bar.style.fontSize = `${scaledSize}px`;
+        bar.style.color = opts.subtitle_highlight_color || '#ffd54a';
+        bar.textContent = text;
+        overlay.replaceChildren(bar);
+    }
+    function renderHooksList(record = current) {
+        const list = $('editor-hooks-list');
+        if (!list) return;
+        const hooks = Array.isArray(record?.hooks) ? record.hooks : [];
+        if (!hooks.length) {
+            list.replaceChildren();
+            list.hidden = true;
+            return;
+        }
+        const nodes = hooks.map(text => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'hook-chip';
+            chip.textContent = text;
+            chip.dataset.hookText = text;
+            chip.title = 'Bấm để điền vào Top Banner';
+            return chip;
+        });
+        list.replaceChildren(...nodes);
+        list.hidden = false;
+    }
+    async function suggestHooks() {
+        const record = current;
+        if (!record || !canEdit() || record.hooksBusy || record.busy) return;
+        const sequence = ++hookSequence;
+        record.hooksBusy = true;
+        refreshControls();
+        if ($('editor-hooks-status')) {
+            $('editor-hooks-status').textContent = 'Đang tạo 3–5 câu Hook từ phụ đề SRT…';
+            $('editor-hooks-status').dataset.state = '';
+        }
+        try {
+            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/suggest-hooks`, {
+                method: 'POST', body: '{}', timeoutMs: 65000,
+            });
+            if (sequence !== hookSequence || current !== record) return;
+            if (!Array.isArray(data.hooks) || !data.hooks.length) throw new Error('AI chưa trả về danh sách câu Hook hợp lệ.');
+            record.hooks = data.hooks.filter(item => typeof item === 'string' && item.trim()).slice(0, 5);
+            renderHooksList(record);
+            if ($('editor-hooks-status')) {
+                $('editor-hooks-status').textContent = `Đã gợi ý ${record.hooks.length} câu Hook (${data.provider || 'AI'}). Bấm để điền vào Top Banner.`;
+            }
+        } catch (error) {
+            if (sequence !== hookSequence || current !== record) return;
+            if ($('editor-hooks-status')) {
+                $('editor-hooks-status').textContent = error.message;
+                $('editor-hooks-status').dataset.state = 'error';
+            }
+        } finally {
+            record.hooksBusy = false;
+            if (current === record) refreshControls();
+        }
+    }
+    function applyChannelPreset(detail) {
+        if (!detail || !detail.editor_options || !current || !canEdit()) return;
+        const merged = {...detail.editor_options};
+        if (merged.crop_box === null && validCrop(current.options.crop_box)) {
+            merged.crop_box = {...current.options.crop_box};
+        }
+        const validation = validateOptions(merged);
+        if (Object.keys(validation.errors).length) {
+            notify('Một số tuỳ chọn trong hồ sơ kênh chưa tương thích với dự án hiện tại.', 'error');
+            return;
+        }
+        current.options = validation.options;
+        current.numericDraft = {};
+        current.cropDraft = null;
+        current.cropError = '';
+        if (current.options.crop_box) current.lastCrop = {...current.options.crop_box};
+        edited(current);
+        writeForm();
+        notify(`Đã áp dụng cấu hình Auto Edit từ hồ sơ "${detail.preset_name || ''}". Bấm Lưu cấu hình hoặc Render.`);
     }
     function renderLiveSubtitle(cachedContent = null) {
         if (!initialized) return;
@@ -1109,14 +1213,16 @@
                 numericDraft: {}, draftPersisted: false, lastCrop: crop, task: null, output: null, videoOutput: null, pollFailures: 0,
                 srtCues: [], srtDirty: false, srtLoaded: false, srtLoading: false, srtSaving: false, srtHasRaw: false,
                 srtHasBackup: false, srtLocked: false, srtLockReason: '', srtSearch: '', srtInvalidCount: 0,
-                activeCueIndex: -1, selectedCueIndex: -1, srtRowByIndex: [], lastLiveSubtitleKey: ''};
+                activeCueIndex: -1, selectedCueIndex: -1, srtRowByIndex: [], lastLiveSubtitleKey: '',
+                hooks: [], hooksBusy: false};
             restoreDraft(record); records.set(record.jobId, record);
         }
         record.snapshot = snapshot;
         if (current !== record) {
-            endDrag(); stopPolling(); voiceSequence++; current = record; renderedOutputKey = null;
+            endDrag(); stopPolling(); voiceSequence++; hookSequence++; current = record; renderedOutputKey = null;
             if ($('editor-srt-search')) $('editor-srt-search').value = record.srtSearch || '';
-            writeForm(); paintTask(); paintOutput(); renderSrtList(); syncVideoCueTime(false);
+            if ($('editor-hooks-status')) $('editor-hooks-status').textContent = '';
+            writeForm(); paintTask(); paintOutput(); renderSrtList(); renderHooksList(record); syncVideoCueTime(false);
             if (record.task && running(record)) startPolling(record);
         } else { updateCropSummary(); refreshControls(); syncOverlay(); }
         $('editor-empty').hidden = true; $('editor-project').hidden = false;
@@ -1419,6 +1525,18 @@
         });
         document.addEventListener('vietsub:glossaries-updated', event => {
             if (event?.detail) populateEditorGlossaries(event.detail);
+        });
+        document.addEventListener('vietsub:apply-channel-preset', event => {
+            if (event?.detail) applyChannelPreset(event.detail);
+        });
+        $('editor-suggest-hooks-btn')?.addEventListener('click', suggestHooks);
+        $('editor-hooks-list')?.addEventListener('click', event => {
+            const chip = event.target?.closest?.('[data-hook-text]') || (event.target?.dataset?.hookText ? event.target : null);
+            if (!chip || !canEdit()) return;
+            const input = $('editor-banner-text');
+            input.value = chip.dataset.hookText;
+            optionChanged({target: input});
+            if ($('editor-hooks-status')) $('editor-hooks-status').textContent = 'Đã điền câu Hook vào Top Banner và bật xem trước.';
         });
         const srtList = $('editor-srt-list');
         if (srtList) {

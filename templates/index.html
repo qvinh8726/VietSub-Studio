@@ -200,6 +200,16 @@
                         <button id="start-queue-btn" class="btn-primary" type="button" disabled>Bắt đầu xử lý</button>
                         <button id="cancel-btn" class="btn-danger" type="button" hidden>Huỷ job</button>
                     </div>
+                    <div id="queue-pipeline-bar" class="queue-pipeline-bar" aria-label="Hồ sơ kênh và Chạy 1 mạch">
+                        <div class="queue-preset-row">
+                            <select id="queue-channel-preset" class="select-input" aria-label="Hồ sơ kênh áp dụng cho hàng đợi"><option value="">Không dùng hồ sơ kênh</option></select>
+                            <button id="queue-apply-preset-btn" class="btn-ghost" type="button" disabled>Áp dụng</button>
+                        </div>
+                        <div class="queue-pipeline-toggles">
+                            <label class="queue-pipeline-check" for="queue-auto-edit"><input id="queue-auto-edit" type="checkbox"><span>Tự động Auto Edit sau khi dịch</span></label>
+                            <label class="queue-pipeline-check" for="queue-auto-publish"><input id="queue-auto-publish" type="checkbox" disabled><span>Tự động xếp hàng Publish</span></label>
+                        </div>
+                    </div>
                     <div class="queue-bulk-tools" aria-label="Chọn và dọn hàng đợi, lịch sử">
                         <div class="queue-selection-shortcuts">
                             <label class="queue-select-all"><input id="queue-select-all" type="checkbox">Tất cả</label>
@@ -239,6 +249,7 @@
 <video aria-label="Video project Auto Edit" controls="" hidden id="editor-video" preload="metadata"></video><p id="editor-video-placeholder">Nhận project từ VietSub để xem trước video.</p>
 <div class="editor-crop-layer" hidden id="editor-crop-layer"><div aria-describedby="editor-crop-help editor-crop-error" aria-disabled="true" aria-label="Vùng che phụ đề trên video nguồn" class="editor-crop-box" id="editor-crop-box" role="group" tabindex="0"><span aria-hidden="true" class="editor-crop-label">Vùng che</span><button aria-label="Đổi góc trên trái vùng che" class="editor-crop-handle nw" data-editor-handle="nw" tabindex="-1" type="button"></button><button aria-label="Đổi góc trên phải vùng che" class="editor-crop-handle ne" data-editor-handle="ne" tabindex="-1" type="button"></button><button aria-label="Đổi góc dưới trái vùng che" class="editor-crop-handle sw" data-editor-handle="sw" tabindex="-1" type="button"></button><button aria-label="Đổi góc dưới phải vùng che" class="editor-crop-handle se" data-editor-handle="se" tabindex="-1" type="button"></button></div></div>
 <div aria-hidden="true" class="editor-live-subtitle" hidden id="editor-live-subtitle"></div>
+<div aria-hidden="true" class="editor-live-banner" hidden id="editor-live-banner"></div>
 </div>
 <p class="field-help" id="editor-video-status" role="status"></p>
 </section>
@@ -312,6 +323,7 @@
 <label for="editor-subtitle-max-words">Số từ / cụm (Word Pop)<input class="number-input" data-editor-option="subtitle_max_words_per_chunk" id="editor-subtitle-max-words" max="8" min="2" step="1" type="number" value="4"/></label>
 </div></details><details class="editor-option-section" open><summary><span>Banner &amp; logo PNG</span><small>Brand</small></summary><div class="editor-fields">
 <label class="editor-wide" for="editor-banner-text">Nội dung banner (tối đa 200 ký tự)<input class="text-input" data-editor-option="banner_text" id="editor-banner-text" maxlength="200" placeholder="Để trống nếu không dùng banner"/></label>
+<div class="editor-hooks-tools editor-wide"><div class="editor-inline-actions"><button class="btn-ghost" disabled id="editor-suggest-hooks-btn" type="button">AI gợi ý Hook</button><span aria-live="polite" class="field-help" id="editor-hooks-status" role="status"></span></div><div aria-label="Danh sách câu Hook gợi ý" class="editor-hooks-list" hidden id="editor-hooks-list"></div></div>
 <label for="editor-banner-position">Vị trí banner<select class="select-input" data-editor-option="banner_position" id="editor-banner-position"><option value="top">Trên</option><option value="bottom">Dưới</option></select></label>
 <label class="editor-check"><input data-editor-option="watermark_enabled" id="editor-watermark-enabled" type="checkbox"/> Hiện logo PNG</label>
 <label class="editor-wide" for="editor-watermark-file">Chọn logo PNG<input accept="image/png,.png" aria-describedby="editor-watermark-help" class="editor-file" id="editor-watermark-file" type="file"/></label>
@@ -518,6 +530,50 @@
                         <div class="glossary-actions">
                             <button id="setting-glossary-save-btn" class="btn-secondary" type="button">Lưu bộ từ điển</button>
                             <small>Bộ đang chọn được tự động bơm vào prompt dịch (API &amp; Gemini) và dùng nhanh trong trình sửa SRT.</small>
+                        </div>
+                    </div>
+                    <div id="channel-presets-settings" class="setting-field channel-presets-settings">
+                        <div class="glossary-head">
+                            <label for="setting-preset-select">Hồ sơ Kênh (Channel Presets)</label>
+                            <small id="setting-preset-status" role="status" aria-live="polite"></small>
+                        </div>
+                        <div class="preset-profile-row">
+                            <select id="setting-preset-select" class="select-input" aria-label="Chọn hồ sơ kênh"><option value="">Chưa có hồ sơ kênh</option></select>
+                            <button id="setting-preset-new-btn" class="btn-ghost" type="button">+ Hồ sơ mới</button>
+                            <button id="setting-preset-apply-btn" class="btn-ghost" type="button" disabled>Áp dụng</button>
+                            <button id="setting-preset-delete-btn" class="btn-ghost" type="button" disabled>Xoá</button>
+                        </div>
+                        <label class="glossary-sublabel" for="setting-preset-name">Tên hồ sơ kênh<input id="setting-preset-name" class="text-input" maxlength="80" placeholder="Ví dụ: Kênh Review Phim 9:16"></label>
+                        <label class="glossary-sublabel" for="setting-preset-desc">Mô tả ngắn<input id="setting-preset-desc" class="text-input" maxlength="300" placeholder="Ghi chú phong cách kênh (tuỳ chọn)"></label>
+                        <div class="preset-grid-2">
+                            <label class="glossary-sublabel" for="setting-preset-glossary">Từ điển đi kèm<select id="setting-preset-glossary" class="select-input"><option value="default">Mặc định</option></select></label>
+                            <label class="glossary-sublabel" for="setting-preset-reframe">Khung hình<select id="setting-preset-reframe" class="select-input"><option value="original">Giữ tỷ lệ gốc</option><option value="vertical">Dọc 9:16</option></select></label>
+                            <label class="glossary-sublabel" for="setting-preset-mask-mode">Che chữ gốc<select id="setting-preset-mask-mode" class="select-input"><option value="boxblur">Làm mờ</option><option value="delogo">Xoá chữ</option><option value="solid_bar">Thanh màu</option><option value="none">Không che</option></select></label>
+                            <label class="glossary-sublabel" for="setting-preset-sub-anim">Hiệu ứng phụ đề<select id="setting-preset-sub-anim" class="select-input"><option value="static">Tĩnh</option><option value="karaoke_highlight">Karaoke</option><option value="word_pop">Word Pop</option></select></label>
+                            <label class="glossary-sublabel" for="setting-preset-sub-highlight">Màu nổi bật<input id="setting-preset-sub-highlight" class="editor-color" type="color" value="#ffd54a"></label>
+                            <label class="glossary-sublabel" for="setting-preset-sub-max-words">Số từ / cụm<input id="setting-preset-sub-max-words" class="number-input" type="number" min="2" max="8" step="1" value="4"></label>
+                        </div>
+                        <label class="glossary-sublabel" for="setting-preset-banner">Top Banner mặc định<input id="setting-preset-banner" class="text-input" maxlength="200" placeholder="Để trống nếu nhập riêng từng video"></label>
+                        <div class="preset-grid-2">
+                            <label class="glossary-sublabel" for="setting-preset-upload-mode">Cách đăng Publish<select id="setting-preset-upload-mode" class="select-input"><option value="assisted">Bán tự động (khuyên dùng)</option><option value="auto">Tự động hoàn toàn</option></select></label>
+                            <label class="glossary-sublabel" for="setting-preset-visibility">Chế độ hiển thị<select id="setting-preset-visibility" class="select-input"><option value="private">Riêng tư</option><option value="draft">Bản nháp</option><option value="public">Công khai</option></select></label>
+                        </div>
+                        <label class="toggle-setting preset-public-confirm" id="setting-preset-public-confirm-row" hidden for="setting-preset-confirm-public-auto">
+                            <input id="setting-preset-confirm-public-auto" type="checkbox">
+                            <span><strong>Cho phép tự động đăng CÔNG KHAI</strong><small>Chỉ áp dụng khi hồ sơ chọn đồng thời Công khai + Tự động hoàn toàn trong Chạy 1 mạch.</small></span>
+                        </label>
+                        <div class="preset-profiles-wrap">
+                            <span>Tài khoản Publish Hub mặc định</span>
+                            <div id="setting-preset-profiles" class="preset-profiles-list" aria-label="Chọn tài khoản Publish Hub mặc định"></div>
+                        </div>
+                        <div class="preset-watermark-row">
+                            <label class="glossary-sublabel" for="setting-preset-watermark-file">Logo PNG riêng của kênh<input id="setting-preset-watermark-file" accept="image/png,.png" class="editor-file" type="file" disabled></label>
+                            <small id="setting-preset-watermark-status">Lưu hồ sơ trước khi tải logo PNG.</small>
+                        </div>
+                        <small id="setting-preset-warnings" class="preset-warnings" role="status" aria-live="polite"></small>
+                        <div class="preset-actions">
+                            <button id="setting-preset-capture-btn" class="btn-ghost" type="button">Lấy tuỳ chọn Auto Edit hiện tại</button>
+                            <button id="setting-preset-save-btn" class="btn-secondary" type="button" disabled>Lưu hồ sơ kênh</button>
                         </div>
                     </div>
                     <div id="notebook-settings" class="provider-settings">

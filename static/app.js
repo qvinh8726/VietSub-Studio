@@ -49,6 +49,9 @@
         let translationInstructionPresets = {};
         let glossaryStore = {active_id: 'default', profiles: [{id: 'default', name: 'Mặc định', style_note: '', entries: []}]};
         let glossariesLoaded = false;
+        let channelPresetsStore = {active_id: '', presets: [], resolved_warnings: {}};
+        let presetEditorDraft = null;
+        let presetUploaderProfiles = [];
         let connectionOk = true;
         let cancellingJobId = '';
         let translationProviderName = 'Gemini';
@@ -559,9 +562,12 @@
             const button = byId('add-queue-btn');
             button.disabled = true;
             try {
+                const payload = { url: currentPreview.source_url, preview_id: currentPreview.id, name: byId('project-name').value.trim(), lang: byId('ocr-lang').value, crop_coords: crop, video_resolution: currentPreview.video_resolution || null };
+                const presetId = byId('queue-channel-preset')?.value || '';
+                if (presetId) payload.channel_preset_id = presetId;
                 await fetchJson('/api/queue', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ url: currentPreview.source_url, preview_id: currentPreview.id, name: byId('project-name').value.trim(), lang: byId('ocr-lang').value, crop_coords: crop, video_resolution: currentPreview.video_resolution || null })
+                    body: JSON.stringify(payload)
                 });
                 showToast('Đã thêm video vào hàng đợi.');
                 clearComposer();
@@ -925,6 +931,17 @@
                 top.append(info, badge); row.appendChild(top);
                 const progress = document.createElement('div'); progress.className = 'queue-progress'; progress.setAttribute('role', 'progressbar'); progress.setAttribute('aria-valuemin', '0'); progress.setAttribute('aria-valuemax', '100');
                 const progressValue = progressWidth(job.step, job.status); progress.setAttribute('aria-valuenow', String(progressValue)); const bar = document.createElement('i'); bar.style.width = `${progressValue}%`; progress.appendChild(bar); row.appendChild(progress);
+                if (job.pipeline && job.pipeline.enabled) {
+                    const pLabels = {queued: 'chờ', running: 'đang chạy', success: 'xong', error: 'lỗi', cancelled: 'huỷ', pending: 'chờ render', skipped: 'bỏ qua', disabled: 'tắt'};
+                    const pipeLine = document.createElement('div');
+                    pipeLine.className = 'queue-pipeline-badge';
+                    const editState = pLabels[job.pipeline.auto_edit] || job.pipeline.auto_edit || '—';
+                    const pubState = job.pipeline.auto_publish && job.pipeline.auto_publish !== 'disabled'
+                        ? ` · Publish: ${pLabels[job.pipeline.auto_publish] || job.pipeline.auto_publish}` : '';
+                    const presetTag = job.pipeline.preset_name ? `[${job.pipeline.preset_name}] ` : '';
+                    pipeLine.textContent = `${presetTag}Auto Edit: ${editState}${pubState}`;
+                    row.appendChild(pipeLine);
+                }
                 if (job.error) { const error = document.createElement('div'); error.className = 'queue-error'; error.textContent = job.error; row.appendChild(error); }
                 const actions = document.createElement('div'); actions.className = 'queue-item-actions';
                 if (job.status !== 'running') { const remove = document.createElement('button'); remove.className = 'btn-ghost'; remove.textContent = 'Xoá bản ghi'; remove.title = 'Chỉ xoá bản ghi; giữ nguyên tất cả file'; remove.disabled = bulkDeleteBusy; remove.onclick = () => removeQueueJob(job.id, job.status); actions.appendChild(remove); }
@@ -1212,6 +1229,14 @@
                 byId('setting-edge-background').checked = data.edge_background !== false;
                 byId('setting-auto-delete-source-video').checked = data.auto_delete_source_video === true;
                 byId('setting-generate-publish-metadata').checked = data.generate_publish_metadata === true;
+                if (byId('queue-auto-edit')) {
+                    const autoEdit = data.auto_edit_after_translate === true;
+                    byId('queue-auto-edit').checked = autoEdit;
+                    if (byId('queue-auto-publish')) {
+                        byId('queue-auto-publish').checked = autoEdit && data.auto_queue_publish === true;
+                        byId('queue-auto-publish').disabled = !autoEdit;
+                    }
+                }
                 window.VietSubWorkbench?.applySettings(data);
                 applyBrowserSettings(data);
                 const shortcutButton = byId('create-shortcut-btn');
@@ -1238,6 +1263,10 @@
                 const payload = {translation_provider:provider, translation_instructions:byId('setting-translation-instructions').value.trim(), notebook_url:byId('setting-notebook').value.trim(), output_dir:byId('setting-output').value.trim(), ocr_lang:byId('ocr-lang').value, ocr_model_mode:byId('setting-ocr-speed').value, ocr_frames_to_skip:byId('setting-frames-skip').value === '' ? null : Number(byId('setting-frames-skip').value), edge_background:byId('setting-edge-background').checked};
                 payload.auto_delete_source_video = byId('setting-auto-delete-source-video').checked === true;
                 payload.generate_publish_metadata = byId('setting-generate-publish-metadata').checked === true;
+                if (byId('queue-auto-edit')) {
+                    payload.auto_edit_after_translate = byId('queue-auto-edit').checked === true;
+                    payload.auto_queue_publish = payload.auto_edit_after_translate && byId('queue-auto-publish')?.checked === true;
+                }
                 if (provider !== 'notebook') {
                     payload.translation_api_base_url = byId('setting-api-base-url').value.trim();
                     payload.translation_api_model = byId('setting-api-model').value.trim();
@@ -1465,6 +1494,276 @@
             }
         }
 
+        function currentChannelPreset() {
+            const presets = Array.isArray(channelPresetsStore?.presets) ? channelPresetsStore.presets : [];
+            const selectedId = byId('setting-preset-select')?.value || channelPresetsStore?.active_id || '';
+            return presets.find(item => item.id === selectedId) || null;
+        }
+
+        function updatePresetPublicConfirmVisibility() {
+            const row = byId('setting-preset-public-confirm-row');
+            if (!row) return;
+            const isPublicAuto = byId('setting-preset-visibility')?.value === 'public' && byId('setting-preset-upload-mode')?.value === 'auto';
+            row.hidden = !isPublicAuto;
+            if (!isPublicAuto && byId('setting-preset-confirm-public-auto')) byId('setting-preset-confirm-public-auto').checked = false;
+        }
+
+        function syncPresetGlossaryDropdown(chosenId = 'default') {
+            const select = byId('setting-preset-glossary');
+            if (!select) return;
+            const profiles = Array.isArray(glossaryStore?.profiles) && glossaryStore.profiles.length
+                ? glossaryStore.profiles : [{id: 'default', name: 'Mặc định'}];
+            const nodes = profiles.map(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id; opt.textContent = p.name;
+                return opt;
+            });
+            select.replaceChildren(...nodes);
+            select.value = profiles.some(p => p.id === chosenId) ? chosenId : 'default';
+        }
+
+        function renderPresetUploaderProfiles(selectedIds = []) {
+            const container = byId('setting-preset-profiles');
+            if (!container) return;
+            const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+            if (!presetUploaderProfiles.length) {
+                const empty = document.createElement('small');
+                empty.textContent = 'Chưa có tài khoản Publish Hub. Tạo tài khoản ở Workspace 3 để chọn mặc định.';
+                container.replaceChildren(empty);
+                return;
+            }
+            const nodes = presetUploaderProfiles.map(profile => {
+                const label = document.createElement('label');
+                label.className = 'preset-profile-check';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox'; cb.value = profile.id; cb.checked = selected.has(profile.id);
+                cb.dataset.presetProfile = profile.id;
+                const span = document.createElement('span');
+                span.textContent = `${profile.name} (${String(profile.platform || '').toUpperCase()})`;
+                label.append(cb, span);
+                return label;
+            });
+            container.replaceChildren(...nodes);
+        }
+
+        function renderChannelPresetEditor(preset) {
+            const hasPreset = Boolean(preset);
+            presetEditorDraft = hasPreset ? JSON.parse(JSON.stringify(preset.editor_options || {})) : null;
+            if (byId('setting-preset-delete-btn')) byId('setting-preset-delete-btn').disabled = !hasPreset;
+            if (byId('setting-preset-apply-btn')) byId('setting-preset-apply-btn').disabled = !hasPreset;
+            if (byId('setting-preset-save-btn')) byId('setting-preset-save-btn').disabled = !hasPreset;
+            if (byId('setting-preset-watermark-file')) byId('setting-preset-watermark-file').disabled = !hasPreset;
+            if (byId('setting-preset-name')) byId('setting-preset-name').value = preset?.name || '';
+            if (byId('setting-preset-desc')) byId('setting-preset-desc').value = preset?.description || '';
+            syncPresetGlossaryDropdown(preset?.glossary_id || 'default');
+            const opts = preset?.editor_options || {};
+            if (byId('setting-preset-reframe')) byId('setting-preset-reframe').value = opts.reframe || 'original';
+            if (byId('setting-preset-mask-mode')) byId('setting-preset-mask-mode').value = opts.mask_mode || 'boxblur';
+            if (byId('setting-preset-sub-anim')) byId('setting-preset-sub-anim').value = opts.subtitle_animation || 'static';
+            if (byId('setting-preset-sub-highlight')) byId('setting-preset-sub-highlight').value = opts.subtitle_highlight_color || '#ffd54a';
+            if (byId('setting-preset-sub-max-words')) byId('setting-preset-sub-max-words').value = String(opts.subtitle_max_words_per_chunk || 4);
+            if (byId('setting-preset-banner')) byId('setting-preset-banner').value = opts.banner_text || '';
+            const pub = preset?.publish_defaults || {};
+            if (byId('setting-preset-upload-mode')) byId('setting-preset-upload-mode').value = pub.upload_mode || 'assisted';
+            if (byId('setting-preset-visibility')) byId('setting-preset-visibility').value = pub.visibility || 'private';
+            if (byId('setting-preset-confirm-public-auto')) byId('setting-preset-confirm-public-auto').checked = pub.confirm_public_auto === true;
+            updatePresetPublicConfirmVisibility();
+            renderPresetUploaderProfiles(pub.profile_ids || []);
+            if (byId('setting-preset-watermark-status')) {
+                byId('setting-preset-watermark-status').textContent = !hasPreset ? 'Lưu hồ sơ trước khi tải logo PNG.'
+                    : opts.watermark_path ? 'Đã gắn logo PNG riêng cho hồ sơ kênh.' : 'Chưa gắn logo PNG riêng.';
+            }
+            const warnings = (hasPreset && channelPresetsStore.resolved_warnings?.[preset.id]) || [];
+            if (byId('setting-preset-warnings')) byId('setting-preset-warnings').textContent = warnings.join(' ');
+        }
+
+        function renderChannelPresetsStore(data) {
+            if (data && Array.isArray(data.presets)) {
+                channelPresetsStore = {
+                    active_id: data.active_id || '',
+                    presets: data.presets,
+                    resolved_warnings: data.resolved_warnings || {},
+                };
+            }
+            const presets = channelPresetsStore.presets || [];
+            const qSelect = byId('queue-channel-preset');
+            if (qSelect) {
+                const qNodes = [];
+                const noneOpt = document.createElement('option'); noneOpt.value = ''; noneOpt.textContent = 'Không dùng hồ sơ kênh'; qNodes.push(noneOpt);
+                for (const p of presets) {
+                    const opt = document.createElement('option'); opt.value = p.id; opt.textContent = p.name; qNodes.push(opt);
+                }
+                qSelect.replaceChildren(...qNodes);
+                qSelect.value = channelPresetsStore.active_id || '';
+                if (byId('queue-apply-preset-btn')) byId('queue-apply-preset-btn').disabled = !qSelect.value;
+            }
+            const sSelect = byId('setting-preset-select');
+            if (sSelect) {
+                const prev = sSelect.value;
+                const sNodes = [];
+                if (!presets.length) {
+                    const opt = document.createElement('option'); opt.value = ''; opt.textContent = 'Chưa có hồ sơ kênh'; sNodes.push(opt);
+                } else {
+                    for (const p of presets) {
+                        const opt = document.createElement('option'); opt.value = p.id;
+                        opt.textContent = `${p.name}${p.id === channelPresetsStore.active_id ? ' · đang dùng' : ''}`;
+                        sNodes.push(opt);
+                    }
+                }
+                sSelect.replaceChildren(...sNodes);
+                const chosen = presets.some(p => p.id === prev) ? prev : (channelPresetsStore.active_id || presets[0]?.id || '');
+                sSelect.value = chosen;
+                renderChannelPresetEditor(currentChannelPreset());
+            }
+        }
+
+        async function loadChannelPresets({withProfiles = false} = {}) {
+            if (!byId('queue-channel-preset') && !byId('setting-preset-select')) return;
+            try {
+                const tasks = [fetchJson('/api/channel-presets')];
+                if (withProfiles) tasks.push(fetchJson('/api/uploader/profiles').catch(() => ({profiles: []})));
+                const [presetData, profileData] = await Promise.all(tasks);
+                if (withProfiles && Array.isArray(profileData?.profiles)) presetUploaderProfiles = profileData.profiles;
+                renderChannelPresetsStore(presetData);
+                if (byId('setting-preset-status')) byId('setting-preset-status').textContent = `${channelPresetsStore.presets.length} hồ sơ`;
+            } catch (error) {
+                if (byId('setting-preset-status')) byId('setting-preset-status').textContent = error.message;
+            }
+        }
+
+        async function createChannelPreset() {
+            const presets = channelPresetsStore.presets || [];
+            let idx = presets.length + 1;
+            let name = `Hồ sơ kênh ${idx}`;
+            while (presets.some(p => p.name === name)) { idx += 1; name = `Hồ sơ kênh ${idx}`; }
+            try {
+                const data = await fetchJson('/api/channel-presets', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        name, description: '', glossary_id: glossaryStore.active_id || 'default',
+                        editor_options: {reframe: 'vertical', mask_mode: 'boxblur', crop_box: null, subtitle_animation: 'word_pop', subtitle_highlight_color: '#ffd54a', subtitle_max_words_per_chunk: 4},
+                        publish_defaults: {profile_ids: [], upload_mode: 'assisted', visibility: 'private', confirm_public_auto: false},
+                        activate: true,
+                    }),
+                });
+                renderChannelPresetsStore(data);
+                if (byId('setting-preset-select') && data.preset?.id) {
+                    byId('setting-preset-select').value = data.preset.id;
+                    renderChannelPresetEditor(currentChannelPreset());
+                }
+                const nameInput = byId('setting-preset-name');
+                if (nameInput) { nameInput.focus(); nameInput.select?.(); }
+                showToast(`Đã tạo hồ sơ kênh "${name}".`);
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        function captureCurrentEditorOptionsIntoPreset() {
+            const editorState = window.VietSubEditor?.state?.();
+            if (!editorState?.options) {
+                showToast('Hãy mở một dự án trong Auto Edit trước để lấy cấu hình hiện tại.', 'error');
+                return;
+            }
+            const captured = JSON.parse(JSON.stringify(editorState.options));
+            captured.crop_box = null;
+            // Watermark paths are project-scoped; keep the preset's own watermark asset if any.
+            const existingWm = presetEditorDraft?.watermark_path || '';
+            captured.watermark_path = existingWm;
+            if (!existingWm) captured.watermark_enabled = false;
+            presetEditorDraft = captured;
+            if (byId('setting-preset-reframe')) byId('setting-preset-reframe').value = captured.reframe || 'original';
+            if (byId('setting-preset-mask-mode')) byId('setting-preset-mask-mode').value = captured.mask_mode || 'boxblur';
+            if (byId('setting-preset-sub-anim')) byId('setting-preset-sub-anim').value = captured.subtitle_animation || 'static';
+            if (byId('setting-preset-sub-highlight')) byId('setting-preset-sub-highlight').value = captured.subtitle_highlight_color || '#ffd54a';
+            if (byId('setting-preset-sub-max-words')) byId('setting-preset-sub-max-words').value = String(captured.subtitle_max_words_per_chunk || 4);
+            if (byId('setting-preset-banner')) byId('setting-preset-banner').value = captured.banner_text || '';
+            showToast('Đã nạp cấu hình Auto Edit (TTS, font, phụ đề động, banner…) vào biểu mẫu hồ sơ. Bấm "Lưu hồ sơ kênh".');
+        }
+
+        async function saveCurrentChannelPreset() {
+            const preset = currentChannelPreset();
+            if (!preset) return;
+            const name = (byId('setting-preset-name')?.value || '').trim();
+            if (!name) { showToast('Tên hồ sơ kênh không được để trống.', 'error'); return; }
+            const description = (byId('setting-preset-desc')?.value || '').trim();
+            const glossary_id = byId('setting-preset-glossary')?.value || 'default';
+            const baseOpts = JSON.parse(JSON.stringify(presetEditorDraft || preset.editor_options || {}));
+            baseOpts.reframe = byId('setting-preset-reframe')?.value || 'original';
+            baseOpts.mask_mode = byId('setting-preset-mask-mode')?.value || 'boxblur';
+            baseOpts.crop_box = null;
+            baseOpts.subtitle_animation = byId('setting-preset-sub-anim')?.value || 'static';
+            baseOpts.subtitle_highlight_color = byId('setting-preset-sub-highlight')?.value || '#ffd54a';
+            baseOpts.subtitle_max_words_per_chunk = Number(byId('setting-preset-sub-max-words')?.value || 4);
+            baseOpts.banner_text = (byId('setting-preset-banner')?.value || '').trim();
+            const container = byId('setting-preset-profiles');
+            const selectedProfiles = [];
+            for (const label of (container?.children || [])) {
+                const cb = label.querySelector?.('input[type="checkbox"]') || label.children?.[0];
+                if (cb?.checked && cb.value) selectedProfiles.push(cb.value);
+            }
+            const upload_mode = byId('setting-preset-upload-mode')?.value || 'assisted';
+            const visibility = byId('setting-preset-visibility')?.value || 'private';
+            const confirm_public_auto = byId('setting-preset-confirm-public-auto')?.checked === true;
+            try {
+                const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        name, description, glossary_id, editor_options: baseOpts,
+                        publish_defaults: {profile_ids: selectedProfiles, upload_mode, visibility, confirm_public_auto},
+                    }),
+                });
+                renderChannelPresetsStore(data);
+                if (byId('setting-preset-status')) byId('setting-preset-status').textContent = 'Đã lưu hồ sơ.';
+                showToast(`Đã lưu hồ sơ kênh "${name}".`);
+            } catch (error) {
+                if (byId('setting-preset-status')) byId('setting-preset-status').textContent = error.message;
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function uploadChannelPresetWatermark() {
+            const preset = currentChannelPreset();
+            const input = byId('setting-preset-watermark-file');
+            const file = input?.files?.[0];
+            if (!preset || !file) return;
+            try {
+                const body = new FormData();
+                body.append('image', file);
+                const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}/watermark`, {method: 'POST', body, timeoutMs: 60000});
+                renderChannelPresetsStore(data);
+                showToast(`Đã lưu logo PNG cho hồ sơ "${preset.name}".`);
+            } catch (error) {
+                showToast(error.message, 'error');
+            } finally {
+                input.value = '';
+            }
+        }
+
+        async function deleteCurrentChannelPreset() {
+            const preset = currentChannelPreset();
+            if (!preset || !window.confirm(`Xoá hồ sơ kênh "${preset.name}"?`)) return;
+            try {
+                const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(preset.id)}`, {method: 'DELETE'});
+                renderChannelPresetsStore(data);
+                showToast(`Đã xoá hồ sơ kênh "${preset.name}".`);
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
+        async function applyChannelPreset(presetId) {
+            if (!presetId) return;
+            try {
+                const payload = {activate: true};
+                if (workspaceProjects.editor) payload.job_id = workspaceProjects.editor;
+                const data = await fetchJson(`/api/channel-presets/${encodeURIComponent(presetId)}/apply`, {
+                    method: 'POST', body: JSON.stringify(payload),
+                });
+                if (data.glossary_store) renderGlossaryStore(data.glossary_store);
+                if (data.presets_store) renderChannelPresetsStore(data.presets_store);
+                document.dispatchEvent(new CustomEvent('vietsub:apply-channel-preset', {detail: data}));
+                const warn = Array.isArray(data.warnings) && data.warnings.length ? ` (${data.warnings[0]})` : '';
+                showToast(`Đã áp dụng hồ sơ kênh "${data.preset_name}" cho cả 3 Workspace.${warn}`);
+            } catch (error) { showToast(error.message, 'error'); }
+        }
+
         async function testTranslationApi() {
             const button = byId('test-api-btn');
             button.disabled = true;
@@ -1636,7 +1935,7 @@
         }
 
         function bootApp() {
-            loadSettings(); loadHealth(); loadHistory(); loadQueue(); checkEdge(); checkForUpdate(); loadSourceSessions();
+            loadSettings(); loadHealth(); loadHistory(); loadQueue(); checkEdge(); checkForUpdate(); loadSourceSessions(); loadChannelPresets();
             scheduleQueuePolling(); setInterval(checkEdge, 5000);
         }
 
@@ -1714,7 +2013,7 @@
             byId('reset-translation-instructions-btn').onclick=resetTranslationInstructions;
             byId('apply-translation-preset-btn').onclick=applyTranslationPreset;
             if (byId('setting-glossary-select')) {
-                byId('settings-open-btn')?.addEventListener('click', () => { loadGlossaries(); });
+                byId('settings-open-btn')?.addEventListener('click', () => { loadGlossaries(); loadChannelPresets({withProfiles: true}); });
                 byId('setting-glossary-select').addEventListener('change', event => activateGlossary(event.target.value));
                 byId('setting-glossary-new-btn').onclick = createGlossaryProfile;
                 byId('setting-glossary-delete-btn').onclick = deleteCurrentGlossary;
@@ -1729,6 +2028,38 @@
                     const btn = event.target?.closest?.('[data-glossary-remove]') || (event.target?.dataset?.glossaryRemove ? event.target : null);
                     if (btn) btn.parentElement?.remove?.();
                 });
+            }
+            if (byId('queue-channel-preset')) {
+                byId('queue-channel-preset').addEventListener('change', async event => {
+                    const id = event.target.value || '';
+                    if (byId('queue-apply-preset-btn')) byId('queue-apply-preset-btn').disabled = !id;
+                    try {
+                        const data = await fetchJson('/api/channel-presets/active', {method: 'POST', body: JSON.stringify({active_id: id})});
+                        renderChannelPresetsStore(data);
+                    } catch (error) { showToast(error.message, 'error'); }
+                });
+                byId('queue-apply-preset-btn').onclick = () => applyChannelPreset(byId('queue-channel-preset').value);
+                byId('queue-auto-edit').addEventListener('change', () => {
+                    const on = byId('queue-auto-edit').checked;
+                    if (byId('queue-auto-publish')) {
+                        byId('queue-auto-publish').disabled = !on;
+                        if (!on) byId('queue-auto-publish').checked = false;
+                    }
+                    saveSettingsNow({silent: true});
+                });
+                byId('queue-auto-publish').addEventListener('change', () => saveSettingsNow({silent: true}));
+            }
+            if (byId('setting-preset-select')) {
+                byId('setting-preset-select').addEventListener('change', () => renderChannelPresetEditor(currentChannelPreset()));
+                byId('setting-preset-new-btn').onclick = createChannelPreset;
+                byId('setting-preset-apply-btn').onclick = () => applyChannelPreset(byId('setting-preset-select').value);
+                byId('setting-preset-delete-btn').onclick = deleteCurrentChannelPreset;
+                byId('setting-preset-save-btn').onclick = saveCurrentChannelPreset;
+                byId('setting-preset-capture-btn').onclick = captureCurrentEditorOptionsIntoPreset;
+                byId('setting-preset-watermark-file').addEventListener('change', uploadChannelPresetWatermark);
+                byId('setting-preset-upload-mode').addEventListener('change', updatePresetPublicConfirmVisibility);
+                byId('setting-preset-visibility').addEventListener('change', updatePresetPublicConfirmVisibility);
+                document.addEventListener('vietsub:glossaries-updated', () => syncPresetGlossaryDropdown(byId('setting-preset-glossary')?.value || 'default'));
             }
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
             byId('setting-api-base-url').addEventListener('change', saveSettings); byId('setting-api-model').addEventListener('change', saveSettings); byId('setting-api-key').addEventListener('change', saveSettings);

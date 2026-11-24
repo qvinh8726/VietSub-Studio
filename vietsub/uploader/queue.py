@@ -69,6 +69,7 @@ class UploadQueue:
     def __init__(self,path,executor,*,on_finish=None,clock=time.time):
         self.path=Path(path); self.executor=executor; self.on_finish=on_finish; self.clock=clock
         self.lock=RLock(); self.wake=Event();self.stop=Event();self.worker=None;self.events={};self.confirm_events={}
+        self._last_persist_at=0.0
         self.jobs=[];self._load();self._cleanup_orphan_snapshots()
 
     def _load(self):
@@ -142,9 +143,58 @@ class UploadQueue:
 
     def _persist(self,jobs):
         payload={'version':1,'jobs':jobs}
-        if len(json.dumps(payload,ensure_ascii=False,indent=2,allow_nan=False).encode('utf-8')) > MAX_QUEUE_BYTES:
+        raw=json.dumps(payload,ensure_ascii=False,indent=2,allow_nan=False).encode('utf-8')
+        if len(raw) > MAX_QUEUE_BYTES:
             raise ValueError('Upload queue vượt giới hạn8MiB; không nhận thêm dữ liệu để giữ khả năng mở lại.')
-        atomic_json(self.path,payload)
+        manifest._safe_path(str(self.path)); self.path.parent.mkdir(parents=True,exist_ok=True)
+        temporary=self.path.with_name(self.path.name+'.'+uuid.uuid4().hex+'.tmp')
+        try:
+            with temporary.open('xb') as stream:
+                stream.write(raw);stream.flush();os.fsync(stream.fileno())
+            manifest._safe_path(str(self.path));os.replace(temporary,self.path)
+        finally:
+            if temporary.exists():temporary.unlink()
+        self._last_persist_at=time.monotonic()
+
+    def _remove_job_artifacts(self, job_ids):
+        artifacts_root = self.path.parent / 'artifacts'
+        try:
+            manifest._safe_path(str(artifacts_root))
+        except (OSError, ValueError):
+            return
+        if not artifacts_root.is_dir():
+            return
+        for jid in job_ids:
+            if not isinstance(jid, str) or not re.fullmatch(r'[0-9a-f]{32}', jid):
+                continue
+            target = artifacts_root / jid
+            try:
+                manifest._safe_path(str(target))
+                if target.is_dir() and not target.is_symlink():
+                    shutil.rmtree(target, ignore_errors=True)
+            except (OSError, ValueError):
+                pass
+
+    def clear_finished(self, *, include_uncertain=False):
+        removable_states = set(TERMINAL) if include_uncertain else (set(TERMINAL) - {'uncertain'})
+        removed_ids = []
+        with self.lock:
+            kept = []
+            for job in self.jobs:
+                if job['status'] in removable_states:
+                    removed_ids.append(job['id'])
+                else:
+                    kept.append(job)
+            if removed_ids:
+                self._persist(kept)
+                self.jobs = kept
+                for jid in removed_ids:
+                    self.events.pop(jid, None)
+                    self.confirm_events.pop(jid, None)
+            remaining = len(self.jobs)
+        if removed_ids:
+            self._remove_job_artifacts(removed_ids)
+        return {'deleted': len(removed_ids), 'remaining': remaining}
 
     @staticmethod
     def publication_key(source,profile_id,meta,visibility):
@@ -165,11 +215,15 @@ class UploadQueue:
         with self.lock:
             return self.confirm_events.setdefault(identifier,Event())
 
-    def _update(self,identifier,**fields):
+    def _update(self,identifier,*,durable=True,**fields):
         with self.lock:
-            candidate=copy.deepcopy(self.jobs)
-            job=next(j for j in candidate if j['id']==identifier);job.update(fields,updated_at=self.clock())
-            self._persist(candidate);self.jobs=candidate
+            if durable or (time.monotonic() - self._last_persist_at) >= 2.0:
+                candidate=copy.deepcopy(self.jobs)
+                job=next(j for j in candidate if j['id']==identifier);job.update(fields,updated_at=self.clock())
+                self._persist(candidate);self.jobs=candidate
+            else:
+                job=next(j for j in self.jobs if j['id']==identifier)
+                job.update(fields,updated_at=self.clock())
 
     def submit(self,source,profiles,meta,visibility,scheduled,request_id,*,upload_mode='auto',debug_mode=False):
         if not isinstance(request_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,100}',request_id):raise ValueError('Cần request_id ổn định để chống đăng trùng.')
@@ -188,19 +242,33 @@ class UploadQueue:
         canonical={**source,'profiles':[p['id'] for p in profiles],'metadata':meta,'visibility':visibility,
                    'scheduled_at':scheduled,'upload_mode':upload_mode,'debug_mode':debug_mode}
         fingerprint=hashlib.sha256(json.dumps(canonical,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+        pruned_ids=[]
         with self.lock:
             prior=[j for j in self.jobs if j.get('request_id')==request_id]
             if prior:
                 if any(j['request_fingerprint']!=fingerprint for j in prior):raise ValueError('request_id đã dùng cho nội dung khác.')
                 return copy.deepcopy(prior)
             if self.stop.is_set():raise RuntimeError('Uploader đang đóng.')
-            if len(self.jobs)+len(profiles)>500:raise RuntimeError('Upload history đạt giới hạn500; hãy lưu/xóa lịch sử kết thúc.')
             for profile in profiles:
                 publication=self.publication_key(source,profile['id'],meta,visibility)
                 duplicate=next((job for job in self.jobs if job['profile_id']==profile['id']
                                  and self.publication_key(job,job['profile_id'],job['metadata'],job['visibility'])==publication
                                  and job['status'] in ACTIVE|{'success','uncertain'}),None)
                 if duplicate:raise ValueError('Nội dung và tài khoản này đã có job chờ/đăng/thành công hoặc chưa rõ kết quả; không tạo bản đăng trùng.')
+            working_jobs = list(self.jobs)
+            if len(working_jobs) + len(profiles) > 500:
+                need = len(working_jobs) + len(profiles) - 500
+                prunable = {'success', 'error', 'cancelled', 'needs_verification'}
+                kept = []
+                for existing in working_jobs:
+                    if need > 0 and existing['status'] in prunable:
+                        pruned_ids.append(existing['id'])
+                        need -= 1
+                    else:
+                        kept.append(existing)
+                working_jobs = kept
+            if len(working_jobs) + len(profiles) > 500:
+                raise RuntimeError('Upload history đạt giới hạn 500 tác vụ đang hoạt động hoặc chưa rõ kết quả; hãy xử lý/xóa lịch sử kết thúc.')
             records=[]
             for profile in profiles:
                 records.append({'id':uuid.uuid4().hex,'profile_id':profile['id'],'platform':profile['platform'],
@@ -210,10 +278,16 @@ class UploadQueue:
                     'scheduled_at':scheduled,'status':'scheduled' if scheduled and scheduled>self.clock() else 'queued',
                     'phase':'waiting','percent':0,'error':'','result_url':'','screenshot_path':'','commit_attempted':False,
                     'created_at':self.clock(),'request_id':request_id,'request_fingerprint':fingerprint})
-            self._persist([*self.jobs,*records]);self.jobs.extend(records)
+            self._persist([*working_jobs,*records])
+            self.jobs=[*working_jobs,*records]
+            for jid in pruned_ids:
+                self.events.pop(jid,None)
+                self.confirm_events.pop(jid,None)
             for record in records:
                 self.events[record['id']]=Event()
                 self.confirm_events[record['id']]=Event()
+        if pruned_ids:
+            self._remove_job_artifacts(pruned_ids)
         self.start();self.wake.set();return copy.deepcopy(records)
 
     def start(self):
@@ -258,17 +332,27 @@ class UploadQueue:
                    and self.publication_key(other,other['profile_id'],other['metadata'],other['visibility'])==publication
                    for other in self.jobs):
                 raise ValueError('Nội dung này đã được đăng hoặc có job chưa rõ kết quả; không retry bản cũ trùng lặp.')
+            old_shot = job.get('screenshot_path') or ''
             self._update(identifier,status='queued',phase='waiting',step='',failed_step='',scheduled_at=None,error='',percent=0,
                          commit_attempted=False,screenshot_path='',trace_path='',awaiting_deadline=None,result_url='',message='',
                          started_at=None,finished_at=None)
             self.events[identifier]=Event()
             self.confirm_events[identifier]=Event()
+        if old_shot:
+            try:
+                expected_dir = (self.path.parent / 'artifacts' / identifier).resolve()
+                if storage.safe_regular(old_shot):
+                    Path(old_shot).resolve().relative_to(expected_dir)
+                    Path(old_shot).unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
         self.start();self.wake.set();return self.get(identifier)
 
     def _execute(self,job):
         identifier=job['id'];cancel=self.events.setdefault(identifier,Event())
         self.confirm_events.setdefault(identifier,Event())
         committed=False
+        was_awaiting=[False]
         persistence_failed=False
         snapshot_dir=None
         last_step=['']
@@ -321,12 +405,15 @@ class UploadQueue:
                     allowed['step']=fields['step'];last_step[0]=fields['step']
                 if 'status' in fields and fields['status'] in {'running','awaiting_user_submit'}:
                     allowed['status']=fields['status']
+                    if fields['status']=='awaiting_user_submit':
+                        was_awaiting[0]=True
                 if 'awaiting_deadline' in fields:
                     deadline=fields['awaiting_deadline']
                     if deadline is None or (type(deadline) in (int,float) and math.isfinite(deadline)):
                         allowed['awaiting_deadline']=deadline
                 if allowed:
-                    self._update(identifier,**allowed)
+                    durable_tick = ('status' in allowed) or ('awaiting_deadline' in allowed)
+                    self._update(identifier,durable=durable_tick,**allowed)
             task_input=copy.deepcopy(job);task_input['video']=str(snapshot)
             result=self.executor(task_input,cancel,progress,checkpoint) or {}
             if result.get('status') not in {'success','draft'}:raise RuntimeError('Không có xác nhận upload/draft từ nền tảng.')
@@ -336,7 +423,7 @@ class UploadQueue:
                          message=redaction.redact_text(result.get('message','')),finished_at=self.clock())
         except Exception as error:
             from .adapters import VerificationRequired
-            uncertain=committed or bool(getattr(error,'uncertain',False))
+            uncertain=committed or was_awaiting[0] or bool(getattr(error,'uncertain',False))
             state=('uncertain' if uncertain else 'error' if persistence_failed
                    else 'needs_verification' if isinstance(error,VerificationRequired)
                    else 'cancelled' if cancel.is_set() or self.stop.is_set() else 'error')

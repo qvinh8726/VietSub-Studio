@@ -273,9 +273,11 @@ def _chunk_tokens(tokens, max_words):
     return chunks
 
 
-def _speech_end_cs(vis_start, vis_end, speed, tts_duration_ms):
+def _speech_end_cs(vis_start, vis_end, speed, tts_duration_ms, *, max_end_cs=None):
     vis_start_cs = vis_start // 10
     vis_end_cs = max(vis_start_cs + 1, (vis_end + 9) // 10)
+    if max_end_cs is not None:
+        vis_end_cs = min(vis_end_cs, max(vis_start_cs + 1, int(max_end_cs)))
     if tts_duration_ms is not None and not isinstance(tts_duration_ms, bool):
         try:
             dur = float(tts_duration_ms)
@@ -288,10 +290,10 @@ def _speech_end_cs(vis_start, vis_end, speed, tts_duration_ms):
     return vis_start_cs, vis_end_cs, vis_end_cs
 
 
-def _karaoke_events(start_ms, end_ms, text, tags, margins, speed, tts_duration_ms):
+def _karaoke_events(start_ms, end_ms, text, tags, margins, speed, tts_duration_ms, *, max_end_cs=None):
     vis_start = math.floor(start_ms / speed)
     vis_end = math.ceil(end_ms / speed)
-    vis_start_cs, vis_end_cs, speech_cs = _speech_end_cs(vis_start, vis_end, speed, tts_duration_ms)
+    vis_start_cs, vis_end_cs, speech_cs = _speech_end_cs(vis_start, vis_end, speed, tts_duration_ms, max_end_cs=max_end_cs)
     tokens = _tokenize_cue(text)
     if not tokens:
         return [_event(1, _timestamp_cs(vis_start_cs), _timestamp_cs(vis_end_cs), "Subtitle", tags, text, margins=margins)]
@@ -307,70 +309,122 @@ def _karaoke_events(start_ms, end_ms, text, tags, margins, speed, tts_duration_m
                    margins=margins, pre_escaped=True)]
 
 
-def _word_pop_events(start_ms, end_ms, text, tags, margins, opts, tts_duration_ms):
+def _join_chunk_tokens(chunk):
+    parts = []
+    for idx, tok in enumerate(chunk):
+        if idx > 0:
+            parts.append(r"\N" if tok["newline_before"] else " ")
+        parts.append(tok["escaped"])
+    return "".join(parts)
+
+
+def _word_pop_events(start_ms, end_ms, text, tags, margins, opts, tts_duration_ms, *, max_end_cs=None):
     speed = opts["speed"]
     vis_start = math.floor(start_ms / speed)
     vis_end = math.ceil(end_ms / speed)
-    vis_start_cs, vis_end_cs, speech_cs = _speech_end_cs(vis_start, vis_end, speed, tts_duration_ms)
+    vis_start_cs, vis_end_cs, speech_cs = _speech_end_cs(vis_start, vis_end, speed, tts_duration_ms, max_end_cs=max_end_cs)
     tokens = _tokenize_cue(text)
     if not tokens:
         return [_event(1, _timestamp_cs(vis_start_cs), _timestamp_cs(vis_end_cs), "Subtitle", tags, text, margins=margins)]
 
-    weights = [_token_weight(tok["text"]) for tok in tokens]
-    durations = _allocate_centiseconds(weights, speech_cs - vis_start_cs)
     chunks = _chunk_tokens(tokens, opts["subtitle_max_words_per_chunk"])
     base_col = _ass_inline_color(opts["text_color"])
     hi_col = _ass_inline_color(opts["subtitle_highlight_color"])
+    speech_span = max(1, speech_cs - vis_start_cs)
+    vis_span = max(1, vis_end_cs - vis_start_cs)
 
-    # Assign contiguous [start_cs, end_cs] slots across all tokens.
-    cursor = vis_start_cs
-    slots = []
-    for dur_cs in durations:
-        slots.append([cursor, cursor + dur_cs])
-        cursor += dur_cs
-    # Hold the final spoken word visible until the full cue end (no premature flash-off).
-    last_nonzero = next((i for i in range(len(slots) - 1, -1, -1) if slots[i][1] > slots[i][0]), None)
-    if last_nonzero is not None and slots[last_nonzero][1] < vis_end_cs:
-        slots[last_nonzero][1] = vis_end_cs
+    # Normal path: enough centiseconds for every word to get >= 1 cs.
+    if speech_span >= len(tokens):
+        weights = [_token_weight(tok["text"]) for tok in tokens]
+        durations = _allocate_centiseconds(weights, speech_span)
+        cursor = vis_start_cs
+        slots = []
+        for dur_cs in durations:
+            slots.append([cursor, cursor + dur_cs])
+            cursor += dur_cs
+        if slots and slots[-1][1] < vis_end_cs:
+            slots[-1][1] = vis_end_cs
+        events = []
+        tok_offset = 0
+        for chunk in chunks:
+            chunk_len = len(chunk)
+            for local_idx in range(chunk_len):
+                s_cs, e_cs = slots[tok_offset + local_idx]
+                pop_ms = min(80, max(20, (e_cs - s_cs) * 10))
+                parts = []
+                for idx, tok in enumerate(chunk):
+                    if idx > 0:
+                        parts.append(r"\N" if tok["newline_before"] else " ")
+                    if idx == local_idx:
+                        parts.append(
+                            f"{{\\1c{hi_col}\\fscx114\\fscy114\\t(0,{pop_ms},\\fscx106\\fscy106)}}"
+                            f"{tok['escaped']}"
+                            f"{{\\1c{base_col}\\fscx100\\fscy100}}"
+                        )
+                    else:
+                        parts.append(tok["escaped"])
+                events.append(_event(
+                    1, _timestamp_cs(s_cs), _timestamp_cs(e_cs), "Subtitle",
+                    tags, "".join(parts), margins=margins, pre_escaped=True,
+                ))
+            tok_offset += chunk_len
+        return events
 
+    # Compressed path (short cue, high speed, or short TTS): guarantee EVERY chunk
+    # gets >= 1 cs so trailing chunks/words are never dropped.
+    window_cs = speech_span if speech_span >= len(chunks) else vis_span
+    if window_cs < len(chunks):
+        # Fewer centiseconds than chunks (e.g. 20ms cue with 4 chunks): display all text cleanly in one event.
+        body = _join_chunk_tokens(tokens)
+        return [_event(
+            1, _timestamp_cs(vis_start_cs), _timestamp_cs(vis_end_cs), "Subtitle", tags,
+            f"{{\\1c{hi_col}}}{body}{{\\1c{base_col}}}", margins=margins, pre_escaped=True,
+        )]
+
+    chunk_weights = [sum(_token_weight(tok["text"]) for tok in ch) for ch in chunks]
+    chunk_durs = _allocate_centiseconds(chunk_weights, window_cs)
     events = []
-    tok_offset = 0
-    for chunk in chunks:
-        chunk_len = len(chunk)
-        chunk_events_before = len(events)
-        for local_idx in range(chunk_len):
-            s_cs, e_cs = slots[tok_offset + local_idx]
-            if e_cs <= s_cs:
-                continue
-            pop_ms = min(80, max(20, (e_cs - s_cs) * 10))
-            parts = []
-            for idx, tok in enumerate(chunk):
-                if idx > 0:
-                    parts.append(r"\N" if tok["newline_before"] else " ")
-                if idx == local_idx:
-                    parts.append(
-                        f"{{\\1c{hi_col}\\fscx114\\fscy114\\t(0,{pop_ms},\\fscx106\\fscy106)}}"
-                        f"{tok['escaped']}"
-                        f"{{\\1c{base_col}\\fscx100\\fscy100}}"
-                    )
-                else:
-                    parts.append(tok["escaped"])
+    cursor = vis_start_cs
+    for chunk_idx, (chunk, ch_cs) in enumerate(zip(chunks, chunk_durs)):
+        ch_start = cursor
+        ch_end = cursor + ch_cs
+        cursor = ch_end
+        if chunk_idx == len(chunks) - 1 and ch_end < vis_end_cs:
+            ch_end = vis_end_cs
+        effective_ch_cs = ch_end - ch_start
+        if effective_ch_cs >= len(chunk):
+            w_sub = [_token_weight(tok["text"]) for tok in chunk]
+            d_sub = _allocate_centiseconds(w_sub, effective_ch_cs)
+            sub_cur = ch_start
+            for local_idx, dur_cs in enumerate(d_sub):
+                s_cs, e_cs = sub_cur, sub_cur + dur_cs
+                sub_cur = e_cs
+                pop_ms = min(80, max(20, (e_cs - s_cs) * 10))
+                parts = []
+                for idx, tok in enumerate(chunk):
+                    if idx > 0:
+                        parts.append(r"\N" if tok["newline_before"] else " ")
+                    if idx == local_idx:
+                        parts.append(
+                            f"{{\\1c{hi_col}\\fscx114\\fscy114\\t(0,{pop_ms},\\fscx106\\fscy106)}}"
+                            f"{tok['escaped']}"
+                            f"{{\\1c{base_col}\\fscx100\\fscy100}}"
+                        )
+                    else:
+                        parts.append(tok["escaped"])
+                events.append(_event(
+                    1, _timestamp_cs(s_cs), _timestamp_cs(e_cs), "Subtitle",
+                    tags, "".join(parts), margins=margins, pre_escaped=True,
+                ))
+        else:
+            # Show the full chunk highlighted for its allocated >= 1 cs window.
+            body = _join_chunk_tokens(chunk)
+            pop_ms = min(80, max(20, effective_ch_cs * 10))
             events.append(_event(
-                1,
-                _timestamp_cs(s_cs),
-                _timestamp_cs(e_cs),
-                "Subtitle",
-                tags,
-                "".join(parts),
-                margins=margins,
-                pre_escaped=True,
+                1, _timestamp_cs(ch_start), _timestamp_cs(ch_end), "Subtitle", tags,
+                f"{{\\1c{hi_col}\\fscx110\\fscy110\\t(0,{pop_ms},\\fscx104\\fscy104)}}{body}{{\\1c{base_col}\\fscx100\\fscy100}}",
+                margins=margins, pre_escaped=True,
             ))
-        tok_offset += chunk_len
-        # Safety net: if every token in the only chunk had 0 cs, emit one full cue dialogue.
-        if len(chunks) == 1 and len(events) == chunk_events_before:
-            body = " ".join(tok["escaped"] for tok in chunk)
-            events.append(_event(1, _timestamp_cs(vis_start_cs), _timestamp_cs(vis_end_cs), "Subtitle", tags,
-                                 f"{{\\1c{hi_col}}}{body}{{\\1c{base_col}}}", margins=margins, pre_escaped=True))
     return events
 
 
@@ -410,16 +464,27 @@ def write_ass(srt_path, output_path, width, height, options, *, cue_timings=None
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     if opts["subtitle_enabled"]:
         animation = opts["subtitle_animation"]
-        for cue_id, start, end, text in cues:
+        speed = opts["speed"]
+        for cue_idx, (cue_id, start, end, text) in enumerate(cues):
             tts_dur = timings.get(cue_id)
+            next_start = cues[cue_idx + 1][1] if cue_idx + 1 < len(cues) else None
+            effective_end = end
+            max_end_cs = None
+            if next_start is not None and next_start > start and end > next_start:
+                effective_end = next_start
+                max_end_cs = math.floor(next_start / speed) // 10
             if animation == "karaoke_highlight":
-                rows.extend(_karaoke_events(start, end, text, tags, margins, opts["speed"], tts_dur))
+                rows.extend(_karaoke_events(start, effective_end, text, tags, margins, speed, tts_dur, max_end_cs=max_end_cs))
             elif animation == "word_pop":
-                rows.extend(_word_pop_events(start, end, text, tags, margins, opts, tts_dur))
+                rows.extend(_word_pop_events(start, effective_end, text, tags, margins, opts, tts_dur, max_end_cs=max_end_cs))
             else:
-                scaled_start = math.floor(start / opts["speed"])
-                scaled_end = math.ceil(end / opts["speed"])
-                rows.append(_event(1, _timestamp(scaled_start), _timestamp(scaled_end, ceil=True),
+                scaled_start = math.floor(start / speed)
+                scaled_end = math.ceil(effective_end / speed)
+                start_cs = scaled_start // 10
+                end_cs = max(start_cs + 1, (scaled_end + 9) // 10)
+                if max_end_cs is not None:
+                    end_cs = min(end_cs, max(start_cs + 1, max_end_cs))
+                rows.append(_event(1, _timestamp_cs(start_cs), _timestamp_cs(end_cs),
                                    "Subtitle", tags, text, margins=margins))
     if opts["banner_text"].strip():
         top = opts["banner_position"] == "top"

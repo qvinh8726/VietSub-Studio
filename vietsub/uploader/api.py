@@ -162,7 +162,15 @@ class UploaderAPI:
             instances=list(self.instances.values())
         return any(any(job.get('status') in ACTIVE for job in item[2].snapshot()) for item in instances)
 
+    def _check_admission_open(self):
+        if self.app.shutdown_event.is_set():
+            raise RuntimeError('App đang đóng.')
+        update_lock = getattr(self.app, 'update_install_lock', None)
+        if update_lock is not None and update_lock.locked():
+            raise RuntimeError('App đang chuẩn bị cài đặt bản cập nhật; không thể bắt đầu tác vụ Publish Hub mới.')
+
     def _trim_cache(self,mapping,*,terminal_only=False,limit=256):
+        evicted=[]
         while len(mapping)>limit:
             if terminal_only:
                 victim=next((key for key,item in mapping.items() if item.get('status') in TERMINAL|{'cancelled'}),None)
@@ -170,7 +178,52 @@ class UploaderAPI:
                     break
             else:
                 victim=next(iter(mapping))
-            mapping.pop(victim,None)
+            item=mapping.pop(victim,None)
+            if item is not None:
+                evicted.append(item)
+        return evicted
+
+    def _prune_media_disk(self, *, max_age_seconds=86400 * 7, evicted_items=()):
+        """Clean expired or evicted standalone MP4 folders while honoring active UploadQueue paths."""
+        media_root = Path(self.app.CONFIG_DIR) / 'uploader' / 'media'
+        try:
+            manifest._safe_path(str(media_root))
+        except (OSError, ValueError):
+            return
+        protected = self.protected_paths()
+        now = time.time()
+        targets = []
+        for item in evicted_items:
+            ident = item.get('id') if isinstance(item, dict) else ''
+            if isinstance(ident, str) and len(ident) == 32 and all(c in '0123456789abcdef' for c in ident):
+                targets.append(media_root / ident)
+        if media_root.is_dir():
+            for entry in list(media_root.iterdir()):
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                if len(entry.name) != 32 or any(c not in '0123456789abcdef' for c in entry.name):
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    continue
+                if (now - mtime) >= max_age_seconds:
+                    targets.append(entry)
+        seen = set()
+        for folder in targets:
+            norm = os.path.normcase(os.path.abspath(str(folder)))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            video_file = folder / 'video.mp4'
+            if storage.canonical(str(video_file)) in protected:
+                continue
+            try:
+                manifest._safe_path(str(folder))
+                if folder.is_dir() and not folder.is_symlink():
+                    shutil.rmtree(folder, ignore_errors=True)
+            except (OSError, ValueError):
+                pass
 
     def protected_paths(self):
         with self.lock:
@@ -186,14 +239,25 @@ class UploaderAPI:
                     raise RuntimeError('Uploader cũ chưa dừng xong; không mở song song queue mới.')
                 self.instances.clear();self.closed=False
         self.services()[2].start()
+        self._prune_media_disk()
 
     def shutdown(self):
         with self.lock:
             self.closed=True
-            instances=list(self.instances.values());sessions=list(self.sessions.values())
+            instances=list(self.instances.values())
+            sessions=list(self.sessions.values())
+            meta_tasks=list(self.meta_tasks.values())
         for task in sessions:
             task['_cancel'].set();task['_finish'].set()
         for _,_,queue in instances:queue.shutdown()
+        for task in sessions:
+            th = task.get('_thread')
+            if th and th.is_alive():
+                th.join(timeout=3)
+        for task in meta_tasks:
+            th = task.get('_thread')
+            if th and th.is_alive():
+                th.join(timeout=3)
 
     def _body(self,allowed,required=()):
         data=request.get_json(silent=True)
@@ -209,6 +273,155 @@ class UploaderAPI:
         if ready and (not path or not storage.safe_regular(path) or Path(path).suffix.lower()!='.mp4'):
             raise ValueError('Xuất bản cần MP4 còn tồn tại; hãy render hoặc chọn MP4 khác.')
         return job,result,value,path
+
+    @staticmethod
+    def _fit_pipeline_metadata(platform, base_meta, visibility):
+        """Tailor fallback title & hashtags to platform limits; fail closed on missing required fields."""
+        import re
+        from .adapters import PLATFORM_TAG_LIMITS, PLATFORM_TITLE_LIMITS, validate_platform_metadata
+        title_limit = min(120, PLATFORM_TITLE_LIMITS.get(platform, 120))
+        raw_title = str((base_meta or {}).get('title') or '').replace('\r', ' ').replace('\n', ' ').strip()
+        raw_title = re.sub(r'\s{2,}', ' ', raw_title) or 'Video VietSub'
+        if len(raw_title) > title_limit:
+            cut = raw_title[:title_limit].rstrip(' ,;:-—–')
+            if ' ' in cut and raw_title[title_limit] != ' ':
+                word_cut = cut.rsplit(' ', 1)[0].rstrip(' ,;:-—–')
+                if len(word_cut) >= max(4, title_limit // 2):
+                    cut = word_cut
+            raw_title = cut or raw_title[:title_limit]
+        raw_desc = str((base_meta or {}).get('description') or '').strip()[:5000]
+        raw_tags = (base_meta or {}).get('hashtags') or []
+        if isinstance(raw_tags, str):
+            raw_tags = re.split(r'[\s,]+', raw_tags.strip()) if raw_tags.strip() else []
+        clean_tags = []
+        seen = set()
+        for tag in raw_tags:
+            if not isinstance(tag, str):
+                continue
+            token = tag.strip()
+            if not token:
+                continue
+            if not token.startswith('#'):
+                token = '#' + token
+            if re.fullmatch(r'#[\w]{1,80}', token) and token.casefold() not in seen:
+                seen.add(token.casefold())
+                clean_tags.append(token)
+        tag_limit = PLATFORM_TAG_LIMITS.get(platform, 30)
+        clean_tags = clean_tags[:tag_limit]
+        fitted = metadata({'title': raw_title, 'description': raw_desc, 'hashtags': clean_tags})
+        # Fail closed on strict platform requirements (e.g. Bilibili public requires >= 1 hashtag).
+        validate_platform_metadata(platform, fitted, visibility=visibility)
+        return fitted
+
+    def enqueue_pipeline_upload(self, job_id, publish_defaults, *, preset_id=''):
+        """Safely enqueue a rendered project into UploadQueue from Auto Pipeline using deterministic request_id."""
+        from .adapters import PLATFORMS, UploadError
+        if self.app.shutdown_event.is_set():
+            return {'status': 'skipped', 'jobs': [], 'job_ids': [], 'warnings': ['Ứng dụng đang đóng; bỏ qua xếp hàng Publish Hub.'], 'error': ''}
+        update_lock = getattr(self.app, 'update_install_lock', None)
+        if update_lock is not None and update_lock.locked():
+            return {'status': 'skipped', 'jobs': [], 'job_ids': [], 'warnings': ['App đang cài đặt bản cập nhật; bỏ qua xếp hàng Publish Hub.'], 'error': ''}
+        if not isinstance(publish_defaults, dict):
+            return {'status': 'skipped', 'jobs': [], 'job_ids': [], 'warnings': ['Thiếu cấu hình publish_defaults trong hồ sơ kênh.'], 'error': ''}
+        visibility = publish_defaults.get('visibility', 'private')
+        upload_mode = publish_defaults.get('upload_mode', 'assisted')
+        confirm_public_auto = publish_defaults.get('confirm_public_auto') is True
+        if visibility not in {'private', 'public', 'draft'} or upload_mode not in UPLOAD_MODES:
+            return {'status': 'error', 'jobs': [], 'job_ids': [], 'warnings': [], 'error': 'Cấu hình visibility/upload_mode không hợp lệ.'}
+        if visibility == 'public' and upload_mode == 'auto' and not confirm_public_auto:
+            msg = 'Đã chặn tự động đăng Công khai (auto) vì hồ sơ kênh chưa bật xác nhận cho phép tự đăng công khai.'
+            self.app.log_to_app(f'[Auto Pipeline] {msg}', 'error')
+            return {'status': 'skipped', 'jobs': [], 'job_ids': [], 'warnings': [msg], 'error': msg}
+        raw_ids = list(dict.fromkeys(pid for pid in (publish_defaults.get('profile_ids') or []) if isinstance(pid, str) and pid))
+        if not raw_ids:
+            msg = 'Hồ sơ kênh chưa chọn tài khoản Publish Hub mặc định.'
+            return {'status': 'skipped', 'jobs': [], 'job_ids': [], 'warnings': [msg], 'error': ''}
+
+        store, _, queue = self.services()
+        known_by_id = {p['id']: p for p in store.list()}
+        warnings = []
+        errors = []
+        existing_ids = []
+        for pid in raw_ids:
+            if pid not in known_by_id:
+                warnings.append(f'Tài khoản Publish Hub {pid[:8]} không còn tồn tại; đã bỏ qua.')
+            else:
+                existing_ids.append(pid)
+        if not existing_ids:
+            return {'status': 'skipped', 'jobs': [], 'job_ids': [], 'warnings': warnings, 'error': '; '.join(warnings)}
+
+        queued_jobs = []
+        # Decouple queueing from non-blocking runtime browser lease (store.lease):
+        # reading profile registry under operation_admission_lock lets batch video 2+
+        # queue cleanly while video 1 is actively uploading or awaiting manual submit.
+        with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
+            self._check_admission_open()
+            _, _, value, path = self._project(job_id, ready=True)
+            base_meta = copy.deepcopy(value.get('metadata') or {})
+            if not str(base_meta.get('title') or '').strip():
+                base_meta['title'] = value.get('project_name') or 'Video VietSub'
+            stat = os.stat(path)
+            source = {'job_id': job_id, 'video': path}
+            for pid in existing_ids:
+                try:
+                    profile = store.get(pid)
+                except KeyError:
+                    warnings.append(f'Tài khoản {pid[:8]} vừa bị xoá; đã bỏ qua.')
+                    continue
+                pname = profile.get('name') or pid[:8]
+                plat = profile.get('platform', '')
+                if profile.get('session_status') not in {'alive', 'ready'}:
+                    warnings.append(f'{pname} ({plat}): phiên đăng nhập chưa sẵn sàng; bỏ qua tự xếp hàng.')
+                    continue
+                if visibility not in PLATFORMS.get(plat, {}).get('modes', ()):
+                    warnings.append(f'{pname} ({plat}): không hỗ trợ chế độ {visibility}; không tự hạ chế độ.')
+                    continue
+                if plat == 'youtube' and store.get_config(pid).get('upload_method') == 'youtube_api':
+                    if visibility == 'public' and not confirm_public_auto:
+                        msg = (
+                            f'{pname} (YouTube API v3): YouTube Data API v3 không có bước dừng bấm Đăng thủ công (assisted); '
+                            'đã chặn tự đăng Công khai khi hồ sơ chưa bật xác nhận công khai.'
+                        )
+                        warnings.append(msg)
+                        errors.append(msg)
+                        self.app.log_to_app(f'[Auto Pipeline] {msg}', 'error')
+                        continue
+                    yt_status = self._youtube_client().oauth_status(store.oauth_path(pid))
+                    if not yt_status.get('connected'):
+                        warnings.append(f'{pname} (YouTube API v3): chưa kết nối OAuth2; bỏ qua.')
+                        continue
+                try:
+                    fitted_meta = self._fit_pipeline_metadata(plat, base_meta, visibility)
+                except (UploadError, ValueError) as meta_err:
+                    msg = f'{pname} ({plat}): {meta_err}'
+                    warnings.append(msg)
+                    errors.append(msg)
+                    self.app.log_to_app(f'[Auto Pipeline] {msg}', 'error')
+                    continue
+                meta_digest = hashlib.sha256(
+                    json.dumps(fitted_meta, sort_keys=True, ensure_ascii=False).encode('utf-8')
+                ).hexdigest()[:16]
+                req_seed = f'pipe|{job_id}|{preset_id}|{storage.canonical(path)}|{stat.st_size}|{stat.st_mtime_ns}|{pid}|{visibility}|{upload_mode}|{meta_digest}'
+                request_id = 'pipe_' + hashlib.sha256(req_seed.encode('utf-8')).hexdigest()[:24]
+                try:
+                    created = queue.submit(
+                        source, [profile], fitted_meta, visibility, None, request_id,
+                        upload_mode=upload_mode, debug_mode=False,
+                    )
+                    queued_jobs.extend(created)
+                except (ValueError, RuntimeError) as submit_err:
+                    msg = f'{pname} ({plat}): {redaction.redact_error(submit_err)}'
+                    warnings.append(msg)
+                    errors.append(msg)
+                    self.app.log_to_app(f'[Auto Pipeline] {msg}', 'error')
+        status = 'queued' if queued_jobs else ('error' if errors else 'skipped')
+        return {
+            'status': status,
+            'jobs': [self._public_job(j) for j in queued_jobs],
+            'job_ids': [j['id'] for j in queued_jobs],
+            'warnings': warnings,
+            'error': '; '.join(errors) if (not queued_jobs and errors) else '',
+        }
 
     def _profile_payload(self,profile,*,store=None):
         value=copy.deepcopy(profile)
@@ -263,19 +476,21 @@ class UploaderAPI:
         return value
 
     def _session_start(self,profile_id,action):
-        store,browser,queue=self.services();record=store.get(profile_id)
-        if queue.profile_active(profile_id):raise RuntimeError('Tài khoản có upload đang chờ/chạy; huỷ/chờ trước khi đăng nhập.')
-        if action == 'youtube_oauth' and record['platform'] != 'youtube':
-            raise ValueError('Chỉ tài khoản YouTube mới hỗ trợ kết nối YouTube Data API v3.')
-        with self.lock:
-            if any(t.get('profile_id')==profile_id and t['status'] in {'queued','running'} for t in self.sessions.values()):
-                raise RuntimeError('Đang có thao tác login/check cho tài khoản này.')
-            identifier=uuid.uuid4().hex;cancel,finish=Event(),Event()
-            task={'id':identifier,'profile_id':profile_id,'action':action,'status':'queued','error':'',
-                  '_cancel':cancel,'_finish':finish,'created_at':time.time()}
-            self.sessions[identifier]=task
-            self._trim_cache(self.sessions,terminal_only=True)
-            snapshot=self._public_session(task)
+        with self.app.operation_admission_lock:
+            self._check_admission_open()
+            store,browser,queue=self.services();record=store.get(profile_id)
+            if queue.profile_active(profile_id):raise RuntimeError('Tài khoản có upload đang chờ/chạy; huỷ/chờ trước khi đăng nhập.')
+            if action == 'youtube_oauth' and record['platform'] != 'youtube':
+                raise ValueError('Chỉ tài khoản YouTube mới hỗ trợ kết nối YouTube Data API v3.')
+            with self.lock:
+                if any(t.get('profile_id')==profile_id and t['status'] in {'queued','running'} for t in self.sessions.values()):
+                    raise RuntimeError('Đang có thao tác login/check cho tài khoản này.')
+                identifier=uuid.uuid4().hex;cancel,finish=Event(),Event()
+                task={'id':identifier,'profile_id':profile_id,'action':action,'status':'queued','error':'',
+                      '_cancel':cancel,'_finish':finish,'created_at':time.time()}
+                self.sessions[identifier]=task
+                self._trim_cache(self.sessions,terminal_only=True)
+                snapshot=self._public_session(task)
         def execute():
             with self.lock:
                 if identifier in self.sessions:self.sessions[identifier]['status']='running'
@@ -289,8 +504,8 @@ class UploaderAPI:
                         except YouTubeAuthError as error:
                             store.update_session(profile_id, 'expired', error.session_detail)
                             raise
-                    store.update_config(profile_id, upload_method='youtube_api')
-                    updated = store.update_session(profile_id, 'alive', 'oauth_connected')
+                        store.update_config(profile_id, upload_method='youtube_api', already_leased=True)
+                        updated = store.update_session(profile_id, 'alive', 'oauth_connected')
                     result = {'id': profile_id, 'platform': 'youtube', 'status': 'alive',
                               'session_status': 'alive', 'session_detail': updated['session_detail'],
                               'youtube_api': status_info}
@@ -317,7 +532,11 @@ class UploaderAPI:
                 with self.lock:
                     if identifier in self.sessions:
                         self.sessions[identifier].update(status='cancelled' if cancel.is_set() else 'error',error=redaction.redact_error(error)[:2000])
-        Thread(target=execute,name='uploader-session',daemon=True).start()
+        worker = Thread(target=execute,name='uploader-session',daemon=True)
+        with self.lock:
+            if identifier in self.sessions:
+                self.sessions[identifier]['_thread'] = worker
+        worker.start()
         return snapshot
 
     def _job_trace_info(self,job):
@@ -409,12 +628,16 @@ class UploaderAPI:
         def delete_profile(profile_id):
             store,_,queue=self.services()
             def check_unused():
-                with self.lock:
-                    if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
-                        raise RuntimeError('Tài khoản đang có thao tác login/check đang chạy.')
-                if queue.profile_active(profile_id):
-                    raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
+                with self.app.operation_admission_lock:
+                    with self.lock:
+                        if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
+                            raise RuntimeError('Tài khoản đang có thao tác login/check đang chạy.')
+                    if queue.profile_active(profile_id):
+                        raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
             store.delete(profile_id,before_delete=check_unused,clean_artifacts=True)
+            stale_job_ids = [j['id'] for j in queue.snapshot() if j.get('profile_id') == profile_id and j.get('status') in TERMINAL]
+            if stale_job_ids:
+                queue._remove_job_artifacts(stale_job_ids)
             with self.lock:
                 for key in [k for k,t in self.sessions.items() if t.get('profile_id')==profile_id and t.get('status') not in {'queued','running'}]:
                     self.sessions.pop(key,None)
@@ -424,32 +647,29 @@ class UploaderAPI:
         def update_profile_config(profile_id):
             store,_,queue=self.services()
             data=self._body(('upload_method',),('upload_method',))
-            if queue.profile_active(profile_id):
-                raise RuntimeError('Tài khoản còn upload đang chờ/chạy; chờ xong trước khi đổi phương thức đăng.')
-            with self.lock:
-                if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
-                    raise RuntimeError('Tài khoản đang có thao tác đăng nhập/kiểm tra đang chạy.')
-            store.update_config(profile_id, upload_method=data['upload_method'])
-            record = store.get(profile_id)
-            if record['platform'] == 'youtube' and data['upload_method'] == 'youtube_api':
-                yt_status = self._youtube_client().oauth_status(store.oauth_path(profile_id))
-                if yt_status.get('connected'):
-                    record = store.update_session(profile_id, 'alive', 'oauth_connected')
-                elif record.get('session_status') == 'alive':
-                    record = store.update_session(profile_id, 'unknown', 'unknown')
+            with store.lease(profile_id):
+                if queue.profile_active(profile_id):
+                    raise RuntimeError('Tài khoản còn upload đang chờ/chạy; chờ xong trước khi đổi phương thức đăng.')
+                with self.lock:
+                    if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
+                        raise RuntimeError('Tài khoản đang có thao tác đăng nhập/kiểm tra đang chạy.')
+                prev_method = store.get_config(profile_id).get('upload_method', 'browser')
+                store.update_config(profile_id, upload_method=data['upload_method'], already_leased=True)
+                record = store.get(profile_id)
+                if record['platform'] == 'youtube' and data['upload_method'] == 'youtube_api':
+                    yt_status = self._youtube_client().oauth_status(store.oauth_path(profile_id))
+                    if yt_status.get('connected'):
+                        record = store.update_session(profile_id, 'alive', 'oauth_connected')
+                    elif record.get('session_status') == 'alive':
+                        record = store.update_session(profile_id, 'unknown', 'unknown')
+                elif record['platform'] == 'youtube' and data['upload_method'] == 'browser' and prev_method == 'youtube_api':
+                    if record.get('session_status') == 'alive' or str(record.get('session_detail', '')).startswith('oauth_'):
+                        record = store.update_session(profile_id, 'unknown', 'unknown')
             return jsonify(self._profile_payload(record, store=store))
 
         @bp.post('/api/uploader/profiles/<profile_id>/youtube-oauth/config')
         def youtube_oauth_config(profile_id):
             store,_,queue=self.services()
-            record=store.get(profile_id)
-            if record['platform']!='youtube':
-                raise ValueError('Chỉ tài khoản YouTube mới hỗ trợ cấu hình YouTube Data API v3.')
-            if queue.profile_active(profile_id):
-                raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
-            with self.lock:
-                if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
-                    raise RuntimeError('Tài khoản đang có thao tác đăng nhập/OAuth2 đang chạy.')
             data=self._body(('client_id','client_secret','client_secret_json'))
             raw_json = data.get('client_secret_json') or ''
             cid = data.get('client_id') or ''
@@ -458,17 +678,25 @@ class UploaderAPI:
                 raise ValueError('Nhập Client ID + Client Secret hoặc dán nội dung client_secret.json (Desktop app).')
             client=self._youtube_client()
             with store.lease(profile_id):
+                record=store.get(profile_id)
+                if record['platform']!='youtube':
+                    raise ValueError('Chỉ tài khoản YouTube mới hỗ trợ cấu hình YouTube Data API v3.')
+                if queue.profile_active(profile_id):
+                    raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
+                with self.lock:
+                    if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
+                        raise RuntimeError('Tài khoản đang có thao tác đăng nhập/OAuth2 đang chạy.')
                 status_info = client.save_client_config(
                     store.oauth_path(profile_id),
                     client_id=cid,
                     client_secret=csec,
                     client_secret_json=raw_json,
                 )
-            store.update_config(profile_id, upload_method='youtube_api')
-            if status_info.get('connected'):
-                record = store.update_session(profile_id, 'alive', 'oauth_connected')
-            else:
-                record = store.update_session(profile_id, 'unknown', 'unknown')
+                store.update_config(profile_id, upload_method='youtube_api', already_leased=True)
+                if status_info.get('connected'):
+                    record = store.update_session(profile_id, 'alive', 'oauth_connected')
+                else:
+                    record = store.update_session(profile_id, 'unknown', 'unknown')
             return jsonify(self._profile_payload(record, store=store))
 
         @bp.post('/api/uploader/profiles/<profile_id>/youtube-oauth/start')
@@ -479,23 +707,23 @@ class UploaderAPI:
         @bp.post('/api/uploader/profiles/<profile_id>/youtube-oauth/disconnect')
         def youtube_oauth_disconnect(profile_id):
             store,_,queue=self.services()
-            record=store.get(profile_id)
-            if record['platform']!='youtube':
-                raise ValueError('Chỉ tài khoản YouTube mới hỗ trợ YouTube Data API v3.')
-            if queue.profile_active(profile_id):
-                raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
-            with self.lock:
-                if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
-                    raise RuntimeError('Tài khoản đang có thao tác đăng nhập/OAuth2 đang chạy.')
             data=self._body(('keep_client',))
             keep_client=data.get('keep_client',False)
             if type(keep_client) is not bool:
                 raise ValueError('keep_client phải là boolean.')
             client=self._youtube_client()
             with store.lease(profile_id):
+                record=store.get(profile_id)
+                if record['platform']!='youtube':
+                    raise ValueError('Chỉ tài khoản YouTube mới hỗ trợ YouTube Data API v3.')
+                if queue.profile_active(profile_id):
+                    raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
+                with self.lock:
+                    if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
+                        raise RuntimeError('Tài khoản đang có thao tác đăng nhập/OAuth2 đang chạy.')
                 client.disconnect(store.oauth_path(profile_id), keep_client=keep_client)
-            if store.get_config(profile_id).get('upload_method') == 'youtube_api':
-                record = store.update_session(profile_id, 'unknown', 'oauth_revoked')
+                if store.get_config(profile_id).get('upload_method') == 'youtube_api':
+                    record = store.update_session(profile_id, 'unknown', 'oauth_revoked')
             return jsonify(self._profile_payload(record, store=store))
 
         @bp.post('/api/uploader/profiles/<profile_id>/login')
@@ -521,7 +749,9 @@ class UploaderAPI:
                 return jsonify({'error':'Screenshot không khả dụng hoặc liên kết sai.'}),403
             if not storage.safe_regular(screenshot):
                 return jsonify({'error':'Screenshot không còn khả dụng.'}),403
-            return send_file(screenshot,mimetype='image/png')
+            resp = send_file(screenshot,mimetype='image/png')
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
 
         @bp.post('/api/uploader/sessions/<identifier>/finish')
         def finish_login(identifier):
@@ -553,11 +783,17 @@ class UploaderAPI:
         @bp.post('/api/uploader/projects/<job_id>/metadata')
         def ai_metadata(job_id):
             self._body(())
+            admitted = False
             with self.app.operation_admission_lock,self.app.queue_state_lock:
-                if self.app.workflow_lock.locked() or self.app.preview_lock.locked():raise RuntimeError('Hãy chờ VietSub/preview xong trước khi tạo metadata AI.')
+                self._check_admission_open()
+                if self.app.preview_lock.locked():
+                    raise RuntimeError('Hãy chờ VietSub/preview xong trước khi tạo metadata AI.')
                 _,result,value,_=self._project(job_id,ready=True)
                 srt_path=value['assets'].get('translated_srt') or ''
                 if not srt_path or not storage.safe_regular(srt_path):raise ValueError('Project không có SRT Việt để tạo metadata.')
+                admitted = self.app.workflow_lock.acquire(blocking=False)
+                if not admitted:
+                    raise RuntimeError('Hãy chờ VietSub/preview xong trước khi tạo metadata AI.')
             identifier=uuid.uuid4().hex
             task={'id':identifier,'job_id':job_id,'status':'queued','error':'','_srt_path':storage.canonical(srt_path)}
             with self.lock:
@@ -567,9 +803,8 @@ class UploaderAPI:
             def generate():
                 with self.lock:
                     if identifier in self.meta_tasks:self.meta_tasks[identifier]['status']='running'
-                admitted=self.app.workflow_lock.acquire(blocking=False)
                 try:
-                    if not admitted:raise RuntimeError('VietSub vừa bắt đầu; hãy tạo metadata lại sau.')
+                    if self.app.shutdown_event.is_set():raise RuntimeError('App đang đóng.')
                     if not storage.safe_regular(srt_path):raise ValueError('Project không có SRT Việt để tạo metadata.')
                     # Share the legacy cancellation event while holding workflow_lock;
                     # /api/cancel must stop this acknowledged workflow as well.
@@ -600,7 +835,17 @@ class UploaderAPI:
                             self.meta_tasks[identifier].update(status='error',error=redaction.redact_error(error)[:2000])
                 finally:
                     if admitted:self.app.workflow_lock.release()
-            Thread(target=generate,name='uploader-metadata',daemon=True).start();return jsonify(snapshot),202
+            worker = Thread(target=generate,name='uploader-metadata',daemon=True)
+            with self.lock:
+                if identifier in self.meta_tasks:
+                    self.meta_tasks[identifier]['_thread'] = worker
+            try:
+                worker.start()
+            except Exception:
+                if admitted:
+                    self.app.workflow_lock.release()
+                raise
+            return jsonify(snapshot),202
 
         @bp.get('/api/uploader/metadata/<identifier>')
         def metadata_status(identifier):
@@ -628,7 +873,9 @@ class UploaderAPI:
                 raise
             with self.lock:
                 self.media[(os.path.abspath(self.app.CONFIG_DIR),identifier)]=value
-                self._trim_cache(self.media)
+                evicted=self._trim_cache(self.media)
+            if evicted:
+                self._prune_media_disk(evicted_items=evicted)
             return jsonify(self._media_payload(value)),201
 
         @bp.get('/api/uploader/media/<identifier>/video')
@@ -637,6 +884,20 @@ class UploaderAPI:
             if not secrets.compare_digest(expected.encode('ascii'),request.args.get('signature','').encode('utf-8')):return jsonify({'error':'Liên kết MP4 không hợp lệ.'}),403
             if not storage.safe_regular(value['path']):raise KeyError('MP4 đã bị xóa.')
             return send_file(value['path'],conditional=True,mimetype='video/mp4')
+
+        @bp.delete('/api/uploader/queue/finished')
+        def clear_finished_queue():
+            data = request.get_json(silent=True)
+            if data is None:
+                data = {}
+            if not isinstance(data, dict) or set(data) - {'include_uncertain'}:
+                raise ValueError('JSON xoá lịch sử Publish Hub chỉ nhận tuỳ chọn include_uncertain.')
+            include_uncertain = data.get('include_uncertain', False)
+            if type(include_uncertain) is not bool:
+                raise ValueError('include_uncertain phải là boolean.')
+            _, _, queue = self.services()
+            outcome = queue.clear_finished(include_uncertain=include_uncertain)
+            return jsonify({'ok': True, **outcome, 'jobs': [self._public_job(j) for j in queue.snapshot()]})
 
         @bp.route('/api/uploader/queue',methods=['GET','POST'])
         def queue():
@@ -661,29 +922,39 @@ class UploaderAPI:
             debug_mode = data.get('debug_mode', False)
             if type(debug_mode) is not bool:
                 raise ValueError('debug_mode phải là boolean.')
-            prior=[job for job in queue.snapshot() if job.get('request_id')==data['request_id']]
-            if prior:
+
+            def _check_replay(prior_jobs):
+                submitted_schedule=data.get('scheduled_at')
                 try:
-                    submitted_schedule=data.get('scheduled_at')
-                    stamp=(datetime.fromisoformat(submitted_schedule.replace('Z','+00:00')).timestamp()
-                           if submitted_schedule else None)
+                    if submitted_schedule:
+                        dt=datetime.fromisoformat(submitted_schedule.replace('Z','+00:00'))
+                        if dt.tzinfo is None or dt.utcoffset() is None:
+                            raise ValueError()
+                        stamp=dt.timestamp()
+                    else:
+                        stamp=None
                     expected_profiles=set(data['profile_ids'])
-                except (ValueError,TypeError,AttributeError):raise ValueError('Payload request_id cũ không hợp lệ.') from None
-                if (set(job['profile_id'] for job in prior)!=expected_profiles
+                except (ValueError,TypeError,AttributeError):
+                    raise ValueError('Payload request_id cũ không hợp lệ.') from None
+                if (set(job['profile_id'] for job in prior_jobs)!=expected_profiles
                         or any(job.get('job_id','')!=(data.get('job_id') or '') or job.get('media_id','')!=(data.get('media_id') or '')
                                or job['metadata']!=metadata(data['metadata']) or job['visibility']!=data['visibility']
                                or job.get('upload_mode','auto')!=upload_mode or bool(job.get('debug_mode',False))!=debug_mode
-                               or job.get('scheduled_at')!=stamp for job in prior)):
+                               or job.get('scheduled_at')!=stamp for job in prior_jobs)):
                     raise ValueError('request_id đã dùng cho payload khác; không đăng lại.')
-                return jsonify({'jobs':[self._public_job(job) for job in prior]}),202
+                return jsonify({'jobs':[self._public_job(job) for job in prior_jobs]}),202
+
             ids=list(dict.fromkeys(data['profile_ids']))
             from .adapters import PLATFORMS
             visibility=data['visibility']
-            if visibility=='public' and data.get('confirm_public') is not True:raise ValueError('Cần xác nhận rõ trước khi đăng công khai.')
-            scheduled=schedule_time(data.get('scheduled_at'))
-            with ExitStack() as stack:
-                for pid in sorted(ids):
-                    stack.enter_context(store.lease(pid))
+            with self.app.operation_admission_lock,self.app.queue_state_lock:
+                prior=[job for job in queue.snapshot() if job.get('request_id')==data['request_id']]
+                if prior:
+                    return _check_replay(prior)
+                self._check_admission_open()
+                if visibility=='public' and data.get('confirm_public') is not True:
+                    raise ValueError('Cần xác nhận rõ trước khi đăng công khai.')
+                scheduled=schedule_time(data.get('scheduled_at'))
                 profiles=[store.get(i) for i in ids]
                 if any(profile.get('session_status') not in {'alive','ready'} for profile in profiles):
                     raise ValueError('Chỉ xếp hàng tài khoản đã đăng nhập và kiểm tra phiên sẵn sàng.')
@@ -694,15 +965,14 @@ class UploaderAPI:
                         yt_status = self._youtube_client().oauth_status(store.oauth_path(profile['id']))
                         if not yt_status.get('connected'):
                             raise ValueError('Tài khoản YouTube (API v3) chưa hoàn tất kết nối OAuth2.')
-                with self.app.operation_admission_lock,self.app.queue_state_lock:
-                    if data.get('job_id'):
-                        if not isinstance(data['job_id'],str):raise ValueError('Project ID không hợp lệ.')
-                        _,_,_,path=self._project(data['job_id'],ready=True)
-                        source={'job_id':data['job_id'],'video':path}
-                    else:
-                        value=self._media(data['media_id']);source={'media_id':value['id'],'video':value['path']}
-                    records=queue.submit(source,profiles,data['metadata'],visibility,scheduled,data['request_id'],
-                                         upload_mode=upload_mode,debug_mode=debug_mode)
+                if data.get('job_id'):
+                    if not isinstance(data['job_id'],str):raise ValueError('Project ID không hợp lệ.')
+                    _,_,_,path=self._project(data['job_id'],ready=True)
+                    source={'job_id':data['job_id'],'video':path}
+                else:
+                    value=self._media(data['media_id']);source={'media_id':value['id'],'video':value['path']}
+                records=queue.submit(source,profiles,data['metadata'],visibility,scheduled,data['request_id'],
+                                     upload_mode=upload_mode,debug_mode=debug_mode)
             return jsonify({'jobs':[self._public_job(j) for j in records]}),202
 
         @bp.post('/api/uploader/queue/<identifier>/cancel')
@@ -718,20 +988,22 @@ class UploaderAPI:
             data=self._body(('confirm_uncertain',));confirm=data.get('confirm_uncertain',False)
             if type(confirm) is not bool:raise ValueError('confirm_uncertain phải là boolean.')
             store,_,queue=self.services();job=queue.get(identifier)
-            with store.lease(job['profile_id']):
-                with self.app.operation_admission_lock,self.app.queue_state_lock:
-                    store.get(job['profile_id'])
-                    if job.get('job_id'):self._project(job['job_id'],ready=True)
-                    elif job.get('media_id'):self._media(job['media_id'])
-                    if not storage.safe_regular(job['video']):raise ValueError('Video đã bị dọn; không thể thử lại.')
-                    return jsonify(self._public_job(queue.retry(identifier,confirm_uncertain=confirm)))
+            with self.app.operation_admission_lock,self.app.queue_state_lock:
+                self._check_admission_open()
+                store.get(job['profile_id'])
+                if job.get('job_id'):self._project(job['job_id'],ready=True)
+                elif job.get('media_id'):self._media(job['media_id'])
+                if not storage.safe_regular(job['video']):raise ValueError('Video đã bị dọn; không thể thử lại.')
+                return jsonify(self._public_job(queue.retry(identifier,confirm_uncertain=confirm)))
 
         @bp.get('/api/uploader/queue/<identifier>/screenshot')
         def screenshot(identifier):
             job=self.services()[2].get(identifier);url=self._public_job(job)['screenshot_url']
             if not url or not secrets.compare_digest(url.partition('signature=')[2].encode('ascii'),request.args.get('signature','').encode('utf-8')):
                 return jsonify({'error':'Screenshot không khả dụng hoặc liên kết sai.'}),403
-            return send_file(job['screenshot_path'],mimetype='image/png')
+            resp = send_file(job['screenshot_path'],mimetype='image/png')
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
 
         @bp.get('/api/uploader/queue/<identifier>/trace')
         def trace(identifier):
@@ -741,12 +1013,14 @@ class UploaderAPI:
                 return jsonify({'error':'Trace không khả dụng hoặc liên kết sai.'}),403
             if not storage.safe_regular(trace_path):
                 return jsonify({'error':'Trace không còn khả dụng.'}),403
-            return send_file(
+            resp = send_file(
                 trace_path,
                 mimetype='application/zip',
                 as_attachment=True,
                 download_name=f"vietsub-trace-{job['id'][:12]}.zip",
             )
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
 
 
 def register(runtime):

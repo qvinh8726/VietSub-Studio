@@ -251,11 +251,17 @@ def write_atomic(path, payload):
         return path
 
 
-def save_project(project, *, metadata=None, **kwargs):
+def save_project(project, *, metadata=None, reset_manual_srt=False, **kwargs):
     with LOCK:
         value = snapshot(project, **kwargs)
         if metadata is not None:
             value["metadata"] = copy.deepcopy(metadata)
+        if reset_manual_srt:
+            value["srt_manually_edited"] = False
+            value["srt_stale_assets"] = {
+                "edited_video": bool(value.get("assets", {}).get("edited_video")),
+                "tts_audio": bool(value.get("assets", {}).get("tts_audio")),
+            }
         value["updated_at"] = int(time.time())
         target = write_atomic(path_for(project), value)
         return target, value

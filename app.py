@@ -30,6 +30,7 @@ from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
 from vietsub import storage, publish, redaction
+from vietsub import channel_presets
 from vietsub import glossary as translation_glossary
 from vietsub import manifest as project_manifest
 from vietsub import srt_utils
@@ -237,13 +238,16 @@ WINDOWS_RESERVED_NAMES = {
 }
 API_TOKEN = secrets.token_urlsafe(32)
 API_TOKEN_HEADER = "X-VietSub-Token"
-redaction.register_secret(API_TOKEN)
+redaction.register_secret(API_TOKEN, pinned=True)
 redaction.register_path_root(CONFIG_DIR, "<APP_DATA>")
 redaction.register_path_root(LOCALAPPDATA, "<LOCAL_DATA>")
+_user_home = os.path.expanduser("~")
+if _user_home and _user_home != "~":
+    redaction.register_path_root(_user_home, "<USER_HOME>")
 if getattr(sys, "frozen", False) and RESOURCE_DIR != CONFIG_DIR:
     redaction.register_path_root(RESOURCE_DIR, "<APP_RUNTIME>")
 for _env_secret_name in ("VIETSUB_CAPCUT_COOKIE", "VIETSUB_CAPCUT_BEARER"):
-    redaction.register_secret(os.environ.get(_env_secret_name, ""))
+    redaction.register_secret(os.environ.get(_env_secret_name, ""), pinned=True)
 app.config["MAX_CONTENT_LENGTH"] = MAX_LOCAL_VIDEO_BYTES + 16 * 1024 * 1024
 
 # Global status state
@@ -286,6 +290,10 @@ update_cache_lock = Lock()
 update_install_lock = Lock()
 operation_admission_lock = Lock()
 shutdown_event = Event()
+pipeline_state_lock = Lock()
+pipeline_inflight_jobs = set()
+pipeline_inflight_paths = {}
+pipeline_publish_threads = set()
 update_cache = {"checked_at": 0.0, "status": None}
 browser_status_lock = Lock()
 browser_status_cache = {}
@@ -985,6 +993,10 @@ def request_app_shutdown():
     worker = queue_worker_thread
     if worker and worker.is_alive() and worker is not current:
         worker.join(timeout=15)
+    with pipeline_state_lock:
+        pub_threads = [th for th in pipeline_publish_threads if th.is_alive() and th is not current]
+    for th in pub_threads:
+        th.join(timeout=5)
     # Ownership/PID/profile/CDP checks stay in the browser cleanup helper. CDP
     # teardown can stall, so a closing GUI waits only a bounded extra interval.
     def cleanup_browser():
@@ -3112,14 +3124,15 @@ def prepare_project_files(
     }
 
 
-def write_project_manifest(project, *, video_id, source_url, status, error=""):
+def write_project_manifest(project, *, video_id, source_url, status, error="", reset_manual_srt=False):
+    safe_error = redaction.redact_error(error) if error else ""
     manifest_path = os.path.join(project["project_dir"], "project.json")
     manifest = {
         "project_name": project["project_name"],
         "video_id": video_id,
         "source_url": source_url,
         "status": status,
-        "error": error,
+        "error": safe_error,
         "video": project["video"],
         "source_video": project["source_video"],
         "original_source_video": project.get("original_source_video", ""),
@@ -3148,7 +3161,12 @@ def write_project_manifest(project, *, video_id, source_url, status, error=""):
     # A locked/corrupt newer sidecar must not turn a valid VietSub export into a failure.
     try:
         target, _ = project_manifest.save_project(
-            project, video_id=video_id, source_url=source_url, status=status, error=error,
+            project,
+            video_id=video_id,
+            source_url=source_url,
+            status=status,
+            error=safe_error,
+            reset_manual_srt=reset_manual_srt,
         )
         project["project_manifest"] = target
     except (OSError, ValueError) as manifest_error:
@@ -4068,13 +4086,13 @@ def build_translation_system_prompt(source_lang="ch"):
     )
 
 
-def get_translation_runtime_config(config=None, require_ready=False):
+def get_translation_runtime_config(config=None, require_ready=False, *, glossary_id=None):
     config = load_app_config() if config is None else config
     provider = validate_translation_provider(config.get("translation_provider"))
     translation_instructions = validate_translation_instructions(
         config.get("translation_instructions")
     )
-    active_glossary = translation_glossary.get_active_glossary(CONFIG_DIR)
+    active_glossary = translation_glossary.get_active_glossary(CONFIG_DIR, override_id=glossary_id)
     glossary_hash = translation_glossary.fingerprint(active_glossary)
     if provider == "notebook":
         notebook_url = validate_notebook_url(
@@ -4293,6 +4311,7 @@ def call_openai_compatible_api(
     max_tokens=16_000,
     stream=False,
     response_hook=None,
+    timeout=None,
 ):
     body = {
         "model": runtime_config["model"],
@@ -4323,9 +4342,10 @@ def call_openai_compatible_api(
         method="POST",
     )
     try:
+        effective_timeout = TRANSLATION_API_TIMEOUT_SECONDS if timeout is None else max(1.0, float(timeout))
         with open_translation_api_request(
             request_object,
-            timeout=TRANSLATION_API_TIMEOUT_SECONDS,
+            timeout=effective_timeout,
         ) as response:
             if response_hook:
                 response_hook(response)
@@ -4704,10 +4724,11 @@ def validate_project_result(result, *, allow_manual_srt=True):
     if allow_manual_srt:
         manually_edited = False
         try:
-            manifest_path = project_manifest.path_for(result)
-            if storage.safe_regular(manifest_path):
-                manifest_data = project_manifest._read_json(manifest_path)
-                manually_edited = manifest_data.get("srt_manually_edited") is True
+            with project_manifest.LOCK:
+                manifest_path = project_manifest.path_for(result)
+                if storage.safe_regular(manifest_path):
+                    manifest_data = project_manifest._read_json(manifest_path)
+                    manually_edited = manifest_data.get("srt_manually_edited") is True
         except (OSError, ValueError, TypeError):
             manually_edited = False
         if manually_edited:
@@ -6229,17 +6250,58 @@ def job_disk_bytes(job, keep_srt=True):
         return 0
 
 
+def _reserve_pipeline_job(job_id, paths=()):
+    if not job_id:
+        return
+    normalized = {storage.canonical(path) for path in paths if isinstance(path, str) and path}
+    with pipeline_state_lock:
+        pipeline_inflight_jobs.add(job_id)
+        if normalized:
+            pipeline_inflight_paths[job_id] = pipeline_inflight_paths.get(job_id, set()) | normalized
+
+
+def _release_pipeline_job(job_id):
+    if not job_id:
+        return
+    with pipeline_state_lock:
+        pipeline_inflight_jobs.discard(job_id)
+        pipeline_inflight_paths.pop(job_id, None)
+
+
+def pipeline_uses_job(job_id):
+    with pipeline_state_lock:
+        return job_id in pipeline_inflight_jobs
+
+
+def pipeline_any_active():
+    with pipeline_state_lock:
+        if pipeline_inflight_jobs:
+            return True
+        live = {th for th in pipeline_publish_threads if th.is_alive()}
+        pipeline_publish_threads.intersection_update(live)
+        return bool(live)
+
+
+def pipeline_protected_paths():
+    with pipeline_state_lock:
+        return set().union(*pipeline_inflight_paths.values()) if pipeline_inflight_paths else set()
+
+
 def editor_uses_job(job_id):
     adapter = globals().get("editor_api")
     upload = globals().get("uploader_api")
-    return bool((adapter and adapter.jobs.active(job_id)) or (upload and upload.active(job_id)))
+    return bool(
+        (adapter and adapter.jobs.active(job_id))
+        or (upload and upload.active(job_id))
+        or pipeline_uses_job(job_id)
+    )
 
 
 def editor_protected_paths():
     adapter = globals().get("editor_api")
     paths = adapter.jobs.protected_paths() if adapter else set()
     upload = globals().get("uploader_api")
-    return paths | (upload.protected_paths() if upload else set())
+    return paths | (upload.protected_paths() if upload else set()) | pipeline_protected_paths()
 
 
 def bulk_delete_jobs(ids, *, delete_files=False, keep_srt=True, dry_run=False):
@@ -6280,7 +6342,7 @@ def bulk_delete_jobs(ids, *, delete_files=False, keep_srt=True, dry_run=False):
                     plans[job["id"]] = paths
                 except OSError as error:
                     protected.update(paths)
-                    failures.append({"id": job["id"], "error": str(error)})
+                    failures.append({"id": job["id"], "error": redaction.redact_error(error)})
             # A failed inventory protects all its recorded assets, including SRT,
             # from a different selected job. Healthy jobs can still be cleaned.
             for job in selected:
@@ -6312,7 +6374,7 @@ def bulk_delete_jobs(ids, *, delete_files=False, keep_srt=True, dry_run=False):
             job_id = job["id"]
             if delete_files and job_id not in plans:
                 continue
-            errors = [entry["error"] for entry in file_errors if entry["path"] in plans.get(job_id, ())]
+            errors = [redaction.redact_error(entry["error"]) for entry in file_errors if entry["path"] in plans.get(job_id, ())]
             if errors:
                 failures.append({"id": job_id, "error": "; ".join(errors)})
             else:
@@ -6350,7 +6412,7 @@ def serialize_job(job):
             "crop_coords", "video_resolution", "preview_id", "status", "step", "error",
             "error_code", "result",
             "created_at", "started_at", "finished_at", "source_type", "needs_edge_login",
-            "resume_step",
+            "resume_step", "channel_preset_id", "pipeline",
         )
     }
     serialized["retry_step"] = (
@@ -6370,7 +6432,8 @@ PERSISTED_JOB_KEYS = (
     "id", "source_url", "video_id", "video_title", "source_video", "project_name",
     "ocr_lang", "crop_coords", "video_resolution", "preview_id", "use_saved_crop",
     "source_type", "managed_source", "status", "step", "error", "error_code", "result", "result_ready",
-    "needs_edge_login", "resume_step", "created_at", "started_at", "finished_at",
+    "needs_edge_login", "resume_step", "channel_preset_id", "channel_preset_pinned", "pipeline",
+    "created_at", "started_at", "finished_at",
 )
 
 
@@ -6499,6 +6562,13 @@ def normalize_persisted_job(value):
             if value.get("resume_step") in {"download", "ocr", "translate"}
             else "download"
         ),
+        "channel_preset_id": str(value.get("channel_preset_id") or ""),
+        "channel_preset_pinned": bool(
+            value["channel_preset_pinned"]
+            if "channel_preset_pinned" in value
+            else bool(value.get("channel_preset_id"))
+        ),
+        "pipeline": copy.deepcopy(value["pipeline"]) if isinstance(value.get("pipeline"), dict) else None,
         "created_at": value.get("created_at") or int(time.time()),
         "started_at": value.get("started_at"),
         "finished_at": value.get("finished_at"),
@@ -6559,15 +6629,29 @@ def is_managed_local_video(path):
 
 
 def remove_managed_source_if_unused(path):
-    if (not is_managed_local_video(path) or os.path.exists(path + ".vietsub-keep")
-            or storage.canonical(path) in editor_protected_paths()):
+    if not is_managed_local_video(path) or os.path.exists(path + ".vietsub-keep"):
         return
-    with queue_state_lock:
-        in_use = any(job.get("source_video") == path for job in workflow_jobs)
-    if not in_use:
+    target_canon = storage.canonical(path)
+    with operation_admission_lock, queue_state_lock:
+        if target_canon in editor_protected_paths():
+            return
+        in_use = any(
+            job.get("source_video") and storage.canonical(job["source_video"]) == target_canon
+            for job in workflow_jobs
+        )
+        if in_use:
+            return
+        with preview_registry_lock:
+            in_preview = any(
+                preview.get("source_video") and storage.canonical(preview["source_video"]) == target_canon
+                for preview in preview_registry.values()
+            )
+        if in_preview:
+            return
         try:
-            os.remove(path)
-        except FileNotFoundError:
+            if storage.safe_regular(path):
+                os.remove(path)
+        except (FileNotFoundError, OSError):
             pass
 
 
@@ -6654,10 +6738,19 @@ def enqueue_workflow(
     preview_id="",
     use_saved_crop=True,
     autostart=False,
+    channel_preset_id=None,
 ):
     ocr_lang = validate_ocr_lang(ocr_lang)
     if project_name is not None and not isinstance(project_name, str):
         raise ValueError("Tên bộ file không hợp lệ.")
+    if channel_preset_id is None:
+        pinned_preset_id = channel_presets.get_active_preset_id(CONFIG_DIR)
+    else:
+        if not isinstance(channel_preset_id, str):
+            raise ValueError("channel_preset_id phải là chuỗi.")
+        pinned_preset_id = channel_preset_id.strip()
+        if pinned_preset_id:
+            channel_presets.get_preset(CONFIG_DIR, pinned_preset_id)
     preview = get_video_preview(preview_id) if preview_id else None
     if preview_id and not preview:
         raise ValueError("Preview đã hết hạn. Hãy tạo lại preview video.")
@@ -6697,6 +6790,9 @@ def enqueue_workflow(
         "result_ready": False,
         "needs_edge_login": False,
         "resume_step": "download",
+        "channel_preset_id": pinned_preset_id,
+        "channel_preset_pinned": True,
+        "pipeline": None,
         "created_at": int(time.time()),
         "started_at": None,
         "finished_at": None,
@@ -6731,7 +6827,11 @@ def run_single_workflow(video_url, ocr_lang, project_name=None):
             raise RuntimeError("Một tác vụ VietSub Studio khác đang chạy.")
     cancel_event.clear()
     reset_progress()
-    run_workflow_thread(source_url, ocr_lang, project_name)
+    try:
+        run_workflow_thread(source_url, ocr_lang, project_name, release_workflow_lock=False)
+    finally:
+        cancel_event.clear()
+        workflow_lock.release()
     return progress_snapshot()
 
 
@@ -6765,9 +6865,9 @@ def run_prefetch_worker():
                 ),
                 None,
             )
-        if not target:
-            return
-        prefetch_job_id = target["id"]
+            if not target:
+                return
+            prefetch_job_id = target["id"]
         try:
             notebook_url = get_translation_browser_url(load_app_config())
             downloaded = download_video_source(target["source_url"], notebook_url)
@@ -6942,6 +7042,9 @@ def run_queue_worker():
                 video_resolution=job_data.get("video_resolution"),
                 resume_project=job_data.get("result"),
                 resume_step=job_data.get("resume_step", "download"),
+                channel_preset_id=job_data.get("channel_preset_id") or "",
+                channel_preset_pinned=bool(job_data.get("channel_preset_pinned", False)),
+                release_workflow_lock=False,
             )
         except QueuePersistenceError as error:
             stop_worker = True
@@ -6955,14 +7058,21 @@ def run_queue_worker():
             log_to_app(f"Worker queue gặp lỗi ngoài dự kiến: {error}", "error")
         finally:
             cancel_event.clear()
-            if workflow_lock.locked():
-                workflow_lock.release()
+            workflow_lock.release()
+            should_trigger_pipeline = False
             with queue_state_lock:
                 candidate_jobs = copy.deepcopy(workflow_jobs)
+                finished_job = None
                 for item in candidate_jobs:
                     if item["id"] == job_data["id"]:
                         item["finished_at"] = int(time.time())
+                        finished_job = item
                         break
+                if (not stop_worker and finished_job
+                        and finished_job.get("status") == "success"
+                        and finished_job.get("result_ready")):
+                    _reserve_pipeline_job(job_data["id"], storage.candidates(finished_job, keep_srt=False))
+                    should_trigger_pipeline = True
                 current_job_id = ""
                 if stop_worker:
                     replace_queue_jobs_locked(candidate_jobs)
@@ -6973,8 +7083,16 @@ def run_queue_worker():
                         stop_worker = True
                         log_to_app(f"Không thể lưu thời điểm kết thúc job: {error}", "error")
         if stop_worker:
+            if should_trigger_pipeline:
+                _release_pipeline_job(job_data["id"])
             queue_worker_thread = None
             return
+        if should_trigger_pipeline:
+            try:
+                maybe_trigger_auto_pipeline(job_data["id"], pre_reserved=True)
+            except Exception as pipe_error:
+                _release_pipeline_job(job_data["id"])
+                log_to_app(f"[Auto Pipeline] Lỗi ngoài dự kiến khi chuyển tiếp: {redaction.redact_error(pipe_error)}", "error")
 
 
 def remove_queued_job(job_id):
@@ -6984,7 +7102,7 @@ def remove_queued_job(job_id):
         for index, job in enumerate(candidate_jobs):
             if job["id"] != job_id:
                 continue
-            if job["status"] == "running" or editor_uses_job(job_id):
+            if job["status"] == "running" or job_id in {current_job_id, prefetch_job_id} or editor_uses_job(job_id):
                 raise RuntimeError("Không thể xoá job đang chạy trong VietSub/Auto Edit; hãy huỷ job trước.")
             removed = candidate_jobs.pop(index)
             commit_queue_jobs_locked(candidate_jobs)
@@ -7091,7 +7209,7 @@ def auto_cleanup_source_video(project, config):
     # Revalidate subtitles before any destructive operation, even when called
     # independently. A cleaned result keeps subtitle readiness across restarts.
     validate_project_result(project)
-    with queue_state_lock:
+    with operation_admission_lock, queue_state_lock:
         protected = editor_protected_paths()
         for job in workflow_jobs:
             if job["id"] != current_job_id:
@@ -7102,11 +7220,253 @@ def auto_cleanup_source_video(project, config):
         project["source_video_deleted"] = not os.path.isfile(project["video"])
         project["source_cleanup_bytes"] = freed
         project["source_cleanup_errors"] = errors
+    failed_paths = {entry["path"] for entry in errors}
+    if items:
+        with preview_registry_lock:
+            for preview_id, preview in list(preview_registry.items()):
+                path = preview.get("source_video")
+                if path and storage.canonical(path) in items and storage.canonical(path) not in failed_paths:
+                    preview_registry.pop(preview_id, None)
     for error in errors:
         log_to_app(f"Chưa dọn được video nguồn: {error['error']}", "error")
     if freed:
         log_to_app(f"Đã dọn video nguồn, giải phóng {format_megabytes(freed)}; giữ phụ đề.")
     return freed
+
+
+def _update_pipeline_status(job_id, result, updates):
+    """Persist pipeline stage status in both project manifest and queue snapshot safely."""
+    now = int(time.time())
+    merged = {}
+    try:
+        with project_manifest.LOCK:
+            target = project_manifest.path_for(result)
+            value = project_manifest.snapshot(result)
+            stage = copy.deepcopy(value.get("stages", {}).get("pipeline") or {})
+            stage.update(updates)
+            stage["updated_at"] = now
+            value["stages"]["pipeline"] = stage
+            value["updated_at"] = now
+            project_manifest.write_atomic(target, value)
+            merged = stage
+    except (OSError, ValueError):
+        merged = {**updates, "updated_at": now}
+    with queue_state_lock:
+        for item in workflow_jobs:
+            if item["id"] == job_id:
+                existing = copy.deepcopy(item.get("pipeline") or {})
+                existing.update(merged)
+                item["pipeline"] = existing
+                global queue_revision
+                queue_revision += 1
+                try:
+                    persist_queue_state_locked()
+                except (OSError, UnicodeError):
+                    pass
+                break
+    return merged
+
+
+def maybe_trigger_auto_pipeline(job_id, *, pre_reserved=False):
+    """Chain VietSub success -> EditorJobs render -> optional UploadQueue after workflow_lock & current_job_id clear."""
+    handoff_claimed = False
+    result = {}
+    pipeline_meta = None
+    auto_publish_enabled = False
+    try:
+        if shutdown_event.is_set() or update_install_lock.locked():
+            return None
+        config = load_app_config()
+        if config.get("auto_edit_after_translate") is not True:
+            return None
+        editor = globals().get("editor_api")
+        if editor is None:
+            return None
+
+        with queue_state_lock:
+            job = next((copy.deepcopy(item) for item in workflow_jobs if item["id"] == job_id), None)
+        if not job or job.get("status") != "success" or not job.get("result_ready"):
+            return None
+        result = job.get("result") or {}
+        if result.get("source_video_deleted") is True:
+            log_to_app("[Auto Pipeline] Bỏ qua Auto Edit vì video nguồn đã bị xoá.", "error")
+            return None
+
+        if not pre_reserved:
+            _reserve_pipeline_job(job_id, storage.candidates(job, keep_srt=False))
+            pre_reserved = True
+
+        # Distinguish jobs explicitly enqueued without a preset (channel_preset_pinned=True, id="")
+        # from legacy pre-3.2 jobs (channel_preset_pinned=False -> fall back to current active preset).
+        requested_preset_id = job.get("channel_preset_id") or ""
+        preset_pinned = bool(job.get("channel_preset_pinned", False))
+        if preset_pinned:
+            preset = (
+                channel_presets.get_active_preset(CONFIG_DIR, override_id=requested_preset_id)
+                if requested_preset_id else None
+            )
+        else:
+            preset = channel_presets.get_active_preset(CONFIG_DIR, override_id=requested_preset_id or None)
+        auto_publish_requested = config.get("auto_queue_publish") is True
+
+        uploader = globals().get("uploader_api")
+        uploader_profiles = None
+        if uploader is not None:
+            try:
+                uploader_profiles = uploader.services()[0].list()
+            except Exception:
+                uploader_profiles = None
+
+        with project_manifest.LOCK:
+            snap = project_manifest.snapshot(
+                result,
+                video_id=job.get("video_id") or "",
+                source_url=job.get("source_url") or "",
+                status="success",
+                geometry_fallback=project_geometry_fallback(job),
+            )
+        inherited_crop = snap.get("crop_box")
+
+        pipeline_warnings = []
+        if preset is not None:
+            resolved = channel_presets.resolve_preset(
+                CONFIG_DIR,
+                preset,
+                uploader_profiles=uploader_profiles,
+                project_dir=result.get("project_dir"),
+                inherited_crop=inherited_crop,
+            )
+            render_options = resolved["editor_options"]
+            publish_defaults = resolved["publish_defaults"]
+            pipeline_warnings.extend(resolved["warnings"])
+            preset_id = resolved["preset_id"]
+            preset_name = resolved["preset_name"]
+        else:
+            render_options = copy.deepcopy(snap.get("editor_options") or {})
+            if inherited_crop is None and render_options.get("crop_box") is None and render_options.get("mask_mode", "none") != "none":
+                render_options["mask_mode"] = "none"
+                pipeline_warnings.append("Dự án không có vùng crop OCR; đã tự chuyển chế độ che chữ về Không che.")
+            publish_defaults = None
+            preset_id = ""
+            preset_name = ""
+            if requested_preset_id and preset_pinned:
+                pipeline_warnings.append("Hồ sơ kênh gắn với job đã bị xoá; dùng cấu hình mặc định.")
+            if auto_publish_requested:
+                pipeline_warnings.append("Chưa chọn Hồ sơ kênh nên bỏ qua bước tự xếp hàng Publish Hub.")
+
+        auto_publish_enabled = auto_publish_requested and bool(publish_defaults) and uploader is not None
+        for warning in pipeline_warnings:
+            log_to_app(f"[Auto Pipeline] {warning}", "system")
+
+        pipeline_meta = {
+            "enabled": True,
+            "preset_id": preset_id,
+            "preset_name": preset_name,
+            "auto_edit": "queued",
+            "auto_publish": "pending" if auto_publish_enabled else "disabled",
+            "upload_job_ids": [],
+            "warnings": list(pipeline_warnings),
+            "error": "",
+        }
+
+        def after_editor_terminal(task_snapshot, state):
+            if state != "success":
+                try:
+                    _update_pipeline_status(job_id, result, {
+                        "auto_edit": state,
+                        "auto_publish": "skipped" if auto_publish_enabled else "disabled",
+                        "error": task_snapshot.get("error", ""),
+                    })
+                finally:
+                    _release_pipeline_job(job_id)
+                return
+            if not auto_publish_enabled or shutdown_event.is_set() or update_install_lock.locked():
+                try:
+                    _update_pipeline_status(job_id, result, {
+                        "auto_edit": "success",
+                        "auto_publish": "skipped" if auto_publish_enabled else "disabled",
+                    })
+                finally:
+                    _release_pipeline_job(job_id)
+                return
+
+            def run_auto_publish():
+                try:
+                    if shutdown_event.is_set() or update_install_lock.locked():
+                        _update_pipeline_status(job_id, result, {
+                            "auto_edit": "success",
+                            "auto_publish": "skipped",
+                        })
+                        return
+                    outcome = uploader.enqueue_pipeline_upload(job_id, publish_defaults, preset_id=preset_id)
+                    combined_warnings = list(dict.fromkeys([*pipeline_warnings, *(outcome.get("warnings") or [])]))
+                    _update_pipeline_status(job_id, result, {
+                        "auto_edit": "success",
+                        "auto_publish": outcome.get("status", "skipped"),
+                        "upload_job_ids": outcome.get("job_ids", []),
+                        "warnings": combined_warnings,
+                        "error": outcome.get("error", ""),
+                    })
+                    if outcome.get("job_ids"):
+                        log_to_app(
+                            f"[Auto Pipeline] Đã tự xếp {len(outcome['job_ids'])} tác vụ Publish Hub "
+                            f"({publish_defaults.get('upload_mode', 'assisted')} / {publish_defaults.get('visibility', 'private')})."
+                        )
+                except Exception as pub_err:
+                    safe_msg = redaction.redact_error(pub_err)
+                    log_to_app(f"[Auto Pipeline] Không thể tự xếp hàng Publish Hub: {safe_msg}", "error")
+                    _update_pipeline_status(job_id, result, {
+                        "auto_edit": "success",
+                        "auto_publish": "error",
+                        "error": safe_msg,
+                    })
+                finally:
+                    _release_pipeline_job(job_id)
+                    with pipeline_state_lock:
+                        pipeline_publish_threads.discard(current_thread())
+
+            worker_thread = Thread(target=run_auto_publish, name=f"pipeline-publish-{job_id[:8]}", daemon=True)
+            with pipeline_state_lock:
+                pipeline_publish_threads.add(worker_thread)
+            try:
+                worker_thread.start()
+            except Exception:
+                with pipeline_state_lock:
+                    pipeline_publish_threads.discard(worker_thread)
+                _release_pipeline_job(job_id)
+                raise
+
+        task = editor.enqueue_project_task(
+            job_id,
+            "render",
+            render_options,
+            allow_preset_watermark=True,
+            pipeline_meta=pipeline_meta,
+            after_terminal=after_editor_terminal,
+        )
+        # Keep job reserved across Gap 2 until after_editor_terminal / run_auto_publish completes.
+        handoff_claimed = True
+        _update_pipeline_status(job_id, result, {**pipeline_meta, "editor_task_id": task["id"]})
+        log_to_app(
+            f"[Auto Pipeline] Đã tự đẩy Auto Edit render cho {result.get('project_name') or job_id[:8]}"
+            + (f" (Hồ sơ: {preset_name})." if preset_name else ".")
+        )
+        return task
+    except Exception as error:
+        safe_msg = redaction.redact_error(error)
+        log_to_app(f"[Auto Pipeline] Không thể tự chạy Auto Edit: {safe_msg}", "error")
+        if result:
+            base_meta = pipeline_meta if isinstance(pipeline_meta, dict) else {"enabled": True}
+            _update_pipeline_status(job_id, result, {
+                **base_meta,
+                "auto_edit": "error",
+                "auto_publish": "skipped" if auto_publish_enabled else "disabled",
+                "error": safe_msg,
+            })
+        return None
+    finally:
+        if pre_reserved and not handoff_claimed:
+            _release_pipeline_job(job_id)
 
 
 def run_workflow_thread(
@@ -7120,6 +7480,9 @@ def run_workflow_thread(
     video_resolution=None,
     resume_project=None,
     resume_step="download",
+    channel_preset_id="",
+    channel_preset_pinned=False,
+    release_workflow_lock=True,
 ):
     project = None
     video_id = ""
@@ -7130,7 +7493,22 @@ def run_workflow_thread(
     try:
         check_cancel_requested()
         config = load_app_config()
-        translation_config = get_translation_runtime_config(config, require_ready=True)
+        override_glossary_id = None
+        if channel_preset_pinned:
+            effective_preset = (
+                channel_presets.get_active_preset(CONFIG_DIR, override_id=channel_preset_id)
+                if channel_preset_id else None
+            )
+        else:
+            effective_preset = channel_presets.get_active_preset(CONFIG_DIR, override_id=channel_preset_id or None)
+        if effective_preset is not None:
+            resolved_preset = channel_presets.resolve_preset(CONFIG_DIR, effective_preset)
+            override_glossary_id = resolved_preset["glossary_id"]
+        translation_config = get_translation_runtime_config(
+            config,
+            require_ready=True,
+            glossary_id=override_glossary_id,
+        )
         notebook_url = translation_config.get("notebook_url", "")
         output_dir = validate_output_dir(config.get("output_dir", ""))
 
@@ -7258,18 +7636,22 @@ def run_workflow_thread(
             video_id=video_id,
             source_url=source_url,
             status="success",
+            reset_manual_srt=True,
         )
-        if config.get("auto_delete_source_video") is True:
+        fresh_config = load_app_config()
+        if fresh_config.get("auto_delete_source_video") is True and fresh_config.get("auto_edit_after_translate") is True:
+            log_to_app("Đang bật Tự động Auto Edit sau khi dịch nên giữ nguyên video nguồn để render.")
+        elif fresh_config.get("auto_delete_source_video") is True:
             # Persist the completed subtitle export before unlinking media. A crash
             # during cleanup must not turn valid subtitles into a missing-video job.
             project["source_video_deleted"] = True
             update_progress(status="success", step="done", result=project, result_ready=True)
             write_project_manifest(project, video_id=video_id, source_url=source_url, status="success")
             try:
-                auto_cleanup_source_video(project, config)
+                auto_cleanup_source_video(project, fresh_config)
             except OSError as cleanup_error:
                 project["source_video_deleted"] = not os.path.isfile(project["video"])
-                project["source_cleanup_errors"] = [{"error": str(cleanup_error)}]
+                project["source_cleanup_errors"] = [{"error": redaction.redact_error(cleanup_error)}]
                 log_to_app(f"Phụ đề đã xuất; chưa dọn được video nguồn: {cleanup_error}", "error")
             update_progress(result=project)
             write_project_manifest(project, video_id=video_id, source_url=source_url, status="success")
@@ -7327,7 +7709,7 @@ def run_workflow_thread(
                 pass
     finally:
         cancel_event.clear()
-        if workflow_lock.locked():
+        if release_workflow_lock and workflow_lock.locked():
             workflow_lock.release()
 
 def local_request_host_allowed():
@@ -7374,7 +7756,7 @@ def protect_local_control_plane():
         return jsonify({"error": "Yêu cầu không được ứng dụng VietSub Studio xác thực."}), 403
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         content_type = (request.content_type or "").lower()
-        if request.endpoint not in {"prepare_local_preview", "editor.upload_watermark", "uploader.upload_media"} and "application/json" not in content_type:
+        if request.endpoint not in {"prepare_local_preview", "editor.upload_watermark", "uploader.upload_media", "channel_preset_watermark"} and "application/json" not in content_type:
             return jsonify({"error": "API thay đổi trạng thái yêu cầu JSON body."}), 415
     return None
 
@@ -7506,10 +7888,10 @@ def install_update():
             update_install_lock.release()
             return jsonify({"error": "Hãy chờ mọi job và preview hiện tại chạy xong rồi cập nhật app."}), 409
         editor = globals().get("editor_api")
-        if editor and editor.jobs.any_active():
+        if (editor and editor.jobs.any_active()) or pipeline_any_active():
             update_install_lock.release()
             return jsonify({
-                "error": "Auto Edit đang có tác vụ chờ hoặc đang chạy; hãy chờ hoàn tất hoặc huỷ trước khi cập nhật app."
+                "error": "Auto Edit hoặc Auto Pipeline đang có tác vụ chờ hoặc đang chạy; hãy chờ hoàn tất hoặc huỷ trước khi cập nhật app."
             }), 409
         uploader = globals().get("uploader_api")
         if uploader and uploader.any_active():
@@ -7518,40 +7900,40 @@ def install_update():
                 "error": "Publish Hub đang có phiên đăng nhập, tạo metadata hoặc tác vụ upload đang hoạt động; hãy chờ hoàn tất trước khi cập nhật app."
             }), 409
 
-    prefetch_cancel_event.set()
-    if prefetch_thread and prefetch_thread.is_alive():
-        prefetch_thread.join(timeout=10)
-        if prefetch_thread.is_alive():
-            prefetch_cancel_event.clear()
-            update_install_lock.release()
-            return jsonify({"error": "Chưa thể dừng tải trước an toàn để cập nhật."}), 409
-
+    keep_locked_for_exit = False
     update_package = None
     try:
-        payload = fetch_latest_release_payload()
-        update_package = prepare_update_executable(payload)
-        launch_update_helper(update_package)
-    except (OSError, RuntimeError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as error:
-        if update_package:
-            try:
-                if os.path.exists(update_package["staged_path"]):
-                    os.remove(update_package["staged_path"])
-            except OSError:
-                pass
-            shutil.rmtree(update_package["update_dir"], ignore_errors=True)
-        prefetch_cancel_event.clear()
-        update_install_lock.release()
-        return api_error(str(error), 400)
+        prefetch_cancel_event.set()
+        if prefetch_thread and prefetch_thread.is_alive():
+            prefetch_thread.join(timeout=10)
+            if prefetch_thread.is_alive():
+                return jsonify({"error": "Chưa thể dừng tải trước an toàn để cập nhật."}), 409
 
-    schedule_app_exit()
-    if app.config.get("TESTING"):
-        prefetch_cancel_event.clear()
-        update_install_lock.release()
-    return jsonify({
-        "status": "installing",
-        "version": update_package["version"],
-        "message": "Đã xác minh bản cập nhật. App sẽ tự khởi động lại.",
-    }), 202
+        try:
+            payload = fetch_latest_release_payload()
+            update_package = prepare_update_executable(payload)
+            launch_update_helper(update_package)
+        except (OSError, RuntimeError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as error:
+            if update_package:
+                try:
+                    if os.path.exists(update_package["staged_path"]):
+                        os.remove(update_package["staged_path"])
+                except OSError:
+                    pass
+                shutil.rmtree(update_package["update_dir"], ignore_errors=True)
+            return api_error(str(error), 400)
+
+        schedule_app_exit()
+        keep_locked_for_exit = not app.config.get("TESTING")
+        return jsonify({
+            "status": "installing",
+            "version": update_package["version"],
+            "message": "Đã xác minh bản cập nhật. App sẽ tự khởi động lại.",
+        }), 202
+    finally:
+        if not keep_locked_for_exit:
+            prefetch_cancel_event.clear()
+            update_install_lock.release()
 
 
 @app.route('/api/shortcut', methods=['POST'])
@@ -7765,9 +8147,15 @@ def project_handoff_payload(job, project, manifest, workspace=None):
                                and storage.safe_regular(manifest["assets"]["translated_srt"])),
     }
     signature = project_media_signature(job["id"], video) if available["video"] else ""
+    stale_raw = manifest.get("srt_stale_assets") if isinstance(manifest.get("srt_stale_assets"), dict) else {}
+    srt_stale_assets = {
+        "edited_video": bool(stale_raw.get("edited_video")),
+        "tts_audio": bool(stale_raw.get("tts_audio")),
+    }
     return {
         "workspace": workspace, "job_id": job["id"], "manifest": manifest,
         "manifest_path": project_manifest.path_for(project), "availability": available,
+        "srt_stale_assets": srt_stale_assets,
         "ready": (job.get("status") == "success" and bool(job.get("result_ready"))
                   and job["id"] not in {current_job_id, prefetch_job_id} and all(available.values())),
         "video_url": (f"/api/projects/{job['id']}/video?signature={signature}"
@@ -7839,6 +8227,8 @@ def export_capcut_draft(job_id):
         with operation_admission_lock, queue_state_lock, project_manifest.LOCK:
             if shutdown_event.is_set():
                 raise RuntimeError('App đang đóng.')
+            if update_install_lock.locked():
+                raise RuntimeError('App đang chuẩn bị cài đặt bản cập nhật; hãy thử lại sau.')
             _, result, value = editor_api._project(job_id, require_ready=True)
             options = editor_api._options(value, data['options'])
             ffmpeg, ffprobe = resolve_ffmpeg_executable(), resolve_ffprobe_executable()
@@ -7924,8 +8314,11 @@ def handle_queue():
             video_resolution=data.get("video_resolution"),
             preview_id=data.get("preview_id", ""),
             use_saved_crop=not bool(data.get("preview_id")),
+            channel_preset_id=data.get("channel_preset_id"),
         )
         return jsonify(job), 201
+    except KeyError as error:
+        return api_error(error.args[0] if error.args else error, 404)
     except ValueError as error:
         return api_error(error, 400)
     except RuntimeError as error:
@@ -8026,13 +8419,20 @@ def storage_settings_fields(config):
     )}
 
 
+def pipeline_settings_fields(config):
+    auto_edit = config.get("auto_edit_after_translate") is True
+    auto_publish = auto_edit and config.get("auto_queue_publish") is True
+    return {
+        "auto_edit_after_translate": auto_edit,
+        "auto_queue_publish": auto_publish,
+    }
+
+
 def apply_settings_update(data):
     try:
         config = load_app_config(strict=True)
     except OSError as error:
-        return jsonify({
-            "error": f"Chưa đọc được file cấu hình hiện tại nên chưa lưu thay đổi: {error}"
-        }), 503
+        return api_error(f"Chưa đọc được file cấu hình hiện tại nên chưa lưu thay đổi: {error}", 503)
     try:
         # Bind a pre-v1.5.4 key to its provider before this request changes the provider.
         migrate_legacy_translation_api_key(config)
@@ -8105,6 +8505,13 @@ def apply_settings_update(data):
                 if type(data[key]) is not bool:
                     raise ValueError(f"{key} phải là true hoặc false.")
                 config[key] = data[key]
+        for key in ("auto_edit_after_translate", "auto_queue_publish"):
+            if key in data:
+                if type(data[key]) is not bool:
+                    raise ValueError(f"{key} phải là true hoặc false.")
+                config[key] = data[key]
+        if config.get("auto_edit_after_translate") is not True:
+            config["auto_queue_publish"] = False
         apply_browser_settings(config, data)
         if "source_cookies" in data:
             apply_source_cookie_updates(config, data["source_cookies"])
@@ -8126,6 +8533,7 @@ def apply_settings_update(data):
         "cookies_file": config.get("cookies_file") or "",
         **workbench_settings_fields(config),
         **storage_settings_fields(config),
+        **pipeline_settings_fields(config),
         **browser_settings_fields(config),
     })
 
@@ -8231,6 +8639,7 @@ def handle_settings():
             "edge_background": bool(config.get("edge_background", True)),
             **workbench_settings_fields(config),
             **storage_settings_fields(config),
+            **pipeline_settings_fields(config),
             **browser_settings_fields(config),
             "desktop_shortcut_supported": shortcut_supported,
             "desktop_shortcut_exists": shortcut_exists,
@@ -8322,6 +8731,185 @@ def handle_glossary_item(glossary_id):
         return api_error(f"Không thể cập nhật từ điển: {error}", 503)
 
 
+def _uploader_profiles_for_presets():
+    uploader = globals().get("uploader_api")
+    if uploader is None:
+        return None
+    try:
+        return uploader.services()[0].list()
+    except Exception:
+        return None
+
+
+def _channel_presets_response(store):
+    uploader_profiles = _uploader_profiles_for_presets()
+    resolved_warnings = {}
+    for preset in store.get("presets", []):
+        resolved = channel_presets.resolve_preset(CONFIG_DIR, preset, uploader_profiles=uploader_profiles)
+        if resolved["warnings"]:
+            resolved_warnings[preset["id"]] = resolved["warnings"]
+    return {**store, "resolved_warnings": resolved_warnings}
+
+
+@app.route('/api/channel-presets', methods=['GET', 'POST'])
+def handle_channel_presets():
+    if request.method == 'GET':
+        return jsonify(_channel_presets_response(channel_presets.list_presets(CONFIG_DIR)))
+    data = request.get_json(silent=True)
+    allowed = {"name", "description", "glossary_id", "editor_options", "publish_defaults", "activate"}
+    if not isinstance(data, dict) or set(data) - allowed or "name" not in data:
+        return api_error("JSON tạo hồ sơ kênh không hợp lệ (cần name; tuỳ chọn description, glossary_id, editor_options, publish_defaults, activate).", 400)
+    try:
+        preset, store = channel_presets.create_preset(
+            CONFIG_DIR,
+            name=data["name"],
+            description=data.get("description", ""),
+            glossary_id=data.get("glossary_id", translation_glossary.DEFAULT_PROFILE_ID),
+            editor_options=data.get("editor_options"),
+            publish_defaults=data.get("publish_defaults"),
+            activate=data.get("activate", False),
+        )
+        return jsonify({"preset": preset, **_channel_presets_response(store)}), 201
+    except ValueError as error:
+        return api_error(error, 400)
+    except OSError as error:
+        return api_error(f"Không thể lưu hồ sơ kênh: {error}", 503)
+
+
+@app.route('/api/channel-presets/active', methods=['POST'])
+def set_active_channel_preset_route():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) != {"active_id"}:
+        return api_error("JSON cần chứa đúng trường active_id.", 400)
+    try:
+        store = channel_presets.set_active_preset(CONFIG_DIR, data["active_id"])
+        return jsonify(_channel_presets_response(store))
+    except KeyError as error:
+        return api_error(error.args[0] if error.args else error, 404)
+    except ValueError as error:
+        return api_error(error, 400)
+    except OSError as error:
+        return api_error(f"Không thể lưu hồ sơ kênh đang chọn: {error}", 503)
+
+
+@app.route('/api/channel-presets/<preset_id>', methods=['PUT', 'DELETE'])
+def handle_channel_preset_item(preset_id):
+    if request.method == 'DELETE':
+        try:
+            store = channel_presets.delete_preset(CONFIG_DIR, preset_id)
+            return jsonify(_channel_presets_response(store))
+        except KeyError as error:
+            return api_error(error.args[0] if error.args else error, 404)
+        except ValueError as error:
+            return api_error(error, 400)
+        except OSError as error:
+            return api_error(f"Không thể xoá hồ sơ kênh: {error}", 503)
+
+    data = request.get_json(silent=True)
+    allowed = {"name", "description", "glossary_id", "editor_options", "publish_defaults"}
+    if not isinstance(data, dict) or not data or set(data) - allowed:
+        return api_error("JSON cập nhật hồ sơ kênh không hợp lệ.", 400)
+    try:
+        preset, store = channel_presets.update_preset(
+            CONFIG_DIR,
+            preset_id,
+            name=data.get("name"),
+            description=data.get("description"),
+            glossary_id=data.get("glossary_id"),
+            editor_options=data.get("editor_options"),
+            publish_defaults=data.get("publish_defaults"),
+        )
+        return jsonify({"preset": preset, **_channel_presets_response(store)})
+    except KeyError as error:
+        return api_error(error.args[0] if error.args else error, 404)
+    except ValueError as error:
+        return api_error(error, 400)
+    except OSError as error:
+        return api_error(f"Không thể cập nhật hồ sơ kênh: {error}", 503)
+
+
+@app.route('/api/channel-presets/<preset_id>/watermark', methods=['POST'], endpoint='channel_preset_watermark')
+def upload_channel_preset_watermark(preset_id):
+    image = request.files.get("image")
+    if image is None:
+        return api_error("Hãy chọn ảnh logo PNG cho hồ sơ kênh.", 400)
+    data = image.stream.read(8 * 1024 * 1024 + 1)
+    try:
+        preset, store = channel_presets.save_preset_watermark(CONFIG_DIR, preset_id, data)
+        return jsonify({"preset": preset, "watermark_path": preset["editor_options"]["watermark_path"], **_channel_presets_response(store)})
+    except KeyError as error:
+        return api_error(error.args[0] if error.args else error, 404)
+    except ValueError as error:
+        return api_error(error, 400)
+    except OSError as error:
+        return api_error(f"Không thể lưu logo PNG cho hồ sơ kênh: {error}", 503)
+
+
+@app.route('/api/channel-presets/<preset_id>/apply', methods=['POST'])
+def apply_channel_preset_route(preset_id):
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict) or set(data) - {"job_id", "activate"}:
+        return api_error("JSON áp dụng hồ sơ kênh chỉ nhận job_id và activate.", 400)
+    activate = data.get("activate", True)
+    if type(activate) is not bool:
+        return api_error("Trường activate phải là boolean.", 400)
+    job_id = data.get("job_id") or ""
+    if job_id and (not isinstance(job_id, str) or len(job_id) > 256):
+        return api_error("job_id không hợp lệ.", 400)
+    try:
+        preset = channel_presets.get_preset(CONFIG_DIR, preset_id)
+        uploader_profiles = _uploader_profiles_for_presets()
+        if job_id:
+            with operation_admission_lock, queue_state_lock, project_manifest.LOCK:
+                if job_id in {current_job_id, prefetch_job_id} or (editor_api and editor_api.jobs.active(job_id)):
+                    raise RuntimeError("Dự án đang chạy VietSub hoặc Auto Edit; không thể áp dụng hồ sơ kênh ngay lúc này.")
+                job, result = project_for_job(job_id)
+                snap = project_manifest.snapshot(result, status=job.get("status") or "error", geometry_fallback=project_geometry_fallback(job))
+                project_dir = result.get("project_dir")
+                inherited_crop = snap.get("crop_box")
+            # Resolve preset (including up to 8 MiB PNG validation/copy) outside global admission/queue/manifest locks.
+            resolved = channel_presets.resolve_preset(
+                CONFIG_DIR,
+                preset,
+                uploader_profiles=uploader_profiles,
+                project_dir=project_dir,
+                inherited_crop=inherited_crop,
+            )
+            if resolved["editor_options"].get("watermark_path"):
+                with operation_admission_lock, queue_state_lock, project_manifest.LOCK:
+                    if job_id in {current_job_id, prefetch_job_id} or (editor_api and editor_api.jobs.active(job_id)):
+                        raise RuntimeError("Dự án đang chạy VietSub hoặc Auto Edit; không thể ghi logo hồ sơ kênh.")
+                    job, result = project_for_job(job_id)
+                    snap = project_manifest.snapshot(result, status=job.get("status") or "error", geometry_fallback=project_geometry_fallback(job))
+                    if not isinstance(snap.get("editor_options"), dict):
+                        snap["editor_options"] = {}
+                    snap["editor_options"]["watermark_path"] = resolved["editor_options"]["watermark_path"]
+                    project_manifest.write_atomic(project_manifest.path_for(result), snap)
+        else:
+            resolved = channel_presets.resolve_preset(
+                CONFIG_DIR,
+                preset,
+                uploader_profiles=uploader_profiles,
+            )
+        # Mutate global active states only after all validations & project manifest writes succeeded.
+        glossary_store = translation_glossary.set_active_glossary(CONFIG_DIR, resolved["glossary_id"])
+        if activate:
+            channel_presets.set_active_preset(CONFIG_DIR, preset_id)
+        return jsonify({
+            **resolved,
+            "glossary_store": glossary_store,
+            "presets_store": _channel_presets_response(channel_presets.list_presets(CONFIG_DIR)),
+        })
+    except KeyError as error:
+        return api_error(error.args[0] if error.args else error, 404)
+    except ValueError as error:
+        return api_error(error, 400)
+    except (RuntimeError, OSError) as error:
+        return api_error(error, 409)
+
+
 def get_source_session_status():
     """Login state of each platform in the automation browser's profile; cookie values never leave.
 
@@ -8345,7 +8933,7 @@ def get_source_session_status():
     try:
         browser_cookies = read_browser_cookies(session_sites.all_cookie_urls())
     except Exception as error:
-        status["error"] = f"Không đọc được cookie từ {browser}: {error}"
+        status["error"] = f"Không đọc được cookie từ {browser}: {redaction.redact_error(error)}"
         return status
     for key in SESSION_SITES:
         site_cookies = session_sites.cookies_of_site(key, browser_cookies)
@@ -8685,6 +9273,15 @@ def run_desktop_app():
 
 
 def main():
+    if "--self-check-crypto" in sys.argv:
+        try:
+            from vietsub import updater as _release_updater
+            _release_updater.self_check_ed25519()
+            print("Ed25519 RFC 8032 OK")
+            return 0
+        except Exception as error:
+            print(f"Ed25519 self-check failed: {error}", file=sys.stderr)
+            return 1
     if not acquire_instance_lock():
         log_to_app("VietSub Studio đang chạy ở một tiến trình khác.", "error")
         return 2

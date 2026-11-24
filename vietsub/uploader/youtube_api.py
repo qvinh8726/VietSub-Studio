@@ -378,13 +378,25 @@ class YouTubeAPIClient:
             pass
         return ""
 
+    def _decrypt_oauth(self, blob):
+        if not blob:
+            return ""
+        try:
+            return self._decrypt(blob)
+        except (OSError, ValueError):
+            raise YouTubeAuthError(
+                "Không thể giải mã thông tin YouTube OAuth2 đã lưu (có thể do đổi tài khoản Windows hoặc file hỏng); "
+                "vui lòng cấu hình và kết nối lại OAuth2.",
+                detail="oauth_expired",
+            ) from None
+
     def start_oauth_flow(self, profile_id, oauth_path, *, cancel=None, timeout_seconds=OAUTH_TIMEOUT_SECONDS):
         """Run OAuth2 Desktop PKCE (S256) loopback flow on 127.0.0.1:<ephemeral_port>."""
         data = _read_oauth_file(oauth_path)
         if not data or not data.get("client_id") or not data.get("client_secret_protected"):
             raise ValueError("Hãy lưu Google OAuth Client ID và Client Secret trước khi kết nối.")
         client_id = data["client_id"]
-        client_secret = self._decrypt(data["client_secret_protected"])
+        client_secret = self._decrypt_oauth(data["client_secret_protected"])
 
         code_verifier = secrets.token_urlsafe(64)
         digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
@@ -396,6 +408,9 @@ class YouTubeAPIClient:
         callback_result = {}
 
         class CallbackHandler(BaseHTTPRequestHandler):
+            # Bound accepted client sockets so speculative browser preconnects cannot stall handle_request().
+            timeout = 2.0
+
             def log_message(self, _format, *_args):
                 # Never log OAuth authorization code or state query params.
                 return
@@ -451,7 +466,10 @@ class YouTubeAPIClient:
                     "<p>Bạn có thể đóng tab trình duyệt này và quay lại ứng dụng.</p>",
                 )
 
-        server = HTTPServer(("127.0.0.1", 0), CallbackHandler)
+        class _LoopbackHTTPServer(HTTPServer):
+            allow_reuse_address = False
+
+        server = _LoopbackHTTPServer(("127.0.0.1", 0), CallbackHandler)
         server.timeout = 0.25
         try:
             port = server.server_port
@@ -477,7 +495,10 @@ class YouTubeAPIClient:
                     raise UploadCancelled("Đã huỷ kết nối Google OAuth2.")
                 if time.monotonic() >= deadline:
                     raise YouTubeAPIError("Hết thời gian chờ đăng nhập Google OAuth2 (5 phút).")
-                server.handle_request()
+                try:
+                    server.handle_request()
+                except OSError:
+                    continue
         finally:
             server.server_close()
 
@@ -491,26 +512,40 @@ class YouTubeAPIClient:
 
         auth_code = callback_result.get("code") or ""
         redaction.register_secret(auth_code)
-        resp = self._http_request(
-            "POST",
-            GOOGLE_TOKEN_URL,
-            data={
-                "code": auth_code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-                "code_verifier": code_verifier,
-            },
-            timeout=30,
-        )
+        try:
+            resp = self._http_request(
+                "POST",
+                GOOGLE_TOKEN_URL,
+                data={
+                    "code": auth_code,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                    "code_verifier": code_verifier,
+                },
+                timeout=30,
+            )
+        except requests.RequestException as error:
+            raise YouTubeAPIError(
+                f"Lỗi kết nối khi đổi mã Google OAuth2: {redaction.redact_error(error)}"
+            ) from None
         if resp.status_code != 200:
             status, reason, detail = _extract_google_error(resp)
+            if status in (429, 500, 502, 503, 504):
+                raise YouTubeAPIError(
+                    f"Máy chủ Google OAuth2 tạm gián đoạn (HTTP {status}). Vui lòng thử kết nối lại."
+                )
             raise YouTubeAuthError(
                 f"Google từ chối đổi mã OAuth2 (HTTP {status}{': ' + reason if reason else ''}). {detail}".strip(),
                 detail="oauth_expired",
             )
-        token_data = resp.json()
+        try:
+            token_data = resp.json()
+        except ValueError:
+            raise YouTubeAPIError("Phản hồi đổi mã Google OAuth2 không phải JSON hợp lệ.") from None
+        if not isinstance(token_data, dict):
+            raise YouTubeAPIError("Phản hồi đổi mã Google OAuth2 không đúng cấu trúc.")
         access_token = str(token_data.get("access_token") or "")
         refresh_token = str(token_data.get("refresh_token") or "")
         if not access_token:
@@ -519,7 +554,7 @@ class YouTubeAPIClient:
         if refresh_token:
             redaction.register_secret(refresh_token)
         else:
-            refresh_token = self._decrypt(data.get("refresh_token_protected", ""))
+            refresh_token = self._decrypt_oauth(data.get("refresh_token_protected", ""))
 
         expires_in = token_data.get("expires_in", 3600)
         try:
@@ -550,8 +585,8 @@ class YouTubeAPIClient:
         data = _read_oauth_file(oauth_path)
         if not data or not data.get("client_id") or not data.get("client_secret_protected"):
             raise YouTubeAuthError("Chưa cấu hình Google OAuth2 cho profile YouTube này.", detail="oauth_expired")
-        access_token = self._decrypt(data.get("access_token_protected", ""))
-        refresh_token = self._decrypt(data.get("refresh_token_protected", ""))
+        access_token = self._decrypt_oauth(data.get("access_token_protected", ""))
+        refresh_token = self._decrypt_oauth(data.get("refresh_token_protected", ""))
         expires_at = data.get("token_expires_at") or 0
         if access_token and not force_refresh and isinstance(expires_at, (int, float)) and expires_at > time.time() + 90:
             return access_token
@@ -561,27 +596,41 @@ class YouTubeAPIClient:
                 detail="oauth_expired",
             )
         client_id = data["client_id"]
-        client_secret = self._decrypt(data["client_secret_protected"])
-        resp = self._http_request(
-            "POST",
-            GOOGLE_TOKEN_URL,
-            data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            },
-            timeout=30,
-        )
+        client_secret = self._decrypt_oauth(data["client_secret_protected"])
+        try:
+            resp = self._http_request(
+                "POST",
+                GOOGLE_TOKEN_URL,
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=30,
+            )
+        except requests.RequestException as error:
+            raise YouTubeAPIError(
+                f"Lỗi mạng khi làm mới token YouTube Data API v3: {redaction.redact_error(error)}"
+            ) from None
         if resp.status_code != 200:
-            status, reason, _detail = _extract_google_error(resp)
+            status, reason, detail = _extract_google_error(resp)
+            if status in (429, 500, 502, 503, 504):
+                raise YouTubeAPIError(
+                    f"Máy chủ Google OAuth2 tạm gián đoạn khi làm mới token (HTTP {status}). Vui lòng thử lại sau."
+                )
             detail_code = "oauth_revoked" if reason == "invalid_grant" else "oauth_expired"
             raise YouTubeAuthError(
                 f"Không thể làm mới token YouTube Data API v3 (HTTP {status}{': ' + reason if reason else ''}). "
-                "Vui lòng kết nối lại OAuth2.",
+                f"{detail} Vui lòng kết nối lại OAuth2.".strip(),
                 detail=detail_code,
             )
-        token_data = resp.json()
+        try:
+            token_data = resp.json()
+        except ValueError:
+            raise YouTubeAPIError("Phản hồi làm mới token YouTube không phải JSON hợp lệ.") from None
+        if not isinstance(token_data, dict):
+            raise YouTubeAPIError("Phản hồi làm mới token YouTube không đúng cấu trúc.")
         new_access = str(token_data.get("access_token") or "")
         if not new_access:
             raise YouTubeAuthError("Phản hồi làm mới token YouTube không hợp lệ.", detail="oauth_expired")
@@ -665,17 +714,7 @@ class YouTubeAPIClient:
             "X-Upload-Content-Type": "video/mp4",
         }
         self._emit(progress, "set_visibility", "uploading", 25)
-        init_resp = self._http_request(
-            "POST",
-            YOUTUBE_UPLOAD_INIT_URL,
-            params={"uploadType": "resumable", "part": "snippet,status"},
-            headers=init_headers,
-            json=resource,
-            timeout=30,
-        )
-        if init_resp.status_code == 401:
-            access_token = self.ensure_access_token(oauth_path, force_refresh=True)
-            init_headers["Authorization"] = f"Bearer {access_token}"
+        try:
             init_resp = self._http_request(
                 "POST",
                 YOUTUBE_UPLOAD_INIT_URL,
@@ -684,6 +723,21 @@ class YouTubeAPIClient:
                 json=resource,
                 timeout=30,
             )
+            if init_resp.status_code == 401:
+                access_token = self.ensure_access_token(oauth_path, force_refresh=True)
+                init_headers["Authorization"] = f"Bearer {access_token}"
+                init_resp = self._http_request(
+                    "POST",
+                    YOUTUBE_UPLOAD_INIT_URL,
+                    params={"uploadType": "resumable", "part": "snippet,status"},
+                    headers=init_headers,
+                    json=resource,
+                    timeout=30,
+                )
+        except requests.RequestException as error:
+            raise YouTubeAPIError(
+                f"Lỗi mạng khi khởi tạo tải lên YouTube API: {redaction.redact_error(error)}"
+            ) from None
         if init_resp.status_code not in (200, 201):
             status, reason, detail = _extract_google_error(init_resp)
             if status == 401:
@@ -703,6 +757,7 @@ class YouTubeAPIClient:
         offset = 0
         final_response = None
         committed = False
+        stalled_308 = 0
 
         with open(path, "rb") as stream:
             while offset < total_size:
@@ -720,6 +775,8 @@ class YouTubeAPIClient:
                 is_final_chunk = end >= total_size
 
                 if is_final_chunk:
+                    # Proactively refresh access token before committing the final chunk on long uploads.
+                    access_token = self.ensure_access_token(oauth_path)
                     self._emit(progress, "submit", "uploading", 88)
                     if before_publish is not None:
                         before_publish()
@@ -763,22 +820,25 @@ class YouTubeAPIClient:
                         continue
                     if resp.status_code in (429, 500, 502, 503, 504) and not is_final_chunk and attempt + 1 < attempts:
                         # Query server offset before resuming the next attempt.
-                        probe = self._http_request(
-                            "PUT",
-                            upload_uri,
-                            headers={
-                                "Authorization": f"Bearer {access_token}",
-                                "Content-Length": "0",
-                                "Content-Range": f"bytes */{total_size}",
-                            },
-                            timeout=30,
-                        )
-                        if probe.status_code == 308:
-                            acked = _parse_range_end(probe.headers.get("Range") or probe.headers.get("range"))
-                            if acked is not None and acked > offset:
-                                offset = acked
-                                resp = probe
-                                break
+                        try:
+                            probe = self._http_request(
+                                "PUT",
+                                upload_uri,
+                                headers={
+                                    "Authorization": f"Bearer {access_token}",
+                                    "Content-Length": "0",
+                                    "Content-Range": f"bytes */{total_size}",
+                                },
+                                timeout=30,
+                            )
+                            if probe.status_code == 308:
+                                acked = _parse_range_end(probe.headers.get("Range") or probe.headers.get("range"))
+                                if acked is not None and acked > offset:
+                                    offset = acked
+                                    resp = probe
+                                    break
+                        except requests.RequestException:
+                            pass
                         time.sleep(min(1.5 * (attempt + 1), 4.0))
                         continue
                     break
@@ -791,7 +851,17 @@ class YouTubeAPIClient:
                     break
                 if resp.status_code == 308:
                     acked = _parse_range_end(resp.headers.get("Range") or resp.headers.get("range"))
-                    offset = acked if acked is not None else end
+                    next_offset = acked if acked is not None else end
+                    if next_offset <= offset:
+                        stalled_308 += 1
+                        if stalled_308 >= 3:
+                            raise YouTubeAPIError(
+                                "YouTube API trả HTTP 308 nhưng không ghi nhận thêm dữ liệu; đã dừng tránh lặp vô hạn."
+                            )
+                        time.sleep(min(1.5 * stalled_308, 3.0))
+                        continue
+                    stalled_308 = 0
+                    offset = next_offset
                     ratio = min(1.0, offset / total_size)
                     percent = round(25 + ratio * 60, 1)
                     self._emit(progress, "upload_file", "uploading", min(85.0, percent))

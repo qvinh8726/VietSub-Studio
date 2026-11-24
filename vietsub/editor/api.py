@@ -8,6 +8,8 @@ from pathlib import Path
 import secrets
 import struct
 import sys
+import tempfile
+from threading import Event, Thread
 import time
 import uuid
 import zlib
@@ -15,7 +17,7 @@ import zlib
 from flask import Blueprint, jsonify, request, send_file
 
 from vietsub import glossary as translation_glossary
-from vietsub import manifest, redaction, srt_utils, storage
+from vietsub import manifest, publish, redaction, srt_utils, storage
 from .jobs import EditorJobs, TERMINAL
 from .options import DEFAULTS, FONTS, PRESETS, SUBTITLE_ANIMATIONS, normalize
 from . import renderer, runtime
@@ -125,8 +127,16 @@ class EditorAPI:
             value["stages"]["editor"] = stage
             if state == "success":
                 value["assets"].update(task.get("assets", {}))
+                stale = dict(value.get("srt_stale_assets") or {})
                 if task.get("action") == "render":
                     value["last_editor_render"] = copy.deepcopy(stage)
+                    stale["edited_video"] = False
+                    if (task.get("assets") or {}).get("tts_audio"):
+                        stale["tts_audio"] = False
+                elif task.get("action") == "tts":
+                    stale["tts_audio"] = False
+                if stale:
+                    value["srt_stale_assets"] = stale
             value["updated_at"] = int(time.time())
             manifest.write_atomic(manifest_path, value)
         if state == "success" and task["action"] == "audio_preview":
@@ -245,6 +255,231 @@ class EditorAPI:
         enriched = [{**cue, "raw_text": raw_text} for cue, raw_text in zip(cues, matched)]
         return enriched, bool(raw_cues)
 
+    def _check_admission_open(self):
+        if self.app.shutdown_event.is_set():
+            raise RuntimeError("App đang đóng.")
+        update_lock = getattr(self.app, "update_install_lock", None)
+        if update_lock is not None and update_lock.locked():
+            raise RuntimeError("App đang chuẩn bị cài đặt bản cập nhật; hãy thử lại sau.")
+
+    def _write_srt_and_manifest(self, result, value, translated_srt, write_fn):
+        """Write SRT + manifest consistently; roll back SRT bytes if manifest commit fails."""
+        manifest_path = manifest.path_for(result)
+        manifest._safe_path(manifest_path)
+        prior_bytes = None
+        if storage.safe_regular(translated_srt):
+            try:
+                with open(translated_srt, "rb") as handle:
+                    prior_bytes = handle.read(srt_utils.MAX_SRT_BYTES + 1)
+            except OSError:
+                prior_bytes = None
+        saved_cues = write_fn()
+        now = int(time.time())
+        value["srt_manually_edited"] = True
+        value["srt_updated_at"] = now
+        value["updated_at"] = now
+        assets = value.get("assets") if isinstance(value.get("assets"), dict) else {}
+        value["srt_stale_assets"] = {
+            "edited_video": bool(assets.get("edited_video")),
+            "tts_audio": bool(assets.get("tts_audio")),
+        }
+        try:
+            manifest.write_atomic(manifest_path, value)
+        except Exception:
+            if prior_bytes is not None:
+                try:
+                    tmp = None
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb", delete=False, prefix=".srt-rb-", suffix=".tmp",
+                        dir=os.path.dirname(os.path.abspath(translated_srt)),
+                    ) as handle:
+                        tmp = handle.name
+                        handle.write(prior_bytes)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(tmp, translated_srt)
+                except OSError:
+                    pass
+            raise
+        return saved_cues
+
+    def _prune_global_previews(self, keep_output_path=""):
+        directory = Path(self.app.CONFIG_DIR) / "editor-previews"
+        try:
+            manifest._safe_path(str(directory))
+            if not directory.is_dir():
+                return
+            protected = self.jobs.protected_paths()
+            cutoff = time.time() - 86400
+            paths = [
+                str(path) for path in directory.glob("*.wav")
+                if len(path.stem) == 32 and all(c in "0123456789abcdef" for c in path.stem)
+                and str(path) != keep_output_path
+                and os.path.normcase(os.path.abspath(str(path))) not in protected
+            ]
+            inventory = storage.inventory(paths)
+            ordered = sorted(inventory, key=lambda p: inventory[p].st_mtime_ns, reverse=True)
+            stale = [p for idx, p in enumerate(ordered) if idx >= 15 or inventory[p].st_mtime < cutoff]
+            if stale:
+                storage.delete_inventory({p: inventory[p] for p in stale})
+        except (OSError, ValueError):
+            pass
+
+    def enqueue_project_task(
+        self,
+        job_id,
+        action,
+        submitted_options=None,
+        *,
+        allow_preset_watermark=False,
+        pipeline_meta=None,
+        after_terminal=None,
+    ):
+        """Admit, reserve in manifest, and enqueue an Auto Edit task (shared by HTTP and Auto Pipeline)."""
+        if (not isinstance(job_id, str) or not isinstance(action, str)
+                or action not in ("render", "tts", "extract_audio", "audio_preview")):
+            raise ValueError("Job ID/action Auto Edit không hợp lệ.")
+        checked_runtime_python = None
+        for _attempt in range(2):
+            runtime_probe_python = None
+            with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
+                self._check_admission_open()
+                _, result, value = self._project(job_id, require_ready=True)
+                if allow_preset_watermark and isinstance(submitted_options, dict):
+                    candidate_wm = submitted_options.get("watermark_path") or ""
+                    if candidate_wm and storage.safe_regular(candidate_wm):
+                        assets_root = (Path(result["project_dir"]) / ".vietsub-assets").resolve()
+                        try:
+                            Path(candidate_wm).resolve().relative_to(assets_root)
+                            if not isinstance(value.get("editor_options"), dict):
+                                value["editor_options"] = {}
+                            value["editor_options"]["watermark_path"] = candidate_wm
+                        except ValueError:
+                            pass
+                options = self._options(value, submitted_options if submitted_options is not None else {})
+                if action == "tts" and not options["tts_voice"].strip():
+                    raise ValueError("Hãy chọn giọng TTS trước khi tạo audio.")
+                ffmpeg, ffprobe = self.app.resolve_ffmpeg_executable(), self.app.resolve_ffprobe_executable()
+                if not ffmpeg or not ffprobe:
+                    raise RuntimeError("Auto Edit cần FFmpeg và FFprobe trong PATH.")
+                config = self.config()
+                if action == "render" and options["audio_mode"] == "instrumental":
+                    model_dir = config.get("editor_separation_model_dir") or ""
+                    filename = config.get("editor_separation_model") or "UVR-MDX-NET-Inst_HQ_3.onnx"
+                    if not model_dir or not os.path.isfile(os.path.join(model_dir, filename)):
+                        raise RuntimeError("Hãy cài model tách giọng và chọn thư mục model trong Runtime; app không tự tải model.")
+                    rt_py = config.get("editor_runtime_python") or ""
+                    if checked_runtime_python != rt_py:
+                        runtime_probe_python = rt_py
+                if runtime_probe_python is None:
+                    directory = os.path.abspath(result["project_dir"])
+                    manifest._safe_path(directory)
+                    task_project = copy.deepcopy(value)
+                    task_project["project_dir"] = directory
+
+                    def execute(identifier, cancel, update):
+                        return renderer.execute(
+                            identifier, task_project, options, action, ffmpeg=ffmpeg, ffprobe=ffprobe,
+                            fonts_dir=os.path.join(self.app.RESOURCE_DIR, "static", "fonts"),
+                            cancel=cancel, update=self._progress_update(identifier, update),
+                            runtime_python=config.get("editor_runtime_python"),
+                            capcut_config={
+                                **config,
+                                "separation_model_dir": config.get("editor_separation_model_dir"),
+                                "separation_model": config.get("editor_separation_model") or "UVR-MDX-NET-Inst_HQ_3.onnx",
+                            },
+                        )
+
+                    target = manifest.path_for(result)
+                    value["editor_options"] = options
+                    identifier = uuid.uuid4().hex
+                    now = int(time.time())
+                    value["stages"]["editor"] = {"status": "queued", "action": action, "task_id": identifier, "updated_at": now}
+                    if isinstance(pipeline_meta, dict):
+                        stage_pipeline = copy.deepcopy(pipeline_meta)
+                        stage_pipeline.update(editor_task_id=identifier, auto_edit="queued", updated_at=now)
+                        value["stages"]["pipeline"] = stage_pipeline
+                    if self.jobs.active(job_id):
+                        raise RuntimeError("Dự án đã có tác vụ Auto Edit.")
+                    return self.jobs.submit(
+                        job_id, action, execute, identifier=identifier,
+                        prepare=lambda task: manifest.write_atomic(target, value),
+                        finish=lambda task, state: self._finish(result, target, task, state),
+                        after_terminal=after_terminal,
+                        protected_paths=[*task_project["assets"].values(), options.get("watermark_path")],
+                    )
+            # Run external subprocess probe outside all global admission/queue/manifest locks.
+            if not runtime.availability(runtime_probe_python or None)["audio_separator"]["available"]:
+                raise RuntimeError("Chưa có audio-separator trong runtime đã chọn; FFmpeg thuần vẫn khả dụng.")
+            checked_runtime_python = runtime_probe_python
+        raise RuntimeError("Cấu hình runtime thay đổi liên tục; hãy thử lại.")
+
+    def _run_hook_api_call(self, runtime_config, messages, *, deadline_seconds=60.0):
+        """Bounded synchronous OpenAI-compatible API call isolated from workflow_lock with light retry."""
+        import inspect
+
+        deadline = time.monotonic() + float(deadline_seconds)
+        api_fn = self.app.call_openai_compatible_api
+        try:
+            sig = inspect.signature(api_fn)
+            accepts_timeout = "timeout" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+        except (TypeError, ValueError):
+            accepts_timeout = False
+
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Gợi ý Hook AI quá thời gian chờ (60 giây).")
+            state = {"response": None, "aborted": False}
+            outcome = {}
+            done = Event()
+
+            def remember_response(resp):
+                state["response"] = resp
+                if state["aborted"]:
+                    self.app.close_quietly(resp)
+
+            call_kwargs = {"max_tokens": 512, "stream": False, "response_hook": remember_response}
+            if accepts_timeout:
+                call_kwargs["timeout"] = max(5.0, min(60.0, remaining))
+
+            def worker():
+                try:
+                    outcome["value"] = api_fn(runtime_config, messages, **call_kwargs)
+                except BaseException as error:
+                    outcome["error"] = error
+                finally:
+                    done.set()
+
+            Thread(target=worker, name="editor-suggest-hooks", daemon=True).start()
+            while not done.wait(0.25):
+                if self.app.shutdown_event.is_set() or time.monotonic() >= deadline:
+                    state["aborted"] = True
+                    self.app.close_in_background(state["response"])
+                    if self.app.shutdown_event.is_set():
+                        raise RuntimeError("Ứng dụng đang đóng; đã huỷ gợi ý Hook AI.")
+                    raise TimeoutError("Gợi ý Hook AI quá thời gian chờ (60 giây).")
+            if "error" not in outcome:
+                return outcome.get("value")
+            err = outcome["error"]
+            retryable = isinstance(err, self.app.TranslationApiError) and (
+                getattr(err, "retryable", False)
+                or getattr(err, "status_code", None) in {429, 500, 502, 503, 504}
+                or any(code in str(err) for code in ("429", "500", "502", "503", "504", "timed out", "timeout"))
+            )
+            if attempt + 1 < max_attempts and retryable and (deadline - time.monotonic()) > 6.0:
+                backoff_end = time.monotonic() + 1.2
+                while time.monotonic() < backoff_end:
+                    if self.app.shutdown_event.is_set():
+                        raise RuntimeError("Ứng dụng đang đóng; đã huỷ gợi ý Hook AI.")
+                    time.sleep(0.1)
+                continue
+            raise err
+        raise TimeoutError("Gợi ý Hook AI quá thời gian chờ (60 giây).")
+
     def _routes(self):
         bp = self.blueprint
 
@@ -348,12 +583,10 @@ class EditorAPI:
                     })
                 if lock_reason:
                     raise RuntimeError(lock_reason)
-                saved = srt_utils.write_srt_atomic(translated_srt, data["cues"], backup=True)
-                now = int(time.time())
-                value["srt_manually_edited"] = True
-                value["srt_updated_at"] = now
-                value["updated_at"] = now
-                manifest.write_atomic(manifest.path_for(result), value)
+                saved = self._write_srt_and_manifest(
+                    result, value, translated_srt,
+                    lambda: srt_utils.write_srt_atomic(translated_srt, data["cues"], backup=True),
+                )
                 enriched, has_raw = self._attach_raw(saved, raw_srt)
                 has_backup = storage.safe_regular(srt_utils.backup_path_for(translated_srt))
                 self.app.log_to_app(f"[Auto Edit] Đã lưu phụ đề SRT thủ công ({len(saved)} câu) cho {value['project_name']}.")
@@ -365,6 +598,7 @@ class EditorAPI:
                     "locked": False,
                     "lock_reason": "",
                     "srt_manually_edited": True,
+                    "srt_stale_assets": value.get("srt_stale_assets", {}),
                 })
 
         @bp.post("/api/editor/projects/<job_id>/srt/apply-glossary")
@@ -390,12 +624,10 @@ class EditorAPI:
                     lock_reason = self._srt_lock_reason(job_id, translated_srt)
                     if lock_reason:
                         raise RuntimeError(lock_reason)
-                    updated_cues = srt_utils.write_srt_atomic(translated_srt, updated_cues, backup=True)
-                    now = int(time.time())
-                    value["srt_manually_edited"] = True
-                    value["srt_updated_at"] = now
-                    value["updated_at"] = now
-                    manifest.write_atomic(manifest.path_for(result), value)
+                    updated_cues = self._write_srt_and_manifest(
+                        result, value, translated_srt,
+                        lambda: srt_utils.write_srt_atomic(translated_srt, updated_cues, backup=True),
+                    )
                 enriched, has_raw = self._attach_raw(updated_cues, raw_srt)
                 has_backup = storage.safe_regular(srt_utils.backup_path_for(translated_srt))
                 return jsonify({
@@ -404,6 +636,7 @@ class EditorAPI:
                     "has_raw": has_raw,
                     "has_backup": has_backup,
                     "saved": save,
+                    "srt_stale_assets": value.get("srt_stale_assets", {}),
                     **stats,
                 })
 
@@ -417,14 +650,12 @@ class EditorAPI:
                 if lock_reason:
                     raise RuntimeError(lock_reason)
                 try:
-                    restored = srt_utils.restore_srt_backup(translated_srt)
+                    restored = self._write_srt_and_manifest(
+                        result, value, translated_srt,
+                        lambda: srt_utils.restore_srt_backup(translated_srt),
+                    )
                 except FileNotFoundError as error:
                     raise KeyError(str(error)) from error
-                now = int(time.time())
-                value["srt_manually_edited"] = True
-                value["srt_updated_at"] = now
-                value["updated_at"] = now
-                manifest.write_atomic(manifest.path_for(result), value)
                 enriched, has_raw = self._attach_raw(restored, raw_srt)
                 has_backup = storage.safe_regular(srt_utils.backup_path_for(translated_srt))
                 self.app.log_to_app(f"[Auto Edit] Đã hoàn tác phụ đề SRT từ bản sao lưu .bak cho {value['project_name']}.")
@@ -436,6 +667,7 @@ class EditorAPI:
                     "locked": False,
                     "lock_reason": "",
                     "srt_manually_edited": True,
+                    "srt_stale_assets": value.get("srt_stale_assets", {}),
                 })
 
         @bp.post("/api/editor/projects/<job_id>/watermark")
@@ -460,6 +692,69 @@ class EditorAPI:
                 manifest.write_atomic(manifest.path_for(result), value)
                 return jsonify({"watermark_path": str(target), "options": options})
 
+        @bp.post("/api/editor/projects/<job_id>/suggest-hooks")
+        def suggest_hooks(job_id):
+            data = self._body(("max_chars",))
+            max_chars = data.get("max_chars", publish.DEFAULT_HOOK_MAX_CHARS)
+            if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 20 <= max_chars <= 100:
+                raise ValueError("max_chars phải là số nguyên từ 20 đến 100.")
+            with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
+                self._check_admission_open()
+                job, result, value = self._project(job_id)
+                translated_srt, _ = self._srt_paths(result, value)
+                cues = srt_utils.read_srt_file(translated_srt)
+                project_name = value.get("project_name") or result.get("project_name") or ""
+                pinned_preset_id = job.get("channel_preset_id") if isinstance(job.get("channel_preset_id"), str) else ""
+            srt_text = srt_utils.serialize_srt(cues)
+            override_glossary_id = None
+            if pinned_preset_id:
+                try:
+                    from vietsub import channel_presets as preset_store
+                    preset = preset_store.get_active_preset(self.app.CONFIG_DIR, override_id=pinned_preset_id)
+                    if preset is not None:
+                        override_glossary_id = preset_store.resolve_preset(self.app.CONFIG_DIR, preset)["glossary_id"]
+                except Exception:
+                    override_glossary_id = None
+            try:
+                runtime_config = (
+                    self.app.get_translation_runtime_config(require_ready=True, glossary_id=override_glossary_id)
+                    if override_glossary_id else self.app.get_translation_runtime_config(require_ready=True)
+                )
+            except TypeError:
+                runtime_config = self.app.get_translation_runtime_config(require_ready=True)
+            if runtime_config.get("provider") == "notebook":
+                raise ValueError(
+                    "Gợi ý Hook AI nhanh hiện chỉ hỗ trợ bộ dịch API (DeepSeek / OpenRouter / OpenAI-compatible). "
+                    "Hãy chọn API dịch trong Thiết lập → Dịch thuật để sử dụng tính năng này."
+                )
+            active_glossary = runtime_config.get("glossary") if isinstance(runtime_config.get("glossary"), dict) else {}
+            prompt = publish.build_hooks_prompt(
+                srt_text,
+                project_name,
+                style_note=active_glossary.get("style_note", ""),
+                max_chars=max_chars,
+            )
+            messages = [
+                {"role": "system", "content": "Bạn là biên tập viên video ngắn tiếng Việt chuyên viết câu Hook Top Banner. Chỉ trả về JSON hợp lệ."},
+                {"role": "user", "content": prompt},
+            ]
+            try:
+                raw_response = self._run_hook_api_call(runtime_config, messages, deadline_seconds=60.0)
+            except TimeoutError as error:
+                return jsonify({"error": redaction.redact_error(error)}), 504
+            except self.app.TranslationApiError as error:
+                return jsonify({"error": redaction.redact_error(error)}), 502
+            try:
+                hooks = publish.parse_hooks_response(raw_response, max_chars=max_chars)
+            except ValueError as error:
+                return jsonify({"error": redaction.redact_error(error)}), 502
+            return jsonify({
+                "job_id": job_id,
+                "hooks": hooks,
+                "provider": runtime_config.get("label", ""),
+                "model": runtime_config.get("model", ""),
+            })
+
         @bp.post("/api/editor/jobs")
         @bp.post("/api/editor/projects/<job_id>/audio-preview")
         def start_task(job_id=None):
@@ -469,50 +764,8 @@ class EditorAPI:
             else:
                 data = self._body(("job_id", "action", "options"), ("job_id", "action"))
                 job_id, action = data["job_id"], data["action"]
-            if (not isinstance(job_id, str) or not isinstance(action, str)
-                    or action not in ("render", "tts", "extract_audio", "audio_preview")):
-                raise ValueError("Job ID/action Auto Edit không hợp lệ.")
-            with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
-                if self.app.shutdown_event.is_set():
-                    raise RuntimeError("App đang đóng.")
-                _, result, value = self._project(job_id, require_ready=True)
-                options = self._options(value, data.get("options", {}))
-                if action == "tts" and not options["tts_voice"].strip():
-                    raise ValueError("Hãy chọn giọng TTS trước khi tạo audio.")
-                ffmpeg, ffprobe = self.app.resolve_ffmpeg_executable(), self.app.resolve_ffprobe_executable()
-                if not ffmpeg or not ffprobe:
-                    raise RuntimeError("Auto Edit cần FFmpeg và FFprobe trong PATH.")
-                config = self.config()
-                if action == "render" and options["audio_mode"] == "instrumental":
-                    model_dir = config.get("editor_separation_model_dir") or ""
-                    filename = config.get("editor_separation_model") or "UVR-MDX-NET-Inst_HQ_3.onnx"
-                    if not model_dir or not os.path.isfile(os.path.join(model_dir, filename)):
-                        raise RuntimeError("Hãy cài model tách giọng và chọn thư mục model trong Runtime; app không tự tải model.")
-                    if not runtime.availability(config.get('editor_runtime_python'))['audio_separator']['available']:
-                        raise RuntimeError("Chưa có audio-separator trong runtime đã chọn; FFmpeg thuần vẫn khả dụng.")
-                directory = os.path.abspath(result["project_dir"])
-                manifest._safe_path(directory)
-                task_project = copy.deepcopy(value)
-                task_project["project_dir"] = directory
-                def execute(identifier, cancel, update):
-                    return renderer.execute(identifier, task_project, options, action, ffmpeg=ffmpeg, ffprobe=ffprobe,
-                                            fonts_dir=os.path.join(self.app.RESOURCE_DIR, "static", "fonts"),
-                                            cancel=cancel, update=self._progress_update(identifier, update), runtime_python=config.get("editor_runtime_python"),
-                                            capcut_config={**config, "separation_model_dir": config.get("editor_separation_model_dir"),
-                                                           "separation_model": config.get("editor_separation_model") or "UVR-MDX-NET-Inst_HQ_3.onnx"})
-                target = manifest.path_for(result)
-                value["editor_options"] = options
-                # Durable reservation first; old completed output stays available.
-                identifier = uuid.uuid4().hex
-                value["stages"]["editor"] = {"status": "queued", "action": action,
-                                               "task_id": identifier, "updated_at": int(time.time())}
-                if self.jobs.active(job_id):
-                    raise RuntimeError("Dự án đã có tác vụ Auto Edit.")
-                task = self.jobs.submit(job_id, action, execute, identifier=identifier,
-                                        prepare=lambda task: manifest.write_atomic(target, value),
-                                        finish=lambda task, state: self._finish(result, target, task, state),
-                                        protected_paths=[*task_project["assets"].values(), options.get("watermark_path")])
-                return jsonify(self._signed(task)), 202
+            task = self.enqueue_project_task(job_id, action, data.get("options", {}))
+            return jsonify(self._signed(task)), 202
 
         @bp.get("/api/editor/jobs/<identifier>")
         def task_status(identifier):
@@ -578,7 +831,12 @@ class EditorAPI:
                 result = service.preview(text, options["tts_voice"], str(output), provider=options["tts_provider"],
                                              speed=options["tts_speed"], pitch=options["tts_pitch"], allow_fallback=options["tts_fallback"])
                 return {"output_path": str(output), "output_kind": "audio", "warnings": result.get("warnings", [])}
-            task = self.jobs.submit("", "tts_preview", execute)
+            with self.app.operation_admission_lock:
+                self._check_admission_open()
+                task = self.jobs.submit(
+                    "", "tts_preview", execute,
+                    finish=lambda t, st: self._prune_global_previews(t.get("output_path", "")) if st == "success" else None,
+                )
             return jsonify(self._signed(task)), 202
 
 

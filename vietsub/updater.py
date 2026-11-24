@@ -560,8 +560,17 @@ for ($attempt = 0; $attempt -lt 40; $attempt++) {
 }
 if (-not $replaced) {
     if (-not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath $backup)) {
-        Move-Item -LiteralPath $backup -Destination $target -Force
+        for ($r = 0; $r -lt 10; $r++) {
+            try {
+                Move-Item -LiteralPath $backup -Destination $target -Force
+                break
+            } catch {
+                Start-Sleep -Milliseconds 300
+            }
+        }
     }
+    if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $target) {
         Start-Process -FilePath $target -WorkingDirectory $targetDir
     }
@@ -572,15 +581,26 @@ try {
     Start-Sleep -Seconds 8
     if ($newProcess.HasExited) { throw 'Bản cập nhật thoát trước khi khởi động ổn định.' }
 } catch {
-    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-    if (Test-Path -LiteralPath $backup) {
-        Move-Item -LiteralPath $backup -Destination $target -Force
+    for ($r = 0; $r -lt 10; $r++) {
+        try {
+            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+            if (Test-Path -LiteralPath $backup) {
+                Move-Item -LiteralPath $backup -Destination $target -Force
+            }
+            break
+        } catch {
+            Start-Sleep -Milliseconds 300
+        }
+    }
+    if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $target) {
         Start-Process -FilePath $target -WorkingDirectory $targetDir
     }
     exit 1
 }
-if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force }
+if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force -ErrorAction SilentlyContinue }
 """
     creation_flags = (
         getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -602,3 +622,22 @@ if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -
         close_fds=True,
         creationflags=creation_flags,
     )
+
+
+def self_check_ed25519():
+    """Verify bundled Cryptodome Ed25519 native extensions using RFC 8032 test vector 1."""
+    from Cryptodome.Hash import SHA512  # noqa: F401
+    from Cryptodome.Signature import eddsa
+
+    pub_raw = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+    sig_raw = bytes.fromhex(
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+        "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    )
+    key = _import_ed25519_public_key(pub_raw)
+    eddsa.new(key, "rfc8032").verify(b"", sig_raw)
+    try:
+        eddsa.new(key, "rfc8032").verify(b"\x00", sig_raw)
+    except ValueError:
+        return True
+    raise RuntimeError("Ed25519 self-check accepted a tampered message.")

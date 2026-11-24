@@ -2430,7 +2430,6 @@ class ApiTests(unittest.TestCase):
 
         def finish(video_url, *_args, **_kwargs):
             app.update_progress(status="success", step="done")
-            app.workflow_lock.release()
 
         with (
             patch.object(app, "coordinate_prefetch_before_job") as coordinate,
@@ -2818,7 +2817,6 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(app.workflow_lock.locked())
             call_order.append(video_url)
             app.update_progress(status="success", step="done")
-            app.workflow_lock.release()
 
         with patch.object(app, "run_workflow_thread", side_effect=finish_immediately):
             app.run_queue_worker()

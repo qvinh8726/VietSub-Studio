@@ -494,14 +494,17 @@ class BrowserRuntime:
                             trace_path = self._stop_tracing(profile_id, context, save=True, job_id=job_id)
                             tracing_active = False
                         if verification:
-                            try:
-                                self.store.update_session(profile_id, "needs_verification")
-                            except Exception:
-                                self._log(profile_id, "Verification required; session metadata could not be updated.")
-                            if uncertain:
-                                message = "Trình duyệt đã đóng trong khi chờ đăng thủ công; kiểm tra nền tảng trước khi thử lại."
-                            elif upload_mode == "assisted" and "timed out" in str(error).lower():
+                            assisted_timeout = upload_mode == "assisted" and "timed out" in str(error).lower()
+                            assisted_closed = upload_mode == "assisted" and uncertain and not assisted_timeout
+                            if not assisted_timeout and not assisted_closed:
+                                try:
+                                    self.store.update_session(profile_id, "needs_verification")
+                                except Exception:
+                                    self._log(profile_id, "Verification required; session metadata could not be updated.")
+                            if assisted_timeout:
                                 message = "Hết thời gian chờ bấm Đăng thủ công; kiểm tra nền tảng trước khi thử lại."
+                            elif uncertain:
+                                message = "Trình duyệt đã đóng trong khi chờ đăng thủ công; kiểm tra nền tảng trước khi thử lại."
                             else:
                                 message = "Manual platform verification required; no automatic bypass or retry."
                             safe = module.VerificationRequired(message)
@@ -509,7 +512,13 @@ class BrowserRuntime:
                                 safe.uncertain = True
                             self._log(profile_id, "Upload needs manual verification; other accounts may continue.")
                         elif cancelled:
-                            safe = module.UploadCancelled("Uploader operation cancelled.")
+                            msg = (
+                                "Đã huỷ trong khi chờ bấm Đăng thủ công; kiểm tra nền tảng trước khi thử lại."
+                                if uncertain else "Uploader operation cancelled."
+                            )
+                            safe = module.UploadCancelled(msg)
+                            if uncertain:
+                                safe.uncertain = True
                             self._log(profile_id, "Uploader operation cancelled.")
                         elif isinstance(error, module.UnsupportedMode):
                             safe = module.UnsupportedMode("Requested publication mode is not supported by this platform adapter.")

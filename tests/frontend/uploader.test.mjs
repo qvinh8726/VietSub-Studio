@@ -431,3 +431,25 @@ test('YouTube Data API v3 JSON parser, OAuth setup, and queueing without local b
     assert.ok(oauthCall);
     assert.equal(oauthCall.options.headers.get('X-VietSub-Token'), 'csrf-uploader-token');
 });
+
+test('channel preset event applies valid profiles, upload mode, and visibility while keeping public confirm unchecked', async () => {
+    const h = harness({initialProfiles: [profile({id: ids[0], name: 'Kênh 1'})]});
+    await h.init(); await h.receive();
+    h.elements['uploader-confirm-public'].checked = true;
+    await h.document.emit('vietsub:apply-channel-preset', {
+        detail: {
+            preset_name: 'Kênh Shorts',
+            publish_defaults: {
+                profile_ids: [ids[0], '33333333-3333-4333-8333-333333333333'],
+                upload_mode: 'assisted',
+                visibility: 'public',
+            },
+        },
+    }).done;
+    await settle();
+    assert.deepEqual(plain(h.uploader.state().selected), [ids[0]]);
+    assert.equal(h.uploader.state().upload_mode, 'assisted');
+    assert.equal(h.uploader.state().visibility, 'public');
+    assert.equal(h.elements['uploader-confirm-public'].checked, false, 'public confirmation must stay manual');
+});
+

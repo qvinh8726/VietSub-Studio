@@ -33,11 +33,23 @@ class EditorJobs:
         self.lock = RLock()
         self.tasks = OrderedDict()
         self.events = {}
+        self._callbacks = {}
+        self._cancelled_queued = set()
         self.work = Queue()
         self.worker = None
         self.closing = False
 
-    def submit(self, job_id, action, execute, *, finish=None, protected_paths=(), identifier=None, prepare=None):
+    def _evict_terminal_locked(self):
+        while len(self.tasks) > 100:
+            oldest = next((key for key, value in self.tasks.items() if value["status"] in TERMINAL), None)
+            if oldest is None:
+                break
+            self.tasks.pop(oldest)
+            self.events.pop(oldest, None)
+            self._callbacks.pop(oldest, None)
+            self._cancelled_queued.discard(oldest)
+
+    def submit(self, job_id, action, execute, *, finish=None, after_terminal=None, protected_paths=(), identifier=None, prepare=None):
         with self.lock:
             if self.closing:
                 raise RuntimeError("Auto Edit đang đóng; không nhận tác vụ mới.")
@@ -58,16 +70,12 @@ class EditorJobs:
                 prepare(copy.deepcopy(task))
             self.tasks[identifier] = task
             self.events[identifier] = Event()
-            self.work.put((identifier, execute, finish))
+            self._callbacks[identifier] = (finish, after_terminal)
+            self.work.put((identifier, execute, finish, after_terminal))
             if self.worker is None or not self.worker.is_alive():
                 self.worker = Thread(target=self._run, name="vietsub-editor", daemon=True)
                 self.worker.start()
-            while len(self.tasks) > 100:
-                oldest = next((key for key, value in self.tasks.items() if value["status"] in TERMINAL), None)
-                if oldest is None:
-                    break
-                self.tasks.pop(oldest)
-                self.events.pop(oldest, None)
+            self._evict_terminal_locked()
             return copy.deepcopy(task)
 
     def active(self, job_id):
@@ -91,6 +99,7 @@ class EditorJobs:
             if task["id"] not in self.tasks:
                 self.tasks[task["id"]] = copy.deepcopy(task)
                 self.events[task["id"]] = Event()
+                self._evict_terminal_locked()
 
     def snapshot(self, identifier):
         with self.lock:
@@ -104,11 +113,37 @@ class EditorJobs:
                          if task["job_id"] == job_id and not task.get('_historical')), None)
 
     def cancel(self, identifier):
+        finish_cb = None
+        after_cb = None
+        task_snap = None
         with self.lock:
             task = self.snapshot(identifier)
             if task["status"] not in TERMINAL:
                 self.events[identifier].set()
-            return task
+                if task["status"] == "queued":
+                    self.tasks[identifier].update(
+                        status="cancelled",
+                        phase="cancelled",
+                        error="Đã huỷ tác vụ Auto Edit.",
+                        finished_at=time.time(),
+                    )
+                    self._cancelled_queued.add(identifier)
+                    cb = self._callbacks.pop(identifier, None)
+                    if cb:
+                        finish_cb, after_cb = cb
+                    task_snap = copy.deepcopy(self.tasks[identifier])
+                    task = task_snap
+        if finish_cb and task_snap is not None:
+            try:
+                finish_cb(task_snap, "cancelled")
+            except Exception:
+                pass
+        if after_cb and task_snap is not None:
+            try:
+                after_cb(task_snap, "cancelled")
+            except Exception:
+                pass
+        return task
 
     def _update(self, identifier, **values):
         with self.lock:
@@ -116,12 +151,23 @@ class EditorJobs:
 
     def _run(self):
         while True:
-            identifier, execute, finish = self.work.get()
-            cancel = self.events[identifier]
+            identifier, execute, finish, after_terminal = self.work.get()
+            with self.lock:
+                self._callbacks.pop(identifier, None)
+                if identifier in self._cancelled_queued:
+                    self._cancelled_queued.discard(identifier)
+                    self.work.task_done()
+                    if self.work.empty():
+                        self.worker = None
+                        return
+                    continue
+                cancel = self.events[identifier]
+                if not cancel.is_set():
+                    self.tasks[identifier].update(status="running", phase="prepare", started_at=time.time())
             result = {}
+            terminal_state = "error"
             try:
                 check_cancel(cancel)
-                self._update(identifier, status="running", phase="prepare", started_at=time.time())
                 result = execute(identifier, cancel, lambda **values: self._update(identifier, **values)) or {}
                 check_cancel(cancel)
                 self._update(identifier, **result)
@@ -129,8 +175,10 @@ class EditorJobs:
                 if finish:
                     finish(self.snapshot(identifier), "success")
                 self._update(identifier, status="success", phase="done", percent=100, finished_at=time.time())
+                terminal_state = "success"
             except Exception as error:
                 state = "cancelled" if isinstance(error, EditorCancelled) or cancel.is_set() else "error"
+                terminal_state = state
                 task = self.snapshot(identifier)
                 if task["action"] in {"audio_preview", "tts_preview"}:
                     try:
@@ -152,6 +200,11 @@ class EditorJobs:
                 self._update(identifier, status=state, finished_at=time.time())
             finally:
                 self.work.task_done()
+            if after_terminal:
+                try:
+                    after_terminal(self.snapshot(identifier), terminal_state)
+                except Exception:
+                    pass
             with self.lock:
                 if self.work.empty():
                     self.worker = None

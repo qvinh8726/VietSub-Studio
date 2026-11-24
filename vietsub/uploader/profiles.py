@@ -388,13 +388,14 @@ class ProfileStore:
             pass
         return result
 
-    def update_config(self, identifier, *, upload_method):
+    def update_config(self, identifier, *, upload_method, already_leased=False):
         if upload_method not in UPLOAD_METHODS:
             raise ValueError("Phương thức đăng không hợp lệ (chỉ hỗ trợ browser hoặc youtube_api).")
         record = self.get(identifier)
         if upload_method == "youtube_api" and record["platform"] != "youtube":
             raise ValueError("Chỉ tài khoản YouTube mới hỗ trợ YouTube Data API v3.")
-        with self.lease(identifier):
+
+        def _write():
             path = Path(self.config_path(identifier))
             payload = {
                 "schema_version": SCHEMA_VERSION,
@@ -404,6 +405,11 @@ class ProfileStore:
             }
             _atomic_json(path, payload)
             return dict(payload)
+
+        if already_leased:
+            return _write()
+        with self.lease(identifier):
+            return _write()
 
     def save_storage_state(self, identifier, state):
         """Private atomic snapshot; never included in account metadata or logs."""

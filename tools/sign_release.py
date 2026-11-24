@@ -52,14 +52,28 @@ def _restrict_private_key_permissions(path):
         if not os.path.isfile(icacls):
             icacls = shutil.which("icacls") or "icacls"
         username = os.environ.get("USERNAME") or getpass.getuser()
-        if username:
-            subprocess.run(
-                [icacls, str(target), "/inheritance:r", "/grant:r", f"{username}:(R,W)"],
+        if not username:
+            raise RuntimeError("Không xác định được tài khoản Windows để giới hạn quyền private key.")
+        domain = (os.environ.get("USERDOMAIN") or "").strip()
+        principals = [f"{domain}\\{username}", username] if domain else [username]
+        last_proc = None
+        for principal in principals:
+            proc = subprocess.run(
+                [icacls, str(target), "/inheritance:r", "/grant:r", f"{principal}:(R,W)"],
                 shell=False,
                 check=False,
                 capture_output=True,
                 text=True,
             )
+            last_proc = proc
+            returncode = getattr(proc, "returncode", 0)
+            if not isinstance(returncode, int) or returncode == 0:
+                return
+        detail = ((getattr(last_proc, "stderr", "") or getattr(last_proc, "stdout", "")) or "").strip()
+        raise RuntimeError(
+            f"Không thể giới hạn quyền truy cập private key bằng icacls "
+            f"(exit {getattr(last_proc, 'returncode', 'unknown')}): {detail or 'lỗi không xác định'}"
+        )
     else:
         os.chmod(target, 0o600)
 

@@ -32,7 +32,7 @@ jobs:
         run: python -m pip check
       - name: Compile
         run: |
-          python -m py_compile app.py automate.py tools/make_release.py tools/workbench_qa.py tools/phase1_qa.py tools/phase2_qa.py tools/phase3_qa.py tools/editor_live_smoke.py
+          python -m py_compile app.py automate.py tools/make_release.py tools/sign_release.py tools/workbench_qa.py tools/phase1_qa.py tools/phase2_qa.py tools/phase3_qa.py tools/system_qa.py tools/editor_live_smoke.py tools/editor_portable_smoke.py
           python -m compileall -q vietsub
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
@@ -151,6 +151,17 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Resolve-Path "dist_portable\VietSub Studio.exe").Path
+          $smokeConfigDir = Join-Path $env:RUNNER_TEMP "vietsub-package-smoke-config"
+          if (Test-Path $smokeConfigDir) { Remove-Item -Recurse -Force $smokeConfigDir }
+          New-Item -ItemType Directory -Path $smokeConfigDir -Force | Out-Null
+          $env:VIETSUB_STUDIO_CONFIG_DIR = $smokeConfigDir
+
+          # 1. Verify bundled Cryptodome Ed25519 native extensions & RFC 8032 verification inside the frozen EXE.
+          $cryptoOut = & $exe --self-check-crypto 2>&1
+          if ($LASTEXITCODE -ne 0 -or ($cryptoOut -join "`n") -notmatch "Ed25519 RFC 8032 OK") {
+            throw "Packaged Ed25519 self-check failed (exit $LASTEXITCODE): $($cryptoOut -join ' ')"
+          }
+
           $process = Start-Process -FilePath $exe -ArgumentList "--server" -PassThru
           try {
             $ready = $false
@@ -173,15 +184,64 @@ jobs:
                 throw "Packaged asset $asset was not served correctly."
               }
             }
-            # yt-dlp and its YouTube scripts are imported lazily, so check they were bundled.
             $token = [regex]::Match($response.Content, 'name="api-token" content="([^"]+)"').Groups[1].Value
-            $health = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/health" -Headers @{ "X-VietSub-Token" = $token } -TimeoutSec 30
+            if (-not $token) { throw "Missing api-token meta in packaged index page." }
+            $authHeaders = @{ "X-VietSub-Token" = $token }
+
+            # 2. Verify yt-dlp and yt-dlp-ejs lazy imports.
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/health" -Headers $authHeaders -TimeoutSec 30
             if (-not $health.checks.ytdlp.ok) {
               throw "yt-dlp is missing from the packaged executable: $($health.checks.ytdlp.detail)"
             }
             if ($health.checks.js_runtime.detail -match "yt-dlp-ejs") {
               throw "yt-dlp-ejs is missing from the packaged executable."
             }
+
+            # 3. Verify Publish Hub bundled selectors.json + YouTube API lazy imports (requests/certifi).
+            $upCaps = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/uploader/capabilities" -Headers $authHeaders -TimeoutSec 15
+            if ($upCaps.default_upload_mode -ne "assisted" -or -not $upCaps.youtube_api_supported -or $upCaps.platforms.Count -lt 6) {
+              throw "Packaged /api/uploader/capabilities invalid: $($upCaps | ConvertTo-Json -Compress)"
+            }
+            if ($upCaps.selector_override.warning) {
+              throw "Packaged selectors.json reported warning: $($upCaps.selector_override.warning)"
+            }
+            $ytProf = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/api/uploader/profiles" -Headers $authHeaders -ContentType "application/json" -Body '{"platform":"youtube","name":"Smoke YT"}' -TimeoutSec 15
+            if (-not $ytProf.id -or $null -eq $ytProf.youtube_api) {
+              throw "Packaged YouTube profile creation failed to load youtube_api module."
+            }
+
+            # 4. Verify Phase 1 / 3.1 / 3.2 endpoints: glossaries, channel-presets, editor capabilities, update.
+            $glossaries = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/glossaries" -Headers $authHeaders -TimeoutSec 15
+            if ($glossaries.active_id -ne "default") { throw "Packaged /api/glossaries failed." }
+            $presets = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/channel-presets" -Headers $authHeaders -TimeoutSec 15
+            if ($null -eq $presets.presets) { throw "Packaged /api/channel-presets failed." }
+            $edCaps = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/editor/capabilities" -Headers $authHeaders -TimeoutSec 15
+            if ($edCaps.subtitle_animations -notcontains "word_pop") { throw "Packaged /api/editor/capabilities missing word_pop." }
+            $upd = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/update" -Headers $authHeaders -TimeoutSec 20
+            if ($null -eq $upd.current_version) { throw "Packaged /api/update failed." }
+
+            # 5. Negative security boundary checks (TESTING=False): missing token -> 403, foreign Origin -> 403, non-JSON -> 415.
+            foreach ($neg in @(
+              @{ Name = "Missing token"; Method = "Get"; Uri = "http://127.0.0.1:5000/api/channel-presets"; Headers = @{}; Body = $null; ContentType = $null; Expected = 403 },
+              @{ Name = "Foreign origin"; Method = "Post"; Uri = "http://127.0.0.1:5000/api/glossaries"; Headers = @{ "X-VietSub-Token" = $token; "Origin" = "https://evil.example" }; Body = '{"name":"Evil"}'; ContentType = "application/json"; Expected = 403 },
+              @{ Name = "Non-JSON body"; Method = "Post"; Uri = "http://127.0.0.1:5000/api/glossaries"; Headers = $authHeaders; Body = "plain"; ContentType = "text/plain"; Expected = 415 },
+              @{ Name = "Delete finished without token"; Method = "Delete"; Uri = "http://127.0.0.1:5000/api/uploader/queue/finished"; Headers = @{}; Body = "{}"; ContentType = "application/json"; Expected = 403 }
+            )) {
+              $code = 0
+              try {
+                $params = @{ UseBasicParsing = $true; Method = $neg.Method; Uri = $neg.Uri; Headers = $neg.Headers; TimeoutSec = 10 }
+                if ($null -ne $neg.Body) { $params.Body = $neg.Body }
+                if ($null -ne $neg.ContentType) { $params.ContentType = $neg.ContentType }
+                $r = Invoke-WebRequest @params
+                $code = [int]$r.StatusCode
+              } catch {
+                if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+              }
+              if ($code -ne $neg.Expected) {
+                throw "Security check '$($neg.Name)' expected HTTP $($neg.Expected), got $code."
+              }
+            }
+
             $second = Start-Process -FilePath $exe -ArgumentList "--server" -PassThru
             if (-not $second.WaitForExit(60000)) {
               throw "A second packaged instance did not exit within 60 seconds."
@@ -195,6 +255,7 @@ jobs:
             foreach ($testProcess in $testProcesses) {
               Stop-Process -Id $testProcess.ProcessId -Force
             }
+            if (Test-Path $smokeConfigDir) { Remove-Item -Recurse -Force $smokeConfigDir -ErrorAction SilentlyContinue }
           }
       - name: Package release assets in the updater format
         id: release

@@ -173,8 +173,9 @@ def load_selectors(config_dir=None):
         status["updated_at"] = merged.get("updated_at", status["updated_at"])
         return merged, status
     except (OSError, ValueError, TypeError, UnicodeError, RecursionError) as error:
+        from vietsub import redaction
         status["warning"] = (
-            f"Đã bỏ qua selectors.override.json không hợp lệ ({error}); "
+            f"Đã bỏ qua selectors.override.json không hợp lệ ({redaction.redact_error(error)}); "
             "đang dùng bộ selector mặc định."
         )
         return bundled, status

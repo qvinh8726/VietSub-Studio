@@ -7,6 +7,7 @@ import urllib.parse
 
 _LOCK = threading.RLock()
 _MAX_SECRETS = 512
+_PINNED_SECRETS = []
 _SECRETS = []
 _PATH_ROOTS = {}
 
@@ -15,6 +16,9 @@ _KEY_PATTERNS = (
     re.compile(r"\bAIza[0-9A-Za-z\-_]{20,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{12,}\b"),
+    re.compile(r"\bya29\.[A-Za-z0-9_\-.]{16,}\b"),
+    re.compile(r"(?<![A-Za-z0-9_])1//[A-Za-z0-9_\-.]{16,}\b"),
 )
 _AUTH_HEADER_PATTERN = re.compile(
     r"(?i)(\bAuthorization\s*:\s*Bearer\s+)[^\s,;\"'<>]+"
@@ -30,8 +34,8 @@ _COOKIE_HEADER_PATTERN = re.compile(
     r"|[^\s;\r\n\"']+)"
 )
 _SENSITIVE_PARAM_PATTERN = re.compile(
-    r"(?i)(\b(?:api_key|access_token|refresh_token|passToken|sessionid_ss|sessionid|"
-    r"sid_tt|SESSDATA|bili_jct|DedeUserID|web_session|c_user|xs)\s*[:=]\s*)"
+    r"(?i)(\b(?:api_key|access_token|refresh_token|client_secret|code_verifier|upload_id|"
+    r"passToken|sessionid_ss|sessionid|sid_tt|SESSDATA|bili_jct|DedeUserID|web_session|c_user|xs)\s*[:=]\s*)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s&;,\"'\}]+)"
 )
 _URL_SIGNATURE_PATTERN = re.compile(r"(?i)([?&]signature=)[^&\s\"'<>]+")
@@ -40,15 +44,23 @@ _MEI_WIN_PATTERN = re.compile(
     r"(?i)(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n]*)*?[\\/]Temp[\\/]_MEI[A-Za-z0-9_.-]+"
 )
 _MEI_POSIX_PATTERN = re.compile(r"/tmp/_MEI[A-Za-z0-9_.-]+")
-_WIN_USER_BS_PATTERN = re.compile(r"(?i)[A-Za-z]:\\Users\\[^\\/\s:'\",;<>|\r\n]+")
-_WIN_USER_FS_PATTERN = re.compile(r"(?i)[A-Za-z]:/Users/[^\\/\s:'\",;<>|\r\n]+")
+_WIN_USER_BS_PATTERN = re.compile(
+    r"(?i)[A-Za-z]:\\Users\\(?:[^\\/\r\n:'\",;<>|?*]{1,104}(?=[\\/])|[^\\/\s:'\",;<>|\r\n]+)"
+)
+_WIN_USER_FS_PATTERN = re.compile(
+    r"(?i)[A-Za-z]:/Users/(?:[^\\/\r\n:'\",;<>|?*]{1,104}(?=[\\/])|[^\\/\s:'\",;<>|\r\n]+)"
+)
 _POSIX_USER_PATTERN = re.compile(
     r"(?:(?<=^)|(?<=[\s:'\"(,=]))/(?:Users|home)/[^/\s:'\",;<>|\r\n]+"
 )
 
 
-def register_secret(value):
-    """Register a runtime secret so future logs and API errors scrub it."""
+def register_secret(value, *, pinned=False):
+    """Register a runtime secret so future logs and API errors scrub it.
+
+    System-critical secrets (such as ``API_TOKEN``) can pass ``pinned=True`` so
+    FIFO rotation at ``_MAX_SECRETS`` never evicts them.
+    """
     if not isinstance(value, str):
         return
     candidates = [value]
@@ -58,17 +70,27 @@ def register_secret(value):
             candidates.append(quoted)
     with _LOCK:
         for candidate in candidates:
-            if len(candidate) < 8 or candidate in _SECRETS:
+            if len(candidate) < 8:
+                continue
+            if pinned:
+                if candidate not in _PINNED_SECRETS:
+                    _PINNED_SECRETS.append(candidate)
+                if candidate in _SECRETS:
+                    _SECRETS.remove(candidate)
+                continue
+            if candidate in _PINNED_SECRETS or candidate in _SECRETS:
                 continue
             _SECRETS.append(candidate)
             if len(_SECRETS) > _MAX_SECRETS:
                 del _SECRETS[: len(_SECRETS) - _MAX_SECRETS]
 
 
-def clear_secrets():
+def clear_secrets(*, include_pinned=False):
     """Clear registered secrets (primarily for isolated tests)."""
     with _LOCK:
         _SECRETS.clear()
+        if include_pinned:
+            _PINNED_SECRETS.clear()
 
 
 def register_path_root(path, placeholder):
@@ -103,7 +125,7 @@ def redact_text(value, *, redact_paths=False, extra_secrets=()):
         return ""
 
     with _LOCK:
-        secrets_snapshot = list(_SECRETS)
+        secrets_snapshot = list(_PINNED_SECRETS) + list(_SECRETS)
     for item in extra_secrets:
         if isinstance(item, str) and len(item) >= 8:
             secrets_snapshot.append(item)

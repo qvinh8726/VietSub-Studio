@@ -296,25 +296,26 @@ class AssistedUploadAndTelemetryTests(unittest.TestCase):
         self.assertEqual(checkpoints, [True])
 
     def test_assisted_cancel_timeout_and_browser_close_states(self):
-        # 1) Cancel
+        # 1) Cancel after form filled / awaiting submit -> UploadCancelled(uncertain=True)
         page = AdapterPage("tiktok", "public", no_confirmation=True)
         cancel = threading.Event()
         page.on_wait = lambda _p: cancel.set()
-        with self.assertRaises(adapters.UploadCancelled):
+        with self.assertRaises(adapters.UploadCancelled) as caught_cancel:
             self._adapter("tiktok").upload(
                 page, self.video, self.meta, visibility="public",
                 upload_mode="assisted", cancel=cancel, assisted_timeout_ms=1000,
             )
         self.assertEqual(page.submit_count, 0)
+        self.assertTrue(getattr(caught_cancel.exception, "uncertain", False))
 
-        # 2) Timeout -> VerificationRequired (NOT uncertain -> needs_verification)
+        # 2) Timeout while awaiting manual submit -> VerificationRequired(uncertain=True)
         page2 = AdapterPage("tiktok", "public", no_confirmation=True)
         with self.assertRaises(adapters.VerificationRequired) as caught_to:
             self._adapter("tiktok").upload(
                 page2, self.video, self.meta, visibility="public",
                 upload_mode="assisted", assisted_timeout_ms=30,
             )
-        self.assertFalse(getattr(caught_to.exception, "uncertain", False))
+        self.assertTrue(getattr(caught_to.exception, "uncertain", False))
 
         # 3) Browser closed while awaiting submit -> VerificationRequired(uncertain=True)
         page3 = AdapterPage("tiktok", "public", no_confirmation=True)

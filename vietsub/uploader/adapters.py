@@ -391,7 +391,9 @@ class _Run:
         deadline = monotonic() + timeout_ms / 1000.0
         for _ in range(max(1, (timeout_ms + 249) // 250)):
             if self.cancelled():
-                raise UploadCancelled('Upload cancelled while waiting for manual submit.')
+                err = UploadCancelled('Upload cancelled while waiting for manual submit; check the platform before retrying.')
+                err.uncertain = True
+                raise err
             if self.page.is_closed():
                 err = VerificationRequired('Browser closed while awaiting manual submit; reconcile on the platform.')
                 err.uncertain = True
@@ -403,6 +405,10 @@ class _Run:
                 result_url = ''
                 if self.on_allowed_host():
                     try:
+                        if self.adapter.platform == 'tiktok' and self.root is not self.page:
+                            iframe_selectors = self.adapter._platform_sel['iframe']
+                            if self.page.locator(iframe_selectors[0]).count() == 0:
+                                self.root = self.page
                         confirmation = self.adapter._confirmation(self, visibility)
                         if confirmation is not None:
                             result_url = self.adapter._result_url(confirmation)
@@ -424,6 +430,8 @@ class _Run:
                         if self.page.locator(iframe_selectors[0]).count() == 0:
                             self.root = self.page
                     confirmation = self.adapter._confirmed(self, visibility, response_state)
+                except VerificationRequired:
+                    raise
                 except Exception:
                     confirmation = None
             if confirmation:
@@ -449,7 +457,9 @@ class _Run:
                     err.uncertain = True
                     raise err from None
                 raise
-        raise VerificationRequired('Assisted upload timed out awaiting manual submit; check the platform before retrying.')
+        err = VerificationRequired('Assisted upload timed out awaiting manual submit; check the platform before retrying.')
+        err.uncertain = True
+        raise err
 
     def finish(self, control, visibility, *, response_state=None):
         processing_selectors = self.adapter._common['processing']
