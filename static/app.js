@@ -47,6 +47,8 @@
         let lastTranslationProvider = 'notebook';
         let defaultTranslationInstructions = '';
         let translationInstructionPresets = {};
+        let glossaryStore = {active_id: 'default', profiles: [{id: 'default', name: 'Mặc định', style_note: '', entries: []}]};
+        let glossariesLoaded = false;
         let connectionOk = true;
         let cancellingJobId = '';
         let translationProviderName = 'Gemini';
@@ -1307,6 +1309,162 @@
             await saveSettingsNow();
         }
 
+        function currentGlossaryProfile() {
+            const profiles = Array.isArray(glossaryStore?.profiles) ? glossaryStore.profiles : [];
+            const selectedId = byId('setting-glossary-select')?.value || glossaryStore?.active_id || 'default';
+            return profiles.find(item => item.id === selectedId) || profiles[0] || {id: 'default', name: 'Mặc định', style_note: '', entries: []};
+        }
+
+        function createGlossaryEntryRow(entry = {}) {
+            const row = document.createElement('div');
+            row.className = 'glossary-entry-row';
+            const src = document.createElement('input');
+            src.type = 'text'; src.className = 'text-input'; src.maxLength = 120;
+            src.placeholder = 'Thuật ngữ gốc'; src.value = entry.source || ''; src.dataset.glossaryField = 'source';
+            src.setAttribute('aria-label', 'Thuật ngữ gốc');
+            const tgt = document.createElement('input');
+            tgt.type = 'text'; tgt.className = 'text-input'; tgt.maxLength = 120;
+            tgt.placeholder = 'Bản dịch chuẩn'; tgt.value = entry.target || ''; tgt.dataset.glossaryField = 'target';
+            tgt.setAttribute('aria-label', 'Bản dịch chuẩn');
+            const note = document.createElement('input');
+            note.type = 'text'; note.className = 'text-input'; note.maxLength = 120;
+            note.placeholder = 'Ghi chú (tuỳ chọn)'; note.value = entry.note || ''; note.dataset.glossaryField = 'note';
+            note.setAttribute('aria-label', 'Ghi chú thuật ngữ');
+            const remove = document.createElement('button');
+            remove.type = 'button'; remove.className = 'btn-ghost glossary-entry-remove';
+            remove.textContent = '×'; remove.title = 'Xoá mục thuật ngữ này'; remove.dataset.glossaryRemove = '1';
+            remove.setAttribute('aria-label', 'Xoá mục thuật ngữ');
+            row.append(src, tgt, note, remove);
+            return row;
+        }
+
+        function renderGlossaryEditor(profile) {
+            const nameInput = byId('setting-glossary-name');
+            const styleInput = byId('setting-glossary-style');
+            const list = byId('setting-glossary-entries');
+            const deleteBtn = byId('setting-glossary-delete-btn');
+            if (!nameInput || !styleInput || !list) return;
+            nameInput.value = profile.name || '';
+            styleInput.value = profile.style_note || '';
+            if (deleteBtn) deleteBtn.disabled = profile.id === 'default';
+            const entries = Array.isArray(profile.entries) ? profile.entries : [];
+            const rows = entries.map(entry => createGlossaryEntryRow(entry));
+            list.replaceChildren(...rows);
+        }
+
+        function renderGlossaryStore(data) {
+            if (data && Array.isArray(data.profiles) && data.profiles.length) {
+                glossaryStore = {active_id: data.active_id || data.profiles[0].id, profiles: data.profiles};
+            }
+            const select = byId('setting-glossary-select');
+            if (!select) return;
+            const nodes = glossaryStore.profiles.map(profile => {
+                const option = document.createElement('option');
+                option.value = profile.id;
+                const count = Array.isArray(profile.entries) ? profile.entries.length : 0;
+                option.textContent = `${profile.name}${count ? ` (${count} mục)` : ''}`;
+                return option;
+            });
+            select.replaceChildren(...nodes);
+            select.value = glossaryStore.active_id;
+            renderGlossaryEditor(currentGlossaryProfile());
+            document.dispatchEvent(new CustomEvent('vietsub:glossaries-updated', {detail: glossaryStore}));
+        }
+
+        async function loadGlossaries() {
+            if (!byId('setting-glossary-select')) return;
+            const status = byId('setting-glossary-status');
+            if (status) status.textContent = 'Đang nạp từ điển…';
+            try {
+                const data = await fetchJson('/api/glossaries');
+                glossariesLoaded = true;
+                renderGlossaryStore(data);
+                if (status) status.textContent = `${glossaryStore.profiles.length} bộ từ điển`;
+            } catch (error) {
+                if (status) status.textContent = error.message;
+            }
+        }
+
+        async function activateGlossary(id) {
+            if (!id) return;
+            const status = byId('setting-glossary-status');
+            try {
+                const data = await fetchJson('/api/glossaries/active', {method: 'POST', body: JSON.stringify({active_id: id})});
+                renderGlossaryStore(data);
+                if (status) status.textContent = 'Đã chuyển bộ từ điển đang dùng.';
+                showToast(`Đang dùng bộ từ điển: ${currentGlossaryProfile().name}.`);
+            } catch (error) {
+                if (status) status.textContent = error.message;
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function createGlossaryProfile() {
+            const profiles = glossaryStore.profiles || [];
+            let idx = profiles.length + 1;
+            let candidate = `Bộ từ điển ${idx}`;
+            while (profiles.some(item => item.name === candidate)) { idx += 1; candidate = `Bộ từ điển ${idx}`; }
+            try {
+                const data = await fetchJson('/api/glossaries', {
+                    method: 'POST',
+                    body: JSON.stringify({name: candidate, style_note: '', entries: [], activate: true}),
+                });
+                glossariesLoaded = true;
+                renderGlossaryStore(data);
+                const nameInput = byId('setting-glossary-name');
+                if (nameInput) { nameInput.focus(); nameInput.select?.(); }
+                showToast(`Đã tạo bộ từ điển "${candidate}".`);
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function saveCurrentGlossary() {
+            const profile = currentGlossaryProfile();
+            const name = (byId('setting-glossary-name')?.value || '').trim();
+            const styleNote = (byId('setting-glossary-style')?.value || '').trim();
+            const list = byId('setting-glossary-entries');
+            if (!name) { showToast('Tên bộ từ điển không được để trống.', 'error'); return; }
+            const entries = [];
+            for (const row of (list?.children || [])) {
+                const inputs = [...(row.querySelectorAll?.('input[data-glossary-field]') || row.children || [])];
+                const byField = {};
+                for (const input of inputs) if (input.dataset?.glossaryField) byField[input.dataset.glossaryField] = (input.value || '').trim();
+                if (!byField.source && !byField.target && !byField.note) continue;
+                if (!byField.source || !byField.target) {
+                    showToast('Mỗi dòng thuật ngữ cần có đủ cả "Thuật ngữ gốc" và "Bản dịch chuẩn".', 'error');
+                    return;
+                }
+                entries.push({source: byField.source, target: byField.target, note: byField.note || ''});
+            }
+            const status = byId('setting-glossary-status');
+            try {
+                const data = await fetchJson(`/api/glossaries/${encodeURIComponent(profile.id)}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({name, style_note: styleNote, entries}),
+                });
+                renderGlossaryStore(data);
+                if (status) status.textContent = 'Đã lưu từ điển.';
+                showToast(`Đã lưu bộ từ điển "${name}" (${entries.length} mục).`);
+            } catch (error) {
+                if (status) status.textContent = error.message;
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function deleteCurrentGlossary() {
+            const profile = currentGlossaryProfile();
+            if (!profile || profile.id === 'default') return;
+            if (!window.confirm(`Xoá bộ từ điển "${profile.name}"?`)) return;
+            try {
+                const data = await fetchJson(`/api/glossaries/${encodeURIComponent(profile.id)}`, {method: 'DELETE'});
+                renderGlossaryStore(data);
+                showToast(`Đã xoá bộ từ điển "${profile.name}".`);
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
         async function testTranslationApi() {
             const button = byId('test-api-btn');
             button.disabled = true;
@@ -1555,6 +1713,23 @@
             byId('setting-translation-instructions').addEventListener('change', saveSettings);
             byId('reset-translation-instructions-btn').onclick=resetTranslationInstructions;
             byId('apply-translation-preset-btn').onclick=applyTranslationPreset;
+            if (byId('setting-glossary-select')) {
+                byId('settings-open-btn')?.addEventListener('click', () => { loadGlossaries(); });
+                byId('setting-glossary-select').addEventListener('change', event => activateGlossary(event.target.value));
+                byId('setting-glossary-new-btn').onclick = createGlossaryProfile;
+                byId('setting-glossary-delete-btn').onclick = deleteCurrentGlossary;
+                byId('setting-glossary-save-btn').onclick = saveCurrentGlossary;
+                byId('setting-glossary-add-entry-btn').onclick = () => {
+                    const list = byId('setting-glossary-entries');
+                    const row = createGlossaryEntryRow();
+                    list.appendChild(row);
+                    row.querySelector?.('input[data-glossary-field="source"]')?.focus();
+                };
+                byId('setting-glossary-entries').addEventListener('click', event => {
+                    const btn = event.target?.closest?.('[data-glossary-remove]') || (event.target?.dataset?.glossaryRemove ? event.target : null);
+                    if (btn) btn.parentElement?.remove?.();
+                });
+            }
             byId('setting-notebook').addEventListener('change', saveSettings); byId('setting-output').addEventListener('change', saveSettings); byId('ocr-lang').addEventListener('change', saveSettings);
             byId('setting-api-base-url').addEventListener('change', saveSettings); byId('setting-api-model').addEventListener('change', saveSettings); byId('setting-api-key').addEventListener('change', saveSettings);
             byId('test-api-btn').onclick=testTranslationApi; byId('clear-api-key-btn').onclick=clearTranslationApiKey;

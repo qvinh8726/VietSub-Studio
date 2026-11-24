@@ -238,8 +238,21 @@
 <div class="editor-source-surface" id="editor-source-surface">
 <video aria-label="Video project Auto Edit" controls="" hidden id="editor-video" preload="metadata"></video><p id="editor-video-placeholder">Nhận project từ VietSub để xem trước video.</p>
 <div class="editor-crop-layer" hidden id="editor-crop-layer"><div aria-describedby="editor-crop-help editor-crop-error" aria-disabled="true" aria-label="Vùng che phụ đề trên video nguồn" class="editor-crop-box" id="editor-crop-box" role="group" tabindex="0"><span aria-hidden="true" class="editor-crop-label">Vùng che</span><button aria-label="Đổi góc trên trái vùng che" class="editor-crop-handle nw" data-editor-handle="nw" tabindex="-1" type="button"></button><button aria-label="Đổi góc trên phải vùng che" class="editor-crop-handle ne" data-editor-handle="ne" tabindex="-1" type="button"></button><button aria-label="Đổi góc dưới trái vùng che" class="editor-crop-handle sw" data-editor-handle="sw" tabindex="-1" type="button"></button><button aria-label="Đổi góc dưới phải vùng che" class="editor-crop-handle se" data-editor-handle="se" tabindex="-1" type="button"></button></div></div>
+<div aria-hidden="true" class="editor-live-subtitle" hidden id="editor-live-subtitle"></div>
 </div>
 <p class="field-help" id="editor-video-status" role="status"></p>
+</section>
+<section aria-labelledby="editor-srt-title" class="editor-srt-card handoff-card" hidden id="editor-srt-card">
+<div class="editor-section-heading editor-srt-head">
+<div class="editor-srt-title-wrap"><h3 id="editor-srt-title">Trình sửa phụ đề SRT</h3><span class="editor-srt-count" id="editor-srt-count">0 câu</span></div>
+<div class="editor-srt-head-actions"><span class="editor-save-state" data-dirty="false" id="editor-srt-dirty">Đã đồng bộ SRT</span><button class="btn-ghost" disabled id="editor-srt-add-btn" type="button">+ Thêm dòng</button><button class="btn-ghost" disabled id="editor-srt-restore-btn" type="button">Hoàn tác .bak</button><button class="btn-secondary" disabled id="editor-srt-save-btn" type="button">Lưu SRT</button></div>
+</div>
+<div class="editor-srt-toolbar">
+<div class="editor-srt-find-row"><input aria-label="Tìm trong phụ đề SRT" class="text-input" id="editor-srt-search" placeholder="Tìm kiếm phụ đề…" type="search"/><input aria-label="Thay thế bằng" class="text-input" id="editor-srt-replace" placeholder="Thay thế bằng…" type="text"/><button class="btn-ghost" disabled id="editor-srt-replace-all-btn" type="button">Thay tất cả</button></div>
+<div class="editor-srt-glossary-row"><select aria-label="Chọn bộ từ điển áp dụng cho SRT" class="select-input" id="editor-srt-glossary-select"><option value="default">Mặc định</option></select><button class="btn-ghost" disabled id="editor-srt-apply-glossary-btn" type="button">Áp dụng Từ điển</button></div>
+</div>
+<p aria-live="polite" class="field-help editor-srt-status" id="editor-srt-status" role="status"></p>
+<div aria-label="Danh sách câu phụ đề SRT" class="editor-srt-list" id="editor-srt-list" role="list"></div>
 </section>
 <section aria-labelledby="editor-output-title" class="editor-output handoff-card" hidden id="editor-output"><div class="editor-section-heading"><h3 id="editor-output-title">Kết quả Auto Edit</h3><a class="editor-output-link" hidden id="editor-output-link" rel="noopener" target="_blank">Mở kết quả ↗</a></div><video aria-label="Video đã render" controls="" hidden id="editor-output-video" preload="metadata"></video><audio aria-label="Âm thanh Auto Edit" controls="" hidden id="editor-output-audio" preload="metadata"></audio><p class="field-help" id="editor-output-path"></p><button class="btn-secondary" disabled id="editor-send-publish-btn" type="button">Chuyển sang Đăng đa nền tảng →</button></section>
 </div>
@@ -294,6 +307,9 @@
 <label for="editor-shadow">Bóng chữ<input class="number-input" data-editor-option="shadow" id="editor-shadow" max="10" min="0" step="0.5" type="number" value="1"/></label>
 <label for="editor-back-color">Màu nền chữ<input class="editor-color" data-editor-option="back_color" id="editor-back-color" type="color" value="#000000"/></label>
 <label for="editor-subtitle-position">Vị trí phụ đề<select class="select-input" data-editor-option="subtitle_position" id="editor-subtitle-position"><option value="crop">Theo vùng che</option><option value="bottom">Dưới</option><option value="top">Trên</option></select></label>
+<label class="editor-wide" for="editor-subtitle-animation">Hiệu ứng phụ đề<select class="select-input" data-editor-option="subtitle_animation" id="editor-subtitle-animation"><option value="static">Tĩnh (mặc định)</option><option value="karaoke_highlight">Karaoke · tô màu theo từ</option><option value="word_pop">Word Pop · TikTok / CapCut</option></select></label><div class="pitch-presets editor-wide" role="group" aria-label="Chọn nhanh hiệu ứng phụ đề"><button class="pitch-chip" type="button" data-editor-preset="subtitle_animation" data-preset-value="static" aria-pressed="true">Tĩnh</button><button class="pitch-chip" type="button" data-editor-preset="subtitle_animation" data-preset-value="karaoke_highlight" aria-pressed="false">Karaoke</button><button class="pitch-chip" type="button" data-editor-preset="subtitle_animation" data-preset-value="word_pop" aria-pressed="false">Word Pop</button></div>
+<label for="editor-subtitle-highlight-color">Màu chữ nổi bật<input class="editor-color" data-editor-option="subtitle_highlight_color" id="editor-subtitle-highlight-color" type="color" value="#ffd54a"/></label>
+<label for="editor-subtitle-max-words">Số từ / cụm (Word Pop)<input class="number-input" data-editor-option="subtitle_max_words_per_chunk" id="editor-subtitle-max-words" max="8" min="2" step="1" type="number" value="4"/></label>
 </div></details><details class="editor-option-section" open><summary><span>Banner &amp; logo PNG</span><small>Brand</small></summary><div class="editor-fields">
 <label class="editor-wide" for="editor-banner-text">Nội dung banner (tối đa 200 ký tự)<input class="text-input" data-editor-option="banner_text" id="editor-banner-text" maxlength="200" placeholder="Để trống nếu không dùng banner"/></label>
 <label for="editor-banner-position">Vị trí banner<select class="select-input" data-editor-option="banner_position" id="editor-banner-position"><option value="top">Trên</option><option value="bottom">Dưới</option></select></label>
@@ -480,6 +496,28 @@
                             <label for="setting-translation-preset">Mẫu có sẵn</label>
                             <select id="setting-translation-preset" class="select-input"></select>
                             <button id="apply-translation-preset-btn" class="btn-ghost" type="button">Nạp mẫu</button>
+                        </div>
+                    </div>
+                    <div id="glossary-settings" class="setting-field glossary-settings">
+                        <div class="glossary-head">
+                            <label for="setting-glossary-select">Từ điển đồng bộ thuật ngữ &amp; Xưng hô</label>
+                            <small id="setting-glossary-status" role="status" aria-live="polite"></small>
+                        </div>
+                        <div class="glossary-profile-row">
+                            <select id="setting-glossary-select" class="select-input" aria-label="Chọn bộ từ điển đang hoạt động"><option value="default">Mặc định</option></select>
+                            <button id="setting-glossary-new-btn" class="btn-ghost" type="button">+ Bộ mới</button>
+                            <button id="setting-glossary-delete-btn" class="btn-ghost" type="button" disabled>Xoá bộ</button>
+                        </div>
+                        <label class="glossary-sublabel" for="setting-glossary-name">Tên bộ từ điển<input id="setting-glossary-name" class="text-input" maxlength="80" placeholder="Ví dụ: Tiên Hiệp, Game, Mặc định"></label>
+                        <label class="glossary-sublabel" for="setting-glossary-style">Ghi chú văn phong / xưng hô<textarea id="setting-glossary-style" class="glossary-style-input" rows="2" maxlength="600" placeholder="Ví dụ: xưng hô ta–ngươi, giữ nguyên tên chiêu thức Hán-Việt"></textarea></label>
+                        <div class="glossary-entries-head">
+                            <span>Thuật ngữ cố định (Gốc → Dịch chuẩn · Ghi chú)</span>
+                            <button id="setting-glossary-add-entry-btn" class="btn-ghost" type="button">+ Thêm mục</button>
+                        </div>
+                        <div id="setting-glossary-entries" class="glossary-entries" aria-label="Danh sách thuật ngữ cố định"></div>
+                        <div class="glossary-actions">
+                            <button id="setting-glossary-save-btn" class="btn-secondary" type="button">Lưu bộ từ điển</button>
+                            <small>Bộ đang chọn được tự động bơm vào prompt dịch (API &amp; Gemini) và dùng nhanh trong trình sửa SRT.</small>
                         </div>
                     </div>
                     <div id="notebook-settings" class="provider-settings">

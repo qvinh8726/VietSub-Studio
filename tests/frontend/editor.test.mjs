@@ -738,3 +738,141 @@ test('select labels strip nested option text when reporting form errors', async 
     assert.doesNotMatch(h.elements['editor-form-error'].textContent, /Làm mờ/);
     assert.doesNotMatch(h.elements['editor-pitch-help'].textContent, /Cấu hình cũ/);
 });
+
+test('dynamic subtitle options validate animation mode, highlight color, and integer chunk size', async () => {
+    for (const [field, badValues] of Object.entries({
+        subtitle_animation: ['bounce', '', 123],
+        subtitle_highlight_color: ['gold', '#fff', '#12345678'],
+        subtitle_max_words_per_chunk: [1, 9, 3.5, true, '4'],
+    })) {
+        for (const value of badValues) {
+            assert.ok(helpers.validateOptions({...plain(helpers.defaults), [field]: value}).errors[field], `${field}=${value}`);
+        }
+    }
+    const valid = helpers.validateOptions({
+        ...plain(helpers.defaults),
+        subtitle_animation: 'word_pop',
+        subtitle_highlight_color: '#FFD54A',
+        subtitle_max_words_per_chunk: 5,
+    });
+    assert.deepEqual(plain(valid.errors), {});
+    assert.equal(valid.options.subtitle_animation, 'word_pop');
+    assert.equal(valid.options.subtitle_highlight_color, '#ffd54a');
+    assert.equal(valid.options.subtitle_max_words_per_chunk, 5);
+    assert.deepEqual(plain(helpers.sliceWordsBalanced(['Một', 'hai', 'ba', 'bốn', 'năm'], 4)), [['Một', 'hai', 'ba'], ['bốn', 'năm']]);
+});
+
+test('inline SRT editor supports two-way video sync, live subtitle preview, add/delete guards, glossary apply, and unsaved SRT protection', async () => {
+    const sampleCues = [
+        {index: 1, start_ms: 200, end_ms: 2000, text: 'Xin chào Thanh Vân Tông', raw_text: '青云宗你好'},
+        {index: 2, start_ms: 2200, end_ms: 4500, text: 'Cửu Thiên Kiếm Quyết thật mạnh', raw_text: '九天剑诀很强'},
+    ];
+    let savedPayload = null, restoreCalls = 0, confirmAnswer = false, confirmPrompts = [];
+    const h = harness({handler: (url, opts) => {
+        if (url === '/api/glossaries') return {active_id: 'g1', profiles: [{id: 'default', name: 'Mặc định', entries: []}, {id: 'g1', name: 'Tiên Hiệp', entries: [{source: 'mạnh', target: 'vô song'}]}]};
+        if (url === '/api/editor/projects/job-a/srt' && (!opts?.method || opts.method === 'GET')) {
+            return {job_id: 'job-a', cues: sampleCues, has_raw: true, has_backup: false, locked: false};
+        }
+        if (url === '/api/editor/projects/job-a/srt' && opts.method === 'PUT') {
+            savedPayload = JSON.parse(opts.body);
+            return {job_id: 'job-a', cues: savedPayload.cues, has_raw: true, has_backup: true, locked: false};
+        }
+        if (url === '/api/editor/projects/job-a/srt/apply-glossary' && opts.method === 'POST') {
+            const req = JSON.parse(opts.body);
+            const updated = req.cues.map(c => ({...c, text: c.text.replace('mạnh', 'vô song')}));
+            return {job_id: 'job-a', cues: updated, changed_cues: 1, replacements: 1, glossary_id: 'g1', glossary_name: 'Tiên Hiệp', has_backup: false, saved: false};
+        }
+        if (url === '/api/editor/projects/job-a/srt/restore-backup' && opts.method === 'POST') {
+            restoreCalls++;
+            return {job_id: 'job-a', cues: sampleCues, has_raw: true, has_backup: true, locked: false};
+        }
+        if (url === '/api/editor/jobs' && opts.method === 'POST') return task();
+    }});
+    h.window.confirm = msg => { confirmPrompts.push(msg); return confirmAnswer; };
+    await h.init(); await h.receive();
+
+    // Loaded cues, card visible, glossary populated
+    assert.equal(h.elements['editor-srt-card'].hidden, false);
+    assert.equal(h.editor.state().srtCount, 2);
+    assert.equal(h.editor.state().srtDirty, false);
+    assert.equal(h.elements['editor-srt-list'].children.length, 2);
+
+    // Video timeupdate activates cue #1 & renders Live Subtitle Preview in word_pop mode
+    const video = h.elements['editor-video'];
+    video.hidden = false; video.videoWidth = 1920; video.videoHeight = 1080;
+    video.rect = {left: 0, top: 0, width: 800, height: 450};
+    h.change('editor-subtitle-animation', 'word_pop', 'change');
+    video.currentTime = 1.0;
+    await video.emit('timeupdate').done;
+    assert.equal(h.editor.state().activeCueIndex, 0);
+    assert.equal(h.elements['editor-srt-list'].children[0].dataset.active, 'true');
+    assert.equal(h.elements['editor-live-subtitle'].hidden, false);
+
+    // Clicking seek button on cue #2 jumps video.currentTime to 2.2s and switches active row
+    const row2 = h.elements['editor-srt-list'].children[1];
+    const seekBtn2 = row2.children[0].children[0];
+    await h.elements['editor-srt-list'].emit('click', {target: seekBtn2}).done;
+    approx(video.currentTime, 2.2);
+    assert.equal(h.editor.state().activeCueIndex, 1);
+    assert.equal(h.elements['editor-srt-list'].children[0].dataset.active, undefined);
+    assert.equal(h.elements['editor-srt-list'].children[1].dataset.active, 'true');
+
+    // Add cue inserts a 3rd valid cue and marks srtDirty
+    await h.elements['editor-srt-add-btn'].emit('click').done;
+    assert.equal(h.editor.state().srtCount, 3);
+    assert.equal(h.editor.state().srtDirty, true);
+
+    // Apply glossary modifies cue #2
+    await h.elements['editor-srt-apply-glossary-btn'].emit('click').done;
+    assert.match(h.elements['editor-srt-status'].textContent, /Tiên Hiệp/);
+
+    // Unsaved SRT guard blocks Render when user cancels confirm
+    confirmAnswer = false;
+    await h.elements['editor-render-btn'].emit('click').done;
+    assert.equal(confirmPrompts.length, 1);
+    assert.equal(h.calls.some(call => call.url === '/api/editor/jobs'), false);
+
+    // Unsaved SRT guard saves SRT first then launches Render when user confirms
+    confirmAnswer = true;
+    await h.elements['editor-render-btn'].emit('click').done;
+    assert.ok(savedPayload && savedPayload.cues.length === 3);
+    assert.equal(h.editor.state().srtDirty, false);
+    assert.equal(h.editor.state().srtHasBackup, true);
+    assert.equal(h.calls.some(call => call.url === '/api/editor/jobs'), true);
+
+    // Restore backup works once task completes
+    h.editor.state(); // verify no throw
+    const deleteCue1 = h.elements['editor-srt-list'].children[0].children[0].children[3];
+    // While task is running, SRT buttons are locked
+    assert.equal(h.elements['editor-srt-save-btn'].disabled, true);
+    assert.equal(deleteCue1.disabled, true);
+    assert.equal(restoreCalls, 0);
+});
+
+test('inline SRT editor refuses to delete the last remaining cue and retains srtDirty on 409 save error', async () => {
+    const h = harness({handler: (url, opts) => {
+        if (url === '/api/editor/projects/job-a/srt' && (!opts?.method || opts.method === 'GET')) {
+            return {job_id: 'job-a', cues: [{index: 1, start_ms: 0, end_ms: 1500, text: 'Câu duy nhất', raw_text: ''}], has_raw: false, has_backup: false, locked: false};
+        }
+        if (url === '/api/editor/projects/job-a/srt' && opts.method === 'PUT') {
+            return {response: {ok: false, status: 409, json: async () => ({error: 'Dự án đang bị khoá'})}};
+        }
+    }});
+    await h.init(); await h.receive();
+    assert.equal(h.editor.state().srtCount, 1);
+    const delBtn = h.elements['editor-srt-list'].children[0].children[0].children[3];
+    assert.equal(delBtn.disabled, true, 'Delete button disabled when only 1 cue remains');
+    await h.elements['editor-srt-list'].emit('click', {target: delBtn}).done;
+    assert.equal(h.editor.state().srtCount, 1);
+    assert.match(h.elements['editor-srt-status'].textContent, /cuối cùng/);
+
+    // Edit text and trigger 409 on PUT
+    const textarea = h.elements['editor-srt-list'].children[0].children[1];
+    textarea.value = 'Câu đã sửa';
+    await h.elements['editor-srt-list'].emit('input', {target: textarea}).done;
+    assert.equal(h.editor.state().srtDirty, true);
+    await h.elements['editor-srt-save-btn'].emit('click').done;
+    assert.equal(h.editor.state().srtDirty, true, '409 error must preserve unsaved SRT edits');
+    assert.match(h.elements['editor-srt-status'].textContent, /bị khoá/);
+});
+

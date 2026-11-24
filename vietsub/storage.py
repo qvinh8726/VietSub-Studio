@@ -50,6 +50,9 @@ def candidates(job, keep_srt=True, videos_only=False):
             value = result.get(key)
             if isinstance(value, str) and value.lower().endswith(".srt"):
                 paths.add(canonical(value))
+                backup = canonical(value + ".bak")
+                if safe_regular(backup):
+                    paths.add(backup)
     # Temp/cache siblings can remain after a crashed download/translation. Never
     # walk an external input folder or remove unrelated files in a project.
     anchors = set(video_paths(job))

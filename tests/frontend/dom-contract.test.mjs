@@ -176,6 +176,7 @@ test('Auto Edit and Publish Hub retain expanded phase1 facts and add real explic
     const optionNames = nodes.filter(node => node.attrs['data-editor-option']).map(node => node.attrs['data-editor-option']);
     assert.deepEqual([...optionNames].sort(), ['mask_mode', 'blur_strength', 'padding_px', 'solid_color', 'solid_opacity',
         'subtitle_enabled', 'subtitle_preset', 'font', 'font_size', 'text_color', 'outline', 'shadow', 'back_color', 'subtitle_position',
+        'subtitle_animation', 'subtitle_highlight_color', 'subtitle_max_words_per_chunk',
         'banner_text', 'banner_position', 'watermark_enabled', 'watermark_path', 'watermark_opacity', 'watermark_corner', 'reframe',
         'output_height', 'encoder', 'audio_mode', 'audio_format', 'bgm_volume', 'tts_enabled', 'tts_provider', 'tts_voice', 'tts_speed',
         'tts_pitch', 'tts_fallback', 'speed', 'change_audio_pitch', 'pitch_semitones', 'ducking_enabled'].sort());

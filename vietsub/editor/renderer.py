@@ -223,6 +223,7 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
     stem = Path(source).stem
     warnings = []
     tts_path = None
+    tts_cue_timings = {}
     final_paths = []
     from vietsub import manifest
     manifest._safe_path(str(work))
@@ -305,6 +306,11 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
                                                provider=options["tts_provider"], speed=options["tts_speed"],
                                                pitch=options["tts_pitch"], allow_fallback=options["tts_fallback"])
             warnings += generated.get("warnings", [])
+            tts_cue_timings = {
+                cue["index"]: cue["duration_ms"]
+                for cue in (generated.get("cues") or [])
+                if isinstance(cue, dict) and not cue.get("skipped") and cue.get("duration_ms")
+            }
             if action == "tts":
                 processed = work / "voice-edited.wav"
                 _audio_file(tts_path, processed, options, source_duration, duration, ffmpeg=ffmpeg,
@@ -338,7 +344,8 @@ def execute(task_id, project, options, action, *, ffmpeg, ffprobe, fonts_dir, ca
         ass = None
         if options["subtitle_enabled"] or options["banner_text"]:
             # Use a local relative name in filtergraph to avoid Windows path parsing.
-            ass = write_ass(srt, str(work / "subtitles.ass"), metadata["width"], metadata["height"], options)
+            ass = write_ass(srt, str(work / "subtitles.ass"), metadata["width"], metadata["height"], options,
+                            cue_timings=tts_cue_timings or None)
         # FFmpeg autorotation handles the full display matrix, including selfie
         # reflections; do not reduce that matrix to a scalar angle/manual flip.
         inputs = ["-i", source]

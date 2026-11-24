@@ -14,9 +14,10 @@ import zlib
 
 from flask import Blueprint, jsonify, request, send_file
 
-from vietsub import manifest, redaction, storage
+from vietsub import glossary as translation_glossary
+from vietsub import manifest, redaction, srt_utils, storage
 from .jobs import EditorJobs, TERMINAL
-from .options import DEFAULTS, FONTS, PRESETS, normalize
+from .options import DEFAULTS, FONTS, PRESETS, SUBTITLE_ANIMATIONS, normalize
 from . import renderer, runtime
 
 
@@ -201,6 +202,49 @@ class EditorAPI:
             raise ValueError("JSON Auto Edit không hợp lệ hoặc có trường không hỗ trợ.")
         return data
 
+    def _srt_paths(self, result, value):
+        project_dir = Path(result["project_dir"]).resolve()
+        translated_srt = value["assets"].get("translated_srt") or ""
+        if not translated_srt or not storage.safe_regular(translated_srt):
+            raise RuntimeError("File phụ đề Việt không còn khả dụng.")
+        try:
+            Path(translated_srt).resolve().relative_to(project_dir)
+        except ValueError as error:
+            raise RuntimeError("File phụ đề Việt nằm ngoài thư mục dự án.") from error
+        raw_srt = value["assets"].get("raw_srt") or ""
+        if raw_srt:
+            try:
+                if not storage.safe_regular(raw_srt):
+                    raw_srt = ""
+                else:
+                    Path(raw_srt).resolve().relative_to(project_dir)
+            except ValueError:
+                raw_srt = ""
+        return translated_srt, raw_srt
+
+    def _srt_lock_reason(self, job_id, translated_srt):
+        if self.jobs.active(job_id):
+            return "Không thể sửa phụ đề trong khi Auto Edit đang chạy tác vụ cho dự án này."
+        if job_id in {self.app.current_job_id, self.app.prefetch_job_id}:
+            return "Không thể sửa phụ đề trong khi VietSub đang xử lý dự án này."
+        uploader = getattr(self.app, "uploader_api", None)
+        if uploader is not None:
+            protected = {storage.canonical(path) for path in uploader.protected_paths() if path}
+            if storage.canonical(translated_srt) in protected:
+                return "Không thể sửa phụ đề trong khi Publish Hub đang sử dụng file SRT này."
+        return ""
+
+    def _attach_raw(self, cues, raw_srt):
+        raw_cues = []
+        if raw_srt:
+            try:
+                raw_cues = srt_utils.read_srt_file(raw_srt, allow_empty=True)
+            except (OSError, ValueError):
+                raw_cues = []
+        matched = srt_utils.match_raw_cues(cues, raw_cues)
+        enriched = [{**cue, "raw_text": raw_text} for cue, raw_text in zip(cues, matched)]
+        return enriched, bool(raw_cues)
+
     def _routes(self):
         bp = self.blueprint
 
@@ -231,7 +275,8 @@ class EditorAPI:
                             "capcut": {"compatibility_enabled": config.get("editor_capcut_compat", True) is True,
                                        "available": config.get("editor_capcut_compat", True) is True, "service_verified": False,
                                        "detail": "CapCut common-task tương thích nội bộ; đã smoke-test câu mẫu 2026-11-19, không bảo đảm mọi giọng/tài khoản/region. Chỉ gửi text khi bạn yêu cầu; Edge fallback là tùy chọn."},
-                            "presets": list(PRESETS), "fonts": list(FONTS)})
+                            "presets": list(PRESETS), "fonts": list(FONTS),
+                            "subtitle_animations": list(SUBTITLE_ANIMATIONS)})
 
         @bp.post("/api/editor/runtime")
         def configure_runtime():
@@ -279,6 +324,119 @@ class EditorAPI:
                                 "options": self._options(value),
                                 "last_render": self._last_render(job_id, result, value),
                                 "active_task": self._signed(task) if task else None})
+
+        @bp.route("/api/editor/projects/<job_id>/srt", methods=["GET", "PUT"])
+        def project_srt(job_id):
+            if request.method == "PUT":
+                data = self._body(("cues",), ("cues",))
+            with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
+                _, result, value = self._project(job_id)
+                translated_srt, raw_srt = self._srt_paths(result, value)
+                lock_reason = self._srt_lock_reason(job_id, translated_srt)
+                if request.method == "GET":
+                    cues = srt_utils.read_srt_file(translated_srt)
+                    enriched, has_raw = self._attach_raw(cues, raw_srt)
+                    has_backup = storage.safe_regular(srt_utils.backup_path_for(translated_srt))
+                    return jsonify({
+                        "job_id": job_id,
+                        "cues": enriched,
+                        "has_raw": has_raw,
+                        "has_backup": has_backup,
+                        "locked": bool(lock_reason),
+                        "lock_reason": lock_reason,
+                        "srt_manually_edited": value.get("srt_manually_edited") is True,
+                    })
+                if lock_reason:
+                    raise RuntimeError(lock_reason)
+                saved = srt_utils.write_srt_atomic(translated_srt, data["cues"], backup=True)
+                now = int(time.time())
+                value["srt_manually_edited"] = True
+                value["srt_updated_at"] = now
+                value["updated_at"] = now
+                manifest.write_atomic(manifest.path_for(result), value)
+                enriched, has_raw = self._attach_raw(saved, raw_srt)
+                has_backup = storage.safe_regular(srt_utils.backup_path_for(translated_srt))
+                self.app.log_to_app(f"[Auto Edit] Đã lưu phụ đề SRT thủ công ({len(saved)} câu) cho {value['project_name']}.")
+                return jsonify({
+                    "job_id": job_id,
+                    "cues": enriched,
+                    "has_raw": has_raw,
+                    "has_backup": has_backup,
+                    "locked": False,
+                    "lock_reason": "",
+                    "srt_manually_edited": True,
+                })
+
+        @bp.post("/api/editor/projects/<job_id>/srt/apply-glossary")
+        def apply_glossary_srt(job_id):
+            data = self._body(("glossary_id", "cues", "save"))
+            save = data.get("save", False)
+            if type(save) is not bool:
+                raise ValueError("Tham số save phải là boolean.")
+            glossary_id = data.get("glossary_id")
+            if glossary_id:
+                profile = translation_glossary.get_glossary(self.app.CONFIG_DIR, glossary_id)
+            else:
+                profile = translation_glossary.get_active_glossary(self.app.CONFIG_DIR)
+            with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
+                _, result, value = self._project(job_id)
+                translated_srt, raw_srt = self._srt_paths(result, value)
+                if "cues" in data and data["cues"] is not None:
+                    base_cues = srt_utils.validate_cues(data["cues"])
+                else:
+                    base_cues = srt_utils.read_srt_file(translated_srt)
+                updated_cues, stats = translation_glossary.apply_glossary_to_cues(base_cues, profile)
+                if save:
+                    lock_reason = self._srt_lock_reason(job_id, translated_srt)
+                    if lock_reason:
+                        raise RuntimeError(lock_reason)
+                    updated_cues = srt_utils.write_srt_atomic(translated_srt, updated_cues, backup=True)
+                    now = int(time.time())
+                    value["srt_manually_edited"] = True
+                    value["srt_updated_at"] = now
+                    value["updated_at"] = now
+                    manifest.write_atomic(manifest.path_for(result), value)
+                enriched, has_raw = self._attach_raw(updated_cues, raw_srt)
+                has_backup = storage.safe_regular(srt_utils.backup_path_for(translated_srt))
+                return jsonify({
+                    "job_id": job_id,
+                    "cues": enriched,
+                    "has_raw": has_raw,
+                    "has_backup": has_backup,
+                    "saved": save,
+                    **stats,
+                })
+
+        @bp.post("/api/editor/projects/<job_id>/srt/restore-backup")
+        def restore_srt_backup_route(job_id):
+            self._body(())
+            with self.app.operation_admission_lock, self.app.queue_state_lock, manifest.LOCK:
+                _, result, value = self._project(job_id)
+                translated_srt, raw_srt = self._srt_paths(result, value)
+                lock_reason = self._srt_lock_reason(job_id, translated_srt)
+                if lock_reason:
+                    raise RuntimeError(lock_reason)
+                try:
+                    restored = srt_utils.restore_srt_backup(translated_srt)
+                except FileNotFoundError as error:
+                    raise KeyError(str(error)) from error
+                now = int(time.time())
+                value["srt_manually_edited"] = True
+                value["srt_updated_at"] = now
+                value["updated_at"] = now
+                manifest.write_atomic(manifest.path_for(result), value)
+                enriched, has_raw = self._attach_raw(restored, raw_srt)
+                has_backup = storage.safe_regular(srt_utils.backup_path_for(translated_srt))
+                self.app.log_to_app(f"[Auto Edit] Đã hoàn tác phụ đề SRT từ bản sao lưu .bak cho {value['project_name']}.")
+                return jsonify({
+                    "job_id": job_id,
+                    "cues": enriched,
+                    "has_raw": has_raw,
+                    "has_backup": has_backup,
+                    "locked": False,
+                    "lock_reason": "",
+                    "srt_manually_edited": True,
+                })
 
         @bp.post("/api/editor/projects/<job_id>/watermark")
         def upload_watermark(job_id):

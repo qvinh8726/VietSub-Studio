@@ -24,7 +24,10 @@ _DEFAULTS = {
     "padding_px": 8, "solid_color": "#111318", "solid_opacity": 0.75,
     "subtitle_enabled": True, "subtitle_preset": "social", "font": "Be Vietnam Pro",
     "font_size": 48, "text_color": "#ffffff", "outline": 2, "shadow": 1,
-    "back_color": "#000000", "subtitle_position": "bottom", "banner_text": "",
+    "back_color": "#000000", "subtitle_position": "bottom",
+    "subtitle_animation": "static", "subtitle_highlight_color": "#ffd54a",
+    "subtitle_max_words_per_chunk": 4,
+    "banner_text": "",
     "banner_position": "top", "watermark_opacity": 0.7,
     "watermark_corner": "top_right", "reframe": "original", "output_height": 1920,
     "speed": 1.0,
@@ -55,6 +58,7 @@ def _validated_options(options):
         "mask_mode": ("none", "boxblur", "delogo", "solid_bar"),
         "subtitle_preset": ("standard", "anime", "social"), "font": _FONTS,
         "subtitle_position": ("crop", "bottom", "top"),
+        "subtitle_animation": ("static", "karaoke_highlight", "word_pop"),
         "banner_position": ("top", "bottom"),
         "watermark_corner": ("top_right", "top_left", "bottom_right", "bottom_left"),
         "reframe": ("original", "vertical"),
@@ -64,7 +68,7 @@ def _validated_options(options):
             raise ValueError(f"Unsupported {key}")
     if not isinstance(opts["subtitle_enabled"], bool):
         raise ValueError("subtitle_enabled must be a boolean")
-    for key in ("solid_color", "text_color", "back_color"):
+    for key in ("solid_color", "text_color", "back_color", "subtitle_highlight_color"):
         if not isinstance(opts[key], str) or not _COLOR.fullmatch(opts[key]):
             raise ValueError(f"{key} must be a #RRGGBB color")
     for key, minimum, maximum, integer in (
@@ -72,6 +76,7 @@ def _validated_options(options):
         ("solid_opacity", 0, 1, False), ("watermark_opacity", 0, 1, False),
         ("font_size", 4, 512, False), ("outline", 0, 32, False),
         ("shadow", 0, 32, False), ("output_height", 32, 32768, True),
+        ("subtitle_max_words_per_chunk", 2, 8, True),
         ("speed", .5, 2, False),
     ):
         opts[key] = _number(opts[key], key, minimum, maximum, integer=integer)

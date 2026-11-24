@@ -30,7 +30,9 @@ from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
 from vietsub import storage, publish, redaction
+from vietsub import glossary as translation_glossary
 from vietsub import manifest as project_manifest
+from vietsub import srt_utils
 from vietsub import updater as app_updater
 from vietsub.sources import browser as browser_source
 from vietsub.sources import browser_capture
@@ -4029,10 +4031,12 @@ def build_translation_task_rules(source_lang="ch"):
     )
 
 
-def build_translation_prompt(srt_content, translation_instructions=None, source_lang="ch"):
+def build_translation_prompt(srt_content, translation_instructions=None, source_lang="ch", glossary=None):
     instructions = validate_translation_instructions(translation_instructions)
+    glossary_block = translation_glossary.format_prompt_block(glossary, source_text=srt_content)
+    prefix = f"{instructions}\n\n{glossary_block}" if glossary_block else instructions
     return (
-        instructions
+        prefix
         + "\n\n"
         + build_translation_task_rules(source_lang)
         + "```srt\n"
@@ -4070,6 +4074,8 @@ def get_translation_runtime_config(config=None, require_ready=False):
     translation_instructions = validate_translation_instructions(
         config.get("translation_instructions")
     )
+    active_glossary = translation_glossary.get_active_glossary(CONFIG_DIR)
+    glossary_hash = translation_glossary.fingerprint(active_glossary)
     if provider == "notebook":
         notebook_url = validate_notebook_url(
             config.get("notebook_url", ""),
@@ -4080,6 +4086,8 @@ def get_translation_runtime_config(config=None, require_ready=False):
             "label": "Gemini Notebook",
             "notebook_url": notebook_url,
             "translation_instructions": translation_instructions,
+            "glossary": active_glossary,
+            "glossary_hash": glossary_hash,
         }
 
     base_url = validate_translation_api_base_url(
@@ -4102,6 +4110,8 @@ def get_translation_runtime_config(config=None, require_ready=False):
         "api_key": api_key,
         "requires_key": requires_key,
         "translation_instructions": translation_instructions,
+        "glossary": active_glossary,
+        "glossary_hash": glossary_hash,
     }
 
 
@@ -4671,7 +4681,7 @@ def normalize_translated_srt(source_srt, translated_srt, source_lang=None):
     return validate_translated_srt(source_srt, rebuilt, source_lang=source_lang)
 
 
-def validate_project_result(result):
+def validate_project_result(result, *, allow_manual_srt=True):
     if not isinstance(result, dict):
         raise ValueError("Dữ liệu bộ file kết quả không hợp lệ.")
 
@@ -4690,6 +4700,21 @@ def validate_project_result(result):
         path = str(result.get(key) or "")
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
             raise FileNotFoundError(f"Không tìm thấy {label} hoàn chỉnh: {path or '(trống)'}")
+
+    if allow_manual_srt:
+        manually_edited = False
+        try:
+            manifest_path = project_manifest.path_for(result)
+            if storage.safe_regular(manifest_path):
+                manifest_data = project_manifest._read_json(manifest_path)
+                manually_edited = manifest_data.get("srt_manually_edited") is True
+        except (OSError, ValueError, TypeError):
+            manually_edited = False
+        if manually_edited:
+            # Manually edited SRT may add/delete/split/merge cues or retain glossary terms;
+            # validate its standalone SRT structure strictly instead of enforcing raw parity.
+            srt_utils.read_srt_file(result["translated_srt"])
+            return True
 
     with open(result["raw_srt"], "r", encoding="utf-8-sig") as source_file:
         source_srt = source_file.read().strip()
@@ -4798,10 +4823,16 @@ def translate_gemini_chunk(
     chunk_count,
     translation_instructions=None,
     source_lang="ch",
+    glossary=None,
 ):
     previous_response = find_last_response(gemini_page, response_selectors)
     previous_response_text = previous_response.inner_text() if previous_response else ""
-    prompt = build_translation_prompt(source_srt, translation_instructions, source_lang=source_lang)
+    prompt = build_translation_prompt(
+        source_srt,
+        translation_instructions,
+        source_lang=source_lang,
+        glossary=glossary,
+    )
     log_to_app(
         f"Nạp đoạn dịch {chunk_index}/{chunk_count} ({len(source_srt):,} ký tự)..."
     )
@@ -4913,6 +4944,7 @@ def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
                 source_srt,
                 runtime_config.get("translation_instructions"),
                 source_lang=source_lang,
+                glossary=runtime_config.get("glossary"),
             ),
         },
     ]
@@ -5038,10 +5070,17 @@ def translation_cache_fingerprint(runtime_config):
     """Separate resumable chunks whenever the translation configuration changes."""
     source_lang = runtime_config.get("source_lang") or "ch"
     instructions = validate_translation_instructions(runtime_config.get("translation_instructions"))
+    glossary = runtime_config.get("glossary")
+    glossary_hash = str(runtime_config.get("glossary_hash") or translation_glossary.fingerprint(glossary))
     # Hash the exact prompt templates so any wording change starts fresh parts.
     prompt_template = (
         build_translation_system_prompt(source_lang)
-        + build_translation_prompt("{SRT}", instructions, source_lang=source_lang)
+        + build_translation_prompt(
+            "{SRT}",
+            instructions,
+            source_lang=source_lang,
+            glossary=glossary if glossary_hash else None,
+        )
     )
     identity = {
         "provider": str(runtime_config.get("provider") or ""),
@@ -5052,6 +5091,8 @@ def translation_cache_fingerprint(runtime_config):
         "prompt_template": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest(),
         "translation_instructions": instructions,
     }
+    if glossary_hash:
+        identity["glossary_hash"] = glossary_hash
     encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:12]
 
@@ -5138,6 +5179,7 @@ def translate_srt_via_gemini_edge(
     output_srt=None,
     translation_instructions=None,
     source_lang="ch",
+    glossary=None,
 ):
     check_cancel_requested()
     log_to_app("Đang đọc nội dung phụ đề thô...")
@@ -5232,6 +5274,7 @@ def translate_srt_via_gemini_edge(
                         len(translation_chunks),
                         translation_instructions,
                         source_lang=source_lang,
+                        glossary=glossary,
                     )
                 )
             except RuntimeError as error:
@@ -7182,12 +7225,17 @@ def run_workflow_thread(
 
         update_progress(step="translate")
         if translation_config["provider"] == "notebook":
+            gemini_kwargs = {
+                "output_srt": project["translated_srt"],
+                "translation_instructions": translation_config["translation_instructions"],
+                "source_lang": ocr_lang,
+            }
+            if translation_config.get("glossary_hash"):
+                gemini_kwargs["glossary"] = translation_config.get("glossary")
             translated_srt = translate_srt_via_gemini_edge(
                 raw_srt,
                 notebook_url,
-                output_srt=project["translated_srt"],
-                translation_instructions=translation_config["translation_instructions"],
-                source_lang=ocr_lang,
+                **gemini_kwargs,
             )
         else:
             translated_srt = translate_srt_via_api(
@@ -7199,10 +7247,10 @@ def run_workflow_thread(
         update_progress(result={"translated_srt": translated_srt})
         project["raw_srt"] = raw_srt
         project["translated_srt"] = translated_srt
-        validate_project_result(project)
+        validate_project_result(project, allow_manual_srt=False)
         project = finalize_project_assets(project, video_id)
         update_progress(result=project)
-        validate_project_result(project)
+        validate_project_result(project, allow_manual_srt=False)
         if config.get("generate_publish_metadata") is True:
             generate_publish_pack(project, translation_config)
         write_project_manifest(
@@ -8194,6 +8242,84 @@ def handle_settings():
             "download_cache_dir": get_download_cache_dir(config),
             "ytdlp_version": ytdlp_source.ytdlp_version(),
         })
+
+
+@app.route('/api/glossaries', methods=['GET', 'POST'])
+def handle_glossaries():
+    if request.method == 'GET':
+        return jsonify(translation_glossary.list_glossaries(CONFIG_DIR))
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) - {"name", "style_note", "entries", "activate"} or "name" not in data:
+        return api_error("JSON tạo bộ từ điển không hợp lệ (cần name; tuỳ chọn style_note, entries, activate).", 400)
+    activate = data.get("activate", False)
+    if type(activate) is not bool:
+        return api_error("Trường activate phải là boolean.", 400)
+    try:
+        profile = translation_glossary.create_glossary(
+            CONFIG_DIR,
+            name=data["name"],
+            style_note=data.get("style_note", ""),
+            entries=data.get("entries", []),
+        )
+        if activate:
+            store = translation_glossary.set_active_glossary(CONFIG_DIR, profile["id"])
+        else:
+            store = translation_glossary.list_glossaries(CONFIG_DIR)
+        return jsonify({"profile": profile, **store}), 201
+    except ValueError as error:
+        return api_error(error, 400)
+    except OSError as error:
+        return api_error(f"Không thể lưu từ điển: {error}", 503)
+
+
+@app.route('/api/glossaries/active', methods=['POST'])
+def set_active_glossary_route():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) != {"active_id"}:
+        return api_error("JSON cần chứa đúng trường active_id.", 400)
+    try:
+        store = translation_glossary.set_active_glossary(CONFIG_DIR, data["active_id"])
+        return jsonify(store)
+    except KeyError as error:
+        return api_error(error.args[0] if error.args else error, 404)
+    except ValueError as error:
+        return api_error(error, 400)
+    except OSError as error:
+        return api_error(f"Không thể lưu từ điển đang chọn: {error}", 503)
+
+
+@app.route('/api/glossaries/<glossary_id>', methods=['PUT', 'DELETE'])
+def handle_glossary_item(glossary_id):
+    if request.method == 'DELETE':
+        try:
+            store = translation_glossary.delete_glossary(CONFIG_DIR, glossary_id)
+            return jsonify(store)
+        except KeyError as error:
+            return api_error(error.args[0] if error.args else error, 404)
+        except ValueError as error:
+            return api_error(error, 400)
+        except OSError as error:
+            return api_error(f"Không thể xoá bộ từ điển: {error}", 503)
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data or set(data) - {"name", "style_note", "entries"}:
+        return api_error("JSON cập nhật từ điển không hợp lệ (chỉ gồm name, style_note, entries).", 400)
+    try:
+        profile = translation_glossary.update_glossary(
+            CONFIG_DIR,
+            glossary_id,
+            name=data.get("name"),
+            style_note=data.get("style_note"),
+            entries=data.get("entries"),
+        )
+        store = translation_glossary.list_glossaries(CONFIG_DIR)
+        return jsonify({"profile": profile, **store})
+    except KeyError as error:
+        return api_error(error.args[0] if error.args else error, 404)
+    except ValueError as error:
+        return api_error(error, 400)
+    except OSError as error:
+        return api_error(f"Không thể cập nhật từ điển: {error}", 503)
 
 
 def get_source_session_status():

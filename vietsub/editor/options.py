@@ -7,12 +7,14 @@ from vietsub.manifest import crop_box
 
 FONTS = ("Be Vietnam Pro", "Noto Sans SC", "JetBrains Mono")
 PRESETS = ("standard", "anime", "social")
+SUBTITLE_ANIMATIONS = ("static", "karaoke_highlight", "word_pop")
 DEFAULTS = {
     "mask_mode": "boxblur", "crop_box": None, "blur_strength": 8, "padding_px": 8,
     "solid_color": "#111318", "solid_opacity": .75,
     "subtitle_enabled": True, "subtitle_preset": "social", "font": "Be Vietnam Pro",
     "font_size": 48, "text_color": "#ffffff", "outline": 2, "shadow": 1,
     "back_color": "#000000", "subtitle_position": "crop",
+    "subtitle_animation": "static", "subtitle_highlight_color": "#ffd54a", "subtitle_max_words_per_chunk": 4,
     "banner_text": "", "banner_position": "top", "watermark_enabled": False,
     "watermark_path": "", "watermark_opacity": .7, "watermark_corner": "top_right",
     "reframe": "original", "output_height": 1280, "encoder": "auto",
@@ -24,6 +26,7 @@ DEFAULTS = {
 CHOICES = {
     "mask_mode": ("none", "boxblur", "delogo", "solid_bar"),
     "subtitle_preset": PRESETS, "font": FONTS, "subtitle_position": ("crop", "bottom", "top"),
+    "subtitle_animation": SUBTITLE_ANIMATIONS,
     "banner_position": ("top", "bottom"),
     "watermark_corner": ("top_right", "top_left", "bottom_right", "bottom_left"),
     "reframe": ("original", "vertical"), "encoder": ("auto", "libx264", "h264_nvenc"),
@@ -84,7 +87,9 @@ def normalize(value=None, *, inherited_crop=None, base=None):
             raise ValueError(f"{key} phải là boolean.")
     if type(result["output_height"]) is not int or result["output_height"] not in (720, 1280, 1920):
         raise ValueError("Chiều cao khung dọc phải là 720, 1280 hoặc 1920.")
-    for key in ("solid_color", "text_color", "back_color"):
+    if type(result["subtitle_max_words_per_chunk"]) is not int or not 2 <= result["subtitle_max_words_per_chunk"] <= 8:
+        raise ValueError("subtitle_max_words_per_chunk phải là số nguyên từ 2 đến 8.")
+    for key in ("solid_color", "text_color", "back_color", "subtitle_highlight_color"):
         if not isinstance(result[key], str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", result[key]):
             raise ValueError(f"{key} phải là màu #RRGGBB.")
     for key, limit in (("banner_text", 200), ("tts_voice", 200), ("watermark_path", 2048)):

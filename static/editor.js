@@ -9,6 +9,7 @@
         mask_mode: 'boxblur', crop_box: null, blur_strength: 8, padding_px: 8, solid_color: '#111318', solid_opacity: .75,
         subtitle_enabled: true, subtitle_preset: 'standard', font: 'Be Vietnam Pro', font_size: 48,
         text_color: '#ffffff', outline: 2, shadow: 1, back_color: '#000000', subtitle_position: 'crop',
+        subtitle_animation: 'static', subtitle_highlight_color: '#ffd54a', subtitle_max_words_per_chunk: 4,
         banner_text: '', banner_position: 'top', watermark_enabled: false, watermark_path: '', watermark_opacity: .7,
         watermark_corner: 'top_right', reframe: 'original', output_height: 1280, encoder: 'auto',
         audio_mode: 'original', audio_format: 'wav', bgm_volume: .35, tts_enabled: false, ducking_enabled: true,
@@ -18,15 +19,16 @@
     const choices = {
         mask_mode: ['none', 'boxblur', 'delogo', 'solid_bar'], subtitle_preset: ['standard', 'anime', 'social'],
         font: ['Be Vietnam Pro', 'Noto Sans SC', 'JetBrains Mono'], subtitle_position: ['crop', 'bottom', 'top'],
+        subtitle_animation: ['static', 'karaoke_highlight', 'word_pop'],
         banner_position: ['top', 'bottom'], watermark_corner: ['top_right', 'top_left', 'bottom_right', 'bottom_left'],
         reframe: ['original', 'vertical'], output_height: [720, 1280, 1920], encoder: ['auto', 'libx264', 'h264_nvenc'],
         audio_mode: ['original', 'mute', 'instrumental'], audio_format: ['wav', 'mp3'], tts_provider: ['capcut_internal', 'edge_tts'],
     };
     const ranges = {blur_strength: [1, 40], padding_px: [0, 100], solid_opacity: [0, 1], font_size: [12, 120],
-        outline: [0, 10], shadow: [0, 10], watermark_opacity: [0, 1], bgm_volume: [0, 2], tts_speed: [.5, 2], tts_pitch: [-12, 12],
+        outline: [0, 10], shadow: [0, 10], subtitle_max_words_per_chunk: [2, 8], watermark_opacity: [0, 1], bgm_volume: [0, 2], tts_speed: [.5, 2], tts_pitch: [-12, 12],
         speed: [.5, 2], pitch_semitones: [-12, 12]};
     const booleans = ['subtitle_enabled', 'watermark_enabled', 'tts_enabled', 'tts_fallback', 'change_audio_pitch', 'ducking_enabled'];
-    const colors = ['solid_color', 'text_color', 'back_color'];
+    const colors = ['solid_color', 'text_color', 'back_color', 'subtitle_highlight_color'];
     const cropFields = ['x', 'y', 'width', 'height'];
     const cropDraftError = 'X + rộng và Y + cao không được vượt 100%; rộng / cao phải lớn hơn 0.';
     const draftStorageKey = 'vietsub.editor.drafts.v1', maxStoredDrafts = 10, maxDraftStorageLength = 262144;
@@ -40,6 +42,7 @@
     let initialized = false, pendingSnapshot = null, current = null, capabilities = null;
     let optionControls = [], controlByKey = {}, capabilitySequence = 0, voiceSequence = 0;
     let pollTimer = 0, pollGeneration = 0, drag = null, observer = null, renderedOutputKey = '';
+    let editorGlossaries = [{id: 'default', name: 'Mặc định'}], editorActiveGlossaryId = 'default', editorGlossariesLoaded = false;
 
     function validCrop(box) {
         return Boolean(box && typeof box === 'object' && !Array.isArray(box) && cropFields.every(key => finite(box[key])) &&
@@ -62,6 +65,9 @@
         for (const [key, values] of Object.entries(choices)) if (!values.includes(options[key])) errors[key] = 'Lựa chọn không hợp lệ.';
         for (const [key, [min, max]] of Object.entries(ranges)) {
             if (!finite(options[key]) || options[key] < min || options[key] > max) errors[key] = `Nhập số từ ${min} đến ${max}.`;
+        }
+        if (!errors.subtitle_max_words_per_chunk && !Number.isInteger(options.subtitle_max_words_per_chunk)) {
+            errors.subtitle_max_words_per_chunk = 'Nhập số nguyên từ 2 đến 8.';
         }
         for (const key of booleans) if (typeof options[key] !== 'boolean') errors[key] = 'Giá trị bật / tắt không hợp lệ.';
         for (const key of colors) {
@@ -156,8 +162,61 @@
     function beforeUnload(event) {
         const drafts = [...records.values()].filter(record => record.dirty || record.recoveryRequired);
         for (const record of drafts) persistDraft(record);
-        if (!drafts.length) return;
+        const unsavedSrt = [...records.values()].some(record => record.srtDirty);
+        if (!drafts.length && !unsavedSrt) return;
         event.preventDefault(); event.returnValue = '';
+    }
+    function formatSrtTimestamp(ms) {
+        const safe = Math.max(0, Math.min(86400000, Math.round(finite(ms) ? ms : 0)));
+        const hours = Math.floor(safe / 3600000);
+        const minutes = Math.floor(safe / 60000) % 60;
+        const seconds = Math.floor(safe / 1000) % 60;
+        const millis = safe % 1000;
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`;
+    }
+    function parseSrtTimestamp(value) {
+        if (typeof value !== 'string') return null;
+        const match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[,.](\d{3})$/.exec(value.trim());
+        if (!match) return null;
+        const ms = ((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * 1000 + Number(match[4]);
+        return ms <= 86400000 ? ms : null;
+    }
+    function findActiveCueIndex(cues, ms) {
+        if (!Array.isArray(cues) || !cues.length || !finite(ms) || ms < 0) return -1;
+        let lo = 0, hi = cues.length - 1, candidate = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (cues[mid].start_ms <= ms) { candidate = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        for (let i = candidate; i >= 0; i--) {
+            if (ms >= cues[i].start_ms && ms < cues[i].end_ms) return i;
+            if (ms - cues[i].start_ms > 60000) break;
+        }
+        return -1;
+    }
+    function sliceWordsBalanced(words, maxWords) {
+        const limit = clamp(Number.isInteger(maxWords) ? maxWords : 4, 2, 8);
+        if (!words.length) return [];
+        const chunks = [];
+        let index = 0;
+        while (index < words.length) {
+            const remaining = words.length - index;
+            if (remaining === limit + 1 && limit >= 3) {
+                const split = Math.ceil(remaining / 2);
+                chunks.push(words.slice(index, index + split));
+                chunks.push(words.slice(index + split));
+                break;
+            }
+            chunks.push(words.slice(index, index + limit));
+            index += limit;
+        }
+        return chunks;
+    }
+    function wordWeight(word) {
+        const letters = (word.match(/[0-9A-Za-z\u00C0-\u024F\u1E00-\u1EFF]/g) || []).length;
+        const pause = /[.!?…]$/.test(word) ? 3.5 : /[,;:]$/.test(word) ? 1.8 : 0;
+        return Math.max(1.5, letters) + pause;
     }
     // CSS object-fit: contain leaves letterboxing. Overlay coordinates are relative to this content rect, never the element box.
     function containRect(width, height, sourceWidth, sourceHeight) {
@@ -299,6 +358,7 @@
         $('editor-action-help').textContent = reason;
         $('editor-render-btn').title = reason || 'Render video bằng cấu hình hiện tại';
         $('editor-options-form').setAttribute('aria-busy', String(current?.busy === 'save' || current?.loading === true));
+        refreshSrtControls();
     }
     function writeForm() {
         if (!current) return;
@@ -378,11 +438,525 @@
         if (!initialized) return;
         const content = drag?.record === current ? drag.content : sourceContent(), box = current?.options.crop_box, layer = $('editor-crop-layer'), rect = $('editor-crop-box');
         layer.hidden = !content || !validCrop(box) || $('editor-video').hidden;
-        if (layer.hidden) return;
-        for (const [key, value] of Object.entries({left: content.left, top: content.top, width: content.width, height: content.height})) layer.style[key] = `${value}px`;
-        for (const [key, value] of Object.entries({left: box.x, top: box.y, width: box.width, height: box.height})) rect.style[key] = `${value * 100}%`;
-        rect.setAttribute('aria-label', `Vùng che: X ${(box.x * 100).toFixed(1)}%, Y ${(box.y * 100).toFixed(1)}%, rộng ${(box.width * 100).toFixed(1)}%, cao ${(box.height * 100).toFixed(1)}%`);
-        rect.dataset.maskMode = current.options.mask_mode;
+        if (!layer.hidden) {
+            for (const [key, value] of Object.entries({left: content.left, top: content.top, width: content.width, height: content.height})) layer.style[key] = `${value}px`;
+            for (const [key, value] of Object.entries({left: box.x, top: box.y, width: box.width, height: box.height})) rect.style[key] = `${value * 100}%`;
+            rect.setAttribute('aria-label', `Vùng che: X ${(box.x * 100).toFixed(1)}%, Y ${(box.y * 100).toFixed(1)}%, rộng ${(box.width * 100).toFixed(1)}%, cao ${(box.height * 100).toFixed(1)}%`);
+            rect.dataset.maskMode = current.options.mask_mode;
+        }
+        renderLiveSubtitle(content);
+    }
+    function renderLiveSubtitle(cachedContent = null) {
+        if (!initialized) return;
+        const overlay = $('editor-live-subtitle'), video = $('editor-video');
+        if (!overlay) return;
+        const record = current, content = cachedContent || sourceContent();
+        if (!record || !record.options.subtitle_enabled || video.hidden || !content || !record.srtCues?.length) {
+            overlay.hidden = true;
+            if (record) record.lastLiveSubtitleKey = '';
+            return;
+        }
+        const nowMs = Math.round((finite(video.currentTime) ? video.currentTime : 0) * 1000);
+        const idx = record.activeCueIndex >= 0 && record.srtCues[record.activeCueIndex] &&
+            nowMs >= record.srtCues[record.activeCueIndex].start_ms && nowMs < record.srtCues[record.activeCueIndex].end_ms
+            ? record.activeCueIndex : findActiveCueIndex(record.srtCues, nowMs);
+        if (idx < 0 || !record.srtCues[idx]) {
+            overlay.hidden = true;
+            record.lastLiveSubtitleKey = '';
+            return;
+        }
+        const cue = record.srtCues[idx], opts = record.options;
+        const resolution = record.snapshot.manifest?.source_resolution;
+        const sourceH = video.videoHeight || resolution?.height || 1080;
+        const scaledSize = Math.max(11, Math.min(44, Math.round((opts.font_size || 48) * (content.height / sourceH))));
+        overlay.hidden = false;
+        for (const [key, value] of Object.entries({left: content.left, top: content.top, width: content.width, height: content.height})) overlay.style[key] = `${value}px`;
+        overlay.dataset.position = opts.subtitle_position === 'top' ? 'top' : 'bottom';
+        overlay.style.paddingBottom = opts.subtitle_position === 'crop' && validCrop(opts.crop_box)
+            ? `${Math.max(2, Math.round((1 - (opts.crop_box.y + opts.crop_box.height)) * 100))}%` : '4%';
+        const mode = opts.subtitle_animation || 'static';
+        const duration = Math.max(1, cue.end_ms - cue.start_ms);
+        const ratio = clamp((nowMs - cue.start_ms) / duration, 0, 1);
+        const words = cue.text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+        let activeWord = -1, chunkIndex = 0;
+        if (mode !== 'static' && words.length) {
+            const weights = words.map(wordWeight), total = weights.reduce((a, b) => a + b, 0) || 1;
+            let acc = 0;
+            activeWord = words.length - 1;
+            for (let i = 0; i < weights.length; i++) {
+                acc += weights[i];
+                if (ratio <= acc / total) { activeWord = i; break; }
+            }
+        }
+        let chunks = [words];
+        if (mode === 'word_pop' && words.length) {
+            chunks = sliceWordsBalanced(words, opts.subtitle_max_words_per_chunk);
+            let seen = 0;
+            for (let ci = 0; ci < chunks.length; ci++) {
+                if (activeWord < seen + chunks[ci].length || ci === chunks.length - 1) {
+                    chunkIndex = ci;
+                    activeWord = Math.max(0, activeWord - seen);
+                    break;
+                }
+                seen += chunks[ci].length;
+            }
+        }
+        const renderKey = `${idx}|${cue.text}|${mode}|${opts.font}|${scaledSize}|${opts.text_color}|${opts.subtitle_highlight_color}|${opts.back_color}|${opts.subtitle_preset}|${opts.outline}|${opts.shadow}|${chunkIndex}|${activeWord}`;
+        if (record.lastLiveSubtitleKey === renderKey) return;
+        record.lastLiveSubtitleKey = renderKey;
+        const box = document.createElement('span');
+        box.className = 'editor-live-subtitle-box';
+        box.style.fontFamily = `'${opts.font || 'Be Vietnam Pro'}', sans-serif`;
+        box.style.fontSize = `${scaledSize}px`;
+        box.style.color = opts.text_color || '#ffffff';
+        const stroke = Math.max(1, Math.round(opts.outline || 2));
+        const shadow = Math.max(0, Math.round(opts.shadow || 1));
+        box.style.textShadow = `0 0 ${stroke + 1}px #000, ${shadow}px ${shadow}px ${shadow + 1}px #000`;
+        box.style.backgroundColor = opts.subtitle_preset === 'social' ? `${opts.back_color || '#000000'}cc` : 'rgba(0, 0, 0, 0.35)';
+        if (mode === 'static' || !words.length) {
+            box.textContent = cue.text;
+        } else if (mode === 'karaoke_highlight') {
+            words.forEach((word, wi) => {
+                const span = document.createElement('span');
+                span.className = 'editor-live-subtitle-word';
+                span.textContent = wi < words.length - 1 ? `${word} ` : word;
+                if (wi <= activeWord) span.style.color = opts.subtitle_highlight_color || '#ffd54a';
+                box.appendChild(span);
+            });
+        } else {
+            const visible = chunks[chunkIndex] || words;
+            visible.forEach((word, wi) => {
+                const span = document.createElement('span');
+                span.className = wi === activeWord ? 'editor-live-subtitle-word is-pop' : 'editor-live-subtitle-word';
+                span.textContent = wi < visible.length - 1 ? `${word} ` : word;
+                if (wi === activeWord) span.style.color = opts.subtitle_highlight_color || '#ffd54a';
+                box.appendChild(span);
+            });
+        }
+        overlay.replaceChildren(box);
+    }
+    function setSrtStatus(message, state = '') {
+        const el = $('editor-srt-status');
+        if (!el) return;
+        el.textContent = message;
+        el.dataset.state = state;
+    }
+    function refreshSrtControls() {
+        if (!initialized) return;
+        const card = $('editor-srt-card');
+        if (!card) return;
+        const record = current;
+        const hasCues = Boolean(record?.srtCues?.length);
+        card.hidden = !record || (!hasCues && !record.srtLoading);
+        const locked = Boolean(record?.srtLocked || running(record) || record?.srtSaving || record?.busy || record?.recoveryRequired);
+        const editable = Boolean(record && hasCues && !locked);
+        if ($('editor-srt-count')) $('editor-srt-count').textContent = `${record?.srtCues?.length || 0} câu`;
+        const dirtyEl = $('editor-srt-dirty');
+        if (dirtyEl) {
+            dirtyEl.textContent = !record ? 'Chưa có SRT' : record.srtLoading ? 'Đang nạp SRT…' :
+                record.srtSaving ? 'Đang lưu SRT…' : record.srtDirty ? 'SRT chưa lưu' : 'Đã đồng bộ SRT';
+            dirtyEl.dataset.dirty = String(Boolean(record?.srtDirty));
+        }
+        $('editor-srt-add-btn').disabled = !editable;
+        $('editor-srt-save-btn').disabled = !editable || !record.srtDirty || record.srtInvalidCount > 0;
+        $('editor-srt-restore-btn').disabled = !editable || !record.srtHasBackup;
+        $('editor-srt-replace-all-btn').disabled = !editable || !($('editor-srt-search')?.value || '').trim();
+        $('editor-srt-apply-glossary-btn').disabled = !editable;
+        const rowLocked = Boolean(record?.srtLocked || running(record) || record?.srtSaving);
+        if (record && hasCues && record._lastRowLocked !== rowLocked) {
+            record._lastRowLocked = rowLocked;
+            const onlyOne = record.srtCues.length <= 1;
+            for (const row of (record.srtRowByIndex || [])) {
+                if (!row) continue;
+                const head = row.children?.[0];
+                if (head?.children) {
+                    if (head.children[1]) head.children[1].disabled = rowLocked;
+                    if (head.children[2]) head.children[2].disabled = rowLocked;
+                    if (head.children[3]) head.children[3].disabled = rowLocked || onlyOne;
+                }
+                const last = row.children?.[row.children.length - 1];
+                if (last?.dataset?.srtField === 'text') last.disabled = rowLocked;
+            }
+        }
+    }
+    function populateEditorGlossaries(store) {
+        if (store && Array.isArray(store.profiles) && store.profiles.length) {
+            editorGlossaries = store.profiles;
+            editorActiveGlossaryId = store.active_id || store.profiles[0].id;
+            editorGlossariesLoaded = true;
+        }
+        const select = $('editor-srt-glossary-select');
+        if (!select) return;
+        const previous = select.value;
+        const nodes = editorGlossaries.map(profile => {
+            const option = document.createElement('option');
+            option.value = profile.id;
+            const count = Array.isArray(profile.entries) ? profile.entries.length : 0;
+            option.textContent = `${profile.name}${count ? ` (${count})` : ''}`;
+            return option;
+        });
+        select.replaceChildren(...nodes);
+        select.value = editorGlossaries.some(p => p.id === previous) ? previous : editorActiveGlossaryId;
+    }
+    async function loadEditorGlossaries() {
+        if (editorGlossariesLoaded) { populateEditorGlossaries(); return; }
+        try {
+            const data = await request('/api/glossaries');
+            if (Array.isArray(data?.profiles) && data.profiles.length) populateEditorGlossaries(data);
+        } catch (_) { /* Non-fatal in offline/mock tests. */ }
+    }
+    function renderSrtList() {
+        if (!initialized) return;
+        const list = $('editor-srt-list');
+        if (!list) return;
+        const record = current;
+        if (!record || !record.srtCues?.length) {
+            list.replaceChildren();
+            if (record) record.srtRowByIndex = [];
+            refreshSrtControls();
+            return;
+        }
+        const query = (record.srtSearch || '').trim().toLowerCase();
+        const locked = Boolean(record.srtLocked || running(record));
+        const onlyOne = record.srtCues.length <= 1;
+        const rows = [];
+        const byIndex = new Array(record.srtCues.length).fill(null);
+        for (let i = 0; i < record.srtCues.length; i++) {
+            const cue = record.srtCues[i];
+            if (query && !cue.text.toLowerCase().includes(query) && !(cue.raw_text || '').toLowerCase().includes(query)) continue;
+            const row = document.createElement('div');
+            row.className = 'editor-srt-row';
+            row.setAttribute('role', 'listitem');
+            row.dataset.cueIndex = String(i);
+            if (i === record.activeCueIndex) row.dataset.active = 'true';
+
+            const head = document.createElement('div');
+            head.className = 'editor-srt-row-head';
+            const seek = document.createElement('button');
+            seek.type = 'button'; seek.className = 'btn-ghost editor-srt-seek';
+            seek.textContent = `#${i + 1}`; seek.title = 'Tua video tới câu này';
+            seek.dataset.srtAction = 'seek'; seek.dataset.cueIndex = String(i);
+
+            const startInput = document.createElement('input');
+            startInput.type = 'text'; startInput.className = 'editor-srt-time';
+            startInput.value = formatSrtTimestamp(cue.start_ms);
+            startInput.disabled = locked;
+            startInput.dataset.srtField = 'start'; startInput.dataset.cueIndex = String(i);
+            startInput.setAttribute('aria-label', `Mốc bắt đầu câu ${i + 1}`);
+
+            const endInput = document.createElement('input');
+            endInput.type = 'text'; endInput.className = 'editor-srt-time';
+            endInput.value = formatSrtTimestamp(cue.end_ms);
+            endInput.disabled = locked;
+            endInput.dataset.srtField = 'end'; endInput.dataset.cueIndex = String(i);
+            endInput.setAttribute('aria-label', `Mốc kết thúc câu ${i + 1}`);
+
+            const del = document.createElement('button');
+            del.type = 'button'; del.className = 'btn-ghost editor-srt-delete';
+            del.textContent = 'Xoá'; del.title = onlyOne ? 'Cần giữ ít nhất 1 câu phụ đề' : 'Xoá dòng phụ đề này';
+            del.disabled = locked || onlyOne;
+            del.dataset.srtAction = 'delete'; del.dataset.cueIndex = String(i);
+            head.appendChild(seek); head.appendChild(startInput); head.appendChild(endInput); head.appendChild(del);
+            row.appendChild(head);
+
+            if (cue.raw_text) {
+                const raw = document.createElement('div');
+                raw.className = 'editor-srt-raw';
+                raw.textContent = cue.raw_text;
+                row.appendChild(raw);
+            }
+            const textarea = document.createElement('textarea');
+            textarea.className = 'editor-srt-text';
+            textarea.rows = cue.text.includes('\n') ? 2 : 1;
+            textarea.value = cue.text;
+            textarea.disabled = locked;
+            textarea.dataset.srtField = 'text'; textarea.dataset.cueIndex = String(i);
+            textarea.setAttribute('aria-label', `Nội dung câu ${i + 1}`);
+            row.appendChild(textarea);
+
+            rows.push(row);
+            byIndex[i] = row;
+        }
+        record.srtRowByIndex = byIndex;
+        record._lastRowLocked = locked;
+        list.replaceChildren(...rows);
+        refreshSrtControls();
+    }
+    function syncVideoCueTime(scrollIfIdle = true) {
+        const record = current;
+        if (!record || !record.srtCues?.length) { renderLiveSubtitle(); return; }
+        const video = $('editor-video'), list = $('editor-srt-list');
+        const ms = Math.round((finite(video.currentTime) ? video.currentTime : 0) * 1000);
+        const nextIdx = findActiveCueIndex(record.srtCues, ms);
+        if (nextIdx !== record.activeCueIndex) {
+            const oldRow = record.activeCueIndex >= 0 ? record.srtRowByIndex?.[record.activeCueIndex] : null;
+            if (oldRow) delete oldRow.dataset.active;
+            const newRow = nextIdx >= 0 ? record.srtRowByIndex?.[nextIdx] : null;
+            if (newRow) {
+                newRow.dataset.active = 'true';
+                if (scrollIfIdle && list && !list.contains(document.activeElement)) {
+                    newRow.scrollIntoView?.({block: 'nearest', behavior: 'smooth'});
+                }
+            }
+            record.activeCueIndex = nextIdx;
+        }
+        renderLiveSubtitle();
+    }
+    async function loadSrt(record, {force = false} = {}) {
+        if (!record || (record.srtDirty && !force) || record.srtLoading) return;
+        const sequence = record.srtSequence = (record.srtSequence || 0) + 1;
+        record.srtLoading = true;
+        if (current === record) refreshSrtControls();
+        try {
+            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt`);
+            if (record.srtSequence !== sequence) return;
+            record.srtLoaded = true;
+            if (!Array.isArray(data?.cues)) {
+                record.srtCues = [];
+                if (current === record) renderSrtList();
+                return;
+            }
+            if (record.srtDirty && !force) return;
+            record.srtCues = data.cues.map((cue, idx) => ({
+                index: idx + 1,
+                start_ms: Number(cue.start_ms) || 0,
+                end_ms: Number(cue.end_ms) || 1000,
+                text: String(cue.text || ''),
+                raw_text: typeof cue.raw_text === 'string' ? cue.raw_text : '',
+            }));
+            record.srtHasRaw = Boolean(data.has_raw);
+            record.srtHasBackup = Boolean(data.has_backup);
+            record.srtLocked = Boolean(data.locked);
+            record.srtLockReason = typeof data.lock_reason === 'string' ? data.lock_reason : '';
+            record.srtDirty = false;
+            record.srtInvalidCount = 0;
+            record.activeCueIndex = -1;
+            record.lastLiveSubtitleKey = '';
+            if (current === record) {
+                setSrtStatus(record.srtLocked ? record.srtLockReason : `Đã nạp ${record.srtCues.length} câu phụ đề.`);
+                renderSrtList();
+                syncVideoCueTime(false);
+            }
+        } catch (error) {
+            if (record.srtSequence !== sequence) return;
+            record.srtLoaded = true;
+            if (current === record) setSrtStatus(error.message, 'error');
+        } finally {
+            if (record.srtSequence === sequence) {
+                record.srtLoading = false;
+                if (current === record) refreshSrtControls();
+            }
+        }
+    }
+    function insertSrtCue() {
+        const record = current;
+        if (!record || !record.srtCues?.length || record.srtLocked || running(record)) return;
+        const cues = record.srtCues;
+        const afterIdx = record.selectedCueIndex >= 0 && record.selectedCueIndex < cues.length
+            ? record.selectedCueIndex : (record.activeCueIndex >= 0 && record.activeCueIndex < cues.length ? record.activeCueIndex : cues.length - 1);
+        const prev = cues[afterIdx], next = cues[afterIdx + 1];
+        let start_ms, end_ms;
+        if (next) {
+            const gap = next.start_ms - prev.end_ms;
+            if (gap >= 100) {
+                start_ms = prev.end_ms;
+                end_ms = Math.min(prev.end_ms + 2000, next.start_ms);
+            } else {
+                start_ms = next.start_ms > prev.start_ms ? Math.max(prev.start_ms, Math.min(prev.end_ms, next.start_ms)) : prev.start_ms;
+                end_ms = Math.min(86400000, Math.max(start_ms + 500, next.start_ms));
+            }
+        } else {
+            start_ms = Math.min(86399000, prev.end_ms);
+            end_ms = Math.min(86400000, start_ms + 2000);
+        }
+        const insertAt = afterIdx + 1;
+        cues.splice(insertAt, 0, {index: insertAt + 1, start_ms, end_ms, text: 'Phụ đề mới', raw_text: ''});
+        cues.forEach((cue, i) => { cue.index = i + 1; });
+        record.srtDirty = true;
+        record.selectedCueIndex = insertAt;
+        record.lastLiveSubtitleKey = '';
+        setSrtStatus(`Đã thêm dòng #${insertAt + 1}. Bấm “Lưu SRT” để ghi xuống đĩa.`);
+        renderSrtList();
+        const newRow = record.srtRowByIndex?.[insertAt];
+        const textarea = newRow?.children?.find?.(node => node.dataset?.srtField === 'text');
+        textarea?.focus?.(); textarea?.select?.();
+        renderLiveSubtitle();
+    }
+    function deleteSrtCue(index) {
+        const record = current;
+        if (!record || !record.srtCues?.length || record.srtLocked || running(record)) return;
+        if (record.srtCues.length <= 1) {
+            setSrtStatus('Không thể xoá dòng phụ đề cuối cùng (cần ít nhất 1 câu).', 'error');
+            return;
+        }
+        if (index < 0 || index >= record.srtCues.length) return;
+        record.srtCues.splice(index, 1);
+        record.srtCues.forEach((cue, i) => { cue.index = i + 1; });
+        record.srtDirty = true;
+        record.activeCueIndex = -1;
+        record.selectedCueIndex = Math.min(index, record.srtCues.length - 1);
+        record.lastLiveSubtitleKey = '';
+        setSrtStatus(`Đã xoá dòng #${index + 1}. Bấm “Lưu SRT” để ghi xuống đĩa.`);
+        renderSrtList();
+        syncVideoCueTime(false);
+    }
+    function replaceAllInSrt() {
+        const record = current;
+        if (!record || !record.srtCues?.length || record.srtLocked || running(record)) return;
+        const needle = ($('editor-srt-search')?.value || '');
+        if (!needle.trim()) return;
+        const replacement = $('editor-srt-replace')?.value || '';
+        const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'gi');
+        let changedCues = 0, hits = 0;
+        for (const cue of record.srtCues) {
+            const updated = cue.text.replace(regex, () => { hits += 1; return replacement; });
+            if (updated !== cue.text) { cue.text = updated; changedCues += 1; }
+        }
+        if (changedCues > 0) {
+            record.srtDirty = true;
+            record.lastLiveSubtitleKey = '';
+            renderSrtList();
+            renderLiveSubtitle();
+            setSrtStatus(`Đã thay ${hits} vị trí ở ${changedCues} câu. Bấm “Lưu SRT” để áp dụng.`);
+        } else {
+            setSrtStatus('Không tìm thấy chuỗi khớp trong phụ đề.');
+        }
+    }
+    function validateLocalSrt(cues) {
+        if (!Array.isArray(cues) || !cues.length) return 'Danh sách phụ đề phải có ít nhất 1 câu.';
+        let prevStart = -1;
+        for (let i = 0; i < cues.length; i++) {
+            const cue = cues[i];
+            if (!Number.isInteger(cue.start_ms) || !Number.isInteger(cue.end_ms) || cue.start_ms < 0 || cue.end_ms <= cue.start_ms) {
+                return `Câu #${i + 1}: mốc thời gian không hợp lệ.`;
+            }
+            if (cue.start_ms < prevStart) return `Câu #${i + 1}: mốc bắt đầu phải không nhỏ hơn câu trước.`;
+            if (!String(cue.text || '').trim()) return `Câu #${i + 1}: nội dung không được để trống.`;
+            prevStart = cue.start_ms;
+        }
+        return '';
+    }
+    async function saveSrt(record = current) {
+        if (!record || !record.srtCues?.length || record.srtSaving || record.srtLocked || running(record)) return false;
+        const localError = validateLocalSrt(record.srtCues);
+        if (localError) { setSrtStatus(localError, 'error'); return false; }
+        record.srtSaving = true;
+        if (current === record) refreshSrtControls();
+        try {
+            const payload = record.srtCues.map((cue, idx) => ({
+                index: idx + 1, start_ms: cue.start_ms, end_ms: cue.end_ms, text: cue.text,
+            }));
+            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt`, {
+                method: 'PUT', body: JSON.stringify({cues: payload}),
+            });
+            if (Array.isArray(data.cues)) {
+                record.srtCues = data.cues.map((cue, idx) => ({
+                    index: idx + 1, start_ms: Number(cue.start_ms) || 0, end_ms: Number(cue.end_ms) || 1000,
+                    text: String(cue.text || ''), raw_text: typeof cue.raw_text === 'string' ? cue.raw_text : '',
+                }));
+            }
+            record.srtHasBackup = Boolean(data.has_backup);
+            record.srtDirty = false;
+            record.srtInvalidCount = 0;
+            record.lastLiveSubtitleKey = '';
+            if (current === record) {
+                setSrtStatus(`Đã lưu ${record.srtCues.length} câu phụ đề (đã sao lưu .bak).`);
+                renderSrtList();
+                renderLiveSubtitle();
+                notify('Đã lưu phụ đề SRT. Các thao tác Render / TTS tiếp theo sẽ dùng bản SRT mới.');
+            }
+            return true;
+        } catch (error) {
+            if (current === record) { setSrtStatus(error.message, 'error'); notify(error.message, 'error'); }
+            return false;
+        } finally {
+            record.srtSaving = false;
+            if (current === record) refreshSrtControls();
+        }
+    }
+    async function applyGlossaryToSrt() {
+        const record = current;
+        if (!record || !record.srtCues?.length || record.srtSaving || record.srtLocked || running(record)) return;
+        const localError = validateLocalSrt(record.srtCues);
+        if (localError) { setSrtStatus(localError, 'error'); return; }
+        const glossaryId = $('editor-srt-glossary-select')?.value || editorActiveGlossaryId || 'default';
+        record.srtSaving = true;
+        refreshSrtControls();
+        try {
+            const payload = record.srtCues.map((cue, idx) => ({
+                index: idx + 1, start_ms: cue.start_ms, end_ms: cue.end_ms, text: cue.text,
+            }));
+            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt/apply-glossary`, {
+                method: 'POST', body: JSON.stringify({glossary_id: glossaryId, cues: payload, save: false}),
+            });
+            if (Array.isArray(data.cues)) {
+                record.srtCues = data.cues.map((cue, idx) => ({
+                    index: idx + 1, start_ms: Number(cue.start_ms) || 0, end_ms: Number(cue.end_ms) || 1000,
+                    text: String(cue.text || ''), raw_text: typeof cue.raw_text === 'string' ? cue.raw_text : '',
+                }));
+            }
+            const changed = Number(data.changed_cues) || 0, reps = Number(data.replacements) || 0;
+            if (changed > 0) record.srtDirty = true;
+            record.lastLiveSubtitleKey = '';
+            if (current === record) {
+                renderSrtList();
+                renderLiveSubtitle();
+                setSrtStatus(changed > 0
+                    ? `Đã áp dụng "${data.glossary_name || glossaryId}": sửa ${reps} thuật ngữ ở ${changed} câu. Bấm “Lưu SRT” để ghi xuống đĩa.`
+                    : `Bộ từ điển "${data.glossary_name || glossaryId}" không có thuật ngữ nào cần thay đổi.`);
+            }
+        } catch (error) {
+            if (current === record) setSrtStatus(error.message, 'error');
+        } finally {
+            record.srtSaving = false;
+            if (current === record) refreshSrtControls();
+        }
+    }
+    async function restoreSrtBackup() {
+        const record = current;
+        if (!record || !record.srtHasBackup || record.srtSaving || record.srtLocked || running(record)) return;
+        if (typeof window.confirm === 'function' && !window.confirm('Hoàn tác phụ đề SRT về bản sao lưu (.bak) trước lần lưu gần nhất?')) return;
+        record.srtSaving = true;
+        refreshSrtControls();
+        try {
+            const data = await request(`/api/editor/projects/${encodeURIComponent(record.jobId)}/srt/restore-backup`, {
+                method: 'POST', body: '{}',
+            });
+            if (Array.isArray(data.cues)) {
+                record.srtCues = data.cues.map((cue, idx) => ({
+                    index: idx + 1, start_ms: Number(cue.start_ms) || 0, end_ms: Number(cue.end_ms) || 1000,
+                    text: String(cue.text || ''), raw_text: typeof cue.raw_text === 'string' ? cue.raw_text : '',
+                }));
+            }
+            record.srtDirty = false;
+            record.srtInvalidCount = 0;
+            record.activeCueIndex = -1;
+            record.lastLiveSubtitleKey = '';
+            if (current === record) {
+                renderSrtList();
+                syncVideoCueTime(false);
+                setSrtStatus('Đã khôi phục phụ đề SRT từ bản sao lưu .bak.');
+                notify('Đã hoàn tác phụ đề SRT từ bản sao lưu .bak.');
+            }
+        } catch (error) {
+            if (current === record) setSrtStatus(error.message, 'error');
+        } finally {
+            record.srtSaving = false;
+            if (current === record) refreshSrtControls();
+        }
+    }
+    async function ensureSrtSaved(record) {
+        if (!record?.srtDirty) return true;
+        const ok = typeof window.confirm === 'function'
+            ? window.confirm('Phụ đề SRT đang có thay đổi chưa lưu. Bấm OK để lưu SRT rồi chạy tiếp, hoặc Cancel để quay lại kiểm tra.')
+            : false;
+        if (!ok) {
+            setSrtStatus('Hãy bấm “Lưu SRT” trước khi tạo TTS, Render video hoặc xuất CapCut Draft.', 'error');
+            notify('Phụ đề SRT chưa được lưu; đã tạm dừng thao tác để tránh dùng bản phụ đề cũ.', 'error');
+            return false;
+        }
+        return await saveSrt(record);
     }
     function endDrag() {
         if (!drag) return;
@@ -532,13 +1106,17 @@
             const crop = validCrop(snapshot.manifest.crop_box) ? {...snapshot.manifest.crop_box} : null;
             record = {jobId: snapshot.job_id, snapshot, options: {...defaults, crop_box: crop}, dirty: false, revision: 0,
                 loaded: false, loading: false, loadFailed: false, recoveryRequired: false, busy: '', cropError: '', cropDraft: null,
-                numericDraft: {}, draftPersisted: false, lastCrop: crop, task: null, output: null, videoOutput: null, pollFailures: 0};
+                numericDraft: {}, draftPersisted: false, lastCrop: crop, task: null, output: null, videoOutput: null, pollFailures: 0,
+                srtCues: [], srtDirty: false, srtLoaded: false, srtLoading: false, srtSaving: false, srtHasRaw: false,
+                srtHasBackup: false, srtLocked: false, srtLockReason: '', srtSearch: '', srtInvalidCount: 0,
+                activeCueIndex: -1, selectedCueIndex: -1, srtRowByIndex: [], lastLiveSubtitleKey: ''};
             restoreDraft(record); records.set(record.jobId, record);
         }
         record.snapshot = snapshot;
         if (current !== record) {
             endDrag(); stopPolling(); voiceSequence++; current = record; renderedOutputKey = null;
-            writeForm(); paintTask(); paintOutput();
+            if ($('editor-srt-search')) $('editor-srt-search').value = record.srtSearch || '';
+            writeForm(); paintTask(); paintOutput(); renderSrtList(); syncVideoCueTime(false);
             if (record.task && running(record)) startPolling(record);
         } else { updateCropSummary(); refreshControls(); syncOverlay(); }
         $('editor-empty').hidden = true; $('editor-project').hidden = false;
@@ -576,6 +1154,10 @@
                 if (running(record)) startPolling(record); else stopPolling();
                 notify(record.dirty ? 'Đã kiểm tra máy chủ và khôi phục tác vụ; bản chỉnh sửa chưa lưu vẫn được giữ.' :
                     'Đã nạp cấu hình. Render dùng các tuỳ chọn hiện tại; video nguồn không bị thay thế.');
+            }
+            if (record.snapshot.availability?.translated_srt === true && !record.srtLoaded) {
+                loadSrt(record);
+                loadEditorGlossaries();
             }
         } catch (error) {
             if (record.loadSequence !== sequence) return;
@@ -625,6 +1207,7 @@
         syncFormOptions();
         const button = $(action === 'render' ? 'editor-render-btn' : action === 'tts' ? 'editor-tts-generate-btn' : 'editor-extract-btn');
         if (button.disabled) return;
+        if ((action === 'render' || action === 'tts') && !(await ensureSrtSaved(current))) return;
         return withAction(action, async record => {
             const options = checkedOptions();
             if (action === 'tts' || (action === 'render' && options.tts_enabled)) requireVoice(options);
@@ -655,6 +1238,7 @@
     }
     async function previewAudio() {
         if ($('editor-audio-preview').disabled) return;
+        if (current?.options?.tts_enabled && !(await ensureSrtSaved(current))) return;
         return withAction('audio_preview', async record => {
             const options = checkedOptions();
             if (options.tts_enabled) requireVoice(options);
@@ -668,6 +1252,7 @@
     }
     async function exportDraft() {
         if ($('editor-draft-btn').disabled) return;
+        if (!(await ensureSrtSaved(current))) return;
         return withAction('capcut_draft', async record => {
             const options = checkedOptions();
             if (options.tts_enabled) requireVoice(options);
@@ -694,6 +1279,9 @@
             if (current !== record || generation !== pollGeneration || record.task?.id !== id) return;
             if (!validTask(task, record.jobId, record.previewTask) || task.id !== id) throw new Error('Tiến độ tác vụ không đúng project hoặc ID.');
             record.task = task; record.pollFailures = 0;
+            if (!running(record) && record.srtLocked) {
+                record.srtLocked = false; record.srtLockReason = ''; renderSrtList();
+            }
             paintTask(); acceptOutput(record, task); paintOutput(); refreshControls();
             if (task.status === 'error') notify(task.error || 'Tác vụ Auto Edit thất bại.', 'error');
             else if (task.status === 'cancelled') notify('Đã huỷ tác vụ. Bản chỉnh sửa vẫn được giữ.');
@@ -817,7 +1405,86 @@
         $('editor-crop-box').addEventListener('lostpointercapture', endDrag);
         window.addEventListener('pointermove', pointerMove); window.addEventListener('pointerup', endDrag); window.addEventListener('pointercancel', endDrag);
         window.addEventListener('blur', endDrag); window.addEventListener('resize', () => { endDrag(); syncOverlay(); });
-        for (const type of ['loadedmetadata', 'loadeddata']) $('editor-video').addEventListener(type, () => { syncOverlay(); syncAudioControls(); });
+        for (const type of ['loadedmetadata', 'loadeddata']) $('editor-video').addEventListener(type, () => { syncOverlay(); syncAudioControls(); syncVideoCueTime(false); });
+        for (const type of ['timeupdate', 'seeked']) $('editor-video').addEventListener(type, () => syncVideoCueTime(true));
+        $('editor-srt-add-btn')?.addEventListener('click', insertSrtCue);
+        $('editor-srt-save-btn')?.addEventListener('click', () => saveSrt(current));
+        $('editor-srt-restore-btn')?.addEventListener('click', restoreSrtBackup);
+        $('editor-srt-replace-all-btn')?.addEventListener('click', replaceAllInSrt);
+        $('editor-srt-apply-glossary-btn')?.addEventListener('click', applyGlossaryToSrt);
+        $('editor-srt-search')?.addEventListener('input', event => {
+            if (!current) return;
+            current.srtSearch = event.target.value || '';
+            renderSrtList();
+        });
+        document.addEventListener('vietsub:glossaries-updated', event => {
+            if (event?.detail) populateEditorGlossaries(event.detail);
+        });
+        const srtList = $('editor-srt-list');
+        if (srtList) {
+            srtList.addEventListener('click', event => {
+                const target = event.target?.closest?.('[data-srt-action]') || (event.target?.dataset?.srtAction ? event.target : null);
+                if (!target || !current) return;
+                const idx = Number(target.dataset.cueIndex);
+                if (!Number.isInteger(idx) || idx < 0 || idx >= current.srtCues.length) return;
+                if (target.dataset.srtAction === 'seek') {
+                    current.selectedCueIndex = idx;
+                    const video = $('editor-video');
+                    video.currentTime = current.srtCues[idx].start_ms / 1000;
+                    syncVideoCueTime(false);
+                } else if (target.dataset.srtAction === 'delete') {
+                    deleteSrtCue(idx);
+                }
+            });
+            srtList.addEventListener('focusin', event => {
+                const idx = Number(event.target?.dataset?.cueIndex);
+                if (current && Number.isInteger(idx) && idx >= 0 && idx < current.srtCues.length) current.selectedCueIndex = idx;
+            });
+            srtList.addEventListener('input', event => {
+                const target = event.target;
+                if (!current || target?.dataset?.srtField !== 'text') return;
+                const idx = Number(target.dataset.cueIndex);
+                if (!Number.isInteger(idx) || idx < 0 || idx >= current.srtCues.length) return;
+                current.srtCues[idx].text = target.value;
+                current.srtDirty = true;
+                current.lastLiveSubtitleKey = '';
+                refreshSrtControls();
+                renderLiveSubtitle();
+            });
+            srtList.addEventListener('change', event => {
+                const target = event.target;
+                const field = target?.dataset?.srtField;
+                if (!current || (field !== 'start' && field !== 'end')) return;
+                const idx = Number(target.dataset.cueIndex);
+                if (!Number.isInteger(idx) || idx < 0 || idx >= current.srtCues.length) return;
+                const parsed = parseSrtTimestamp(target.value);
+                const cue = current.srtCues[idx];
+                const prev = current.srtCues[idx - 1], next = current.srtCues[idx + 1];
+                let error = '';
+                if (parsed === null) error = `Câu #${idx + 1}: mốc thời gian phải có dạng HH:MM:SS,mmm.`;
+                else if (field === 'start' && parsed >= cue.end_ms) error = `Câu #${idx + 1}: mốc bắt đầu phải nhỏ hơn mốc kết thúc.`;
+                else if (field === 'end' && parsed <= cue.start_ms) error = `Câu #${idx + 1}: mốc kết thúc phải lớn hơn mốc bắt đầu.`;
+                else if (field === 'start' && prev && parsed < prev.start_ms) error = `Câu #${idx + 1}: mốc bắt đầu phải không nhỏ hơn câu trước.`;
+                else if (field === 'start' && next && parsed > next.start_ms) error = `Câu #${idx + 1}: mốc bắt đầu không được vượt quá câu kế tiếp.`;
+                const wasInvalid = target.getAttribute('aria-invalid') === 'true';
+                if (error) {
+                    target.setAttribute('aria-invalid', 'true');
+                    if (!wasInvalid) current.srtInvalidCount += 1;
+                    setSrtStatus(error, 'error');
+                    refreshSrtControls();
+                    return;
+                }
+                if (wasInvalid) current.srtInvalidCount = Math.max(0, current.srtInvalidCount - 1);
+                target.setAttribute('aria-invalid', 'false');
+                if (field === 'start') cue.start_ms = parsed; else cue.end_ms = parsed;
+                target.value = formatSrtTimestamp(parsed);
+                current.srtDirty = true;
+                current.lastLiveSubtitleKey = '';
+                setSrtStatus(`Đã cập nhật mốc thời gian câu #${idx + 1}. Bấm “Lưu SRT” để ghi xuống đĩa.`);
+                refreshSrtControls();
+                syncVideoCueTime(false);
+            });
+        }
         for (const id of ['editor-output-video', 'editor-output-audio']) $(id).addEventListener('error', () => notify('Trình duyệt không phát được kết quả. File vẫn được giữ; dùng “Mở kết quả” để kiểm tra.', 'error'));
         $('editor-save-btn').addEventListener('click', save); $('editor-render-btn').addEventListener('click', () => launch('render'));
         $('editor-extract-btn').addEventListener('click', () => launch('extract_audio')); $('editor-tts-generate-btn').addEventListener('click', () => launch('tts'));
@@ -847,7 +1514,12 @@
         $('editor-runtime-refresh').addEventListener('click', loadCapabilities);
         $('editor-runtime-save')?.addEventListener('click', saveRuntime);
         for (const prefix of ['edge', 'separator']) $(`editor-runtime-${prefix}-copy`).addEventListener('click', () => copyCommand(prefix));
-        $('editor-refresh-project').addEventListener('click', () => { if (current) return loadProject(current); });
+        $('editor-refresh-project').addEventListener('click', () => {
+            if (!current) return;
+            const promise = loadProject(current);
+            if (!current.srtDirty && current.snapshot?.availability?.translated_srt === true) loadSrt(current, {force: true});
+            return promise;
+        });
         if (typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(() => { endDrag(); syncOverlay(); }); observer.observe($('editor-source-surface')); }
         refreshControls(); loadCapabilities();
         if (pendingSnapshot) { const snapshot = pendingSnapshot; pendingSnapshot = null; projectReceived(snapshot); }
@@ -858,7 +1530,10 @@
             revision: current?.revision || 0, loadFailed: Boolean(current?.loadFailed), recoveryRequired: Boolean(current?.recoveryRequired),
             cropDraft: current?.cropDraft ? {...current.cropDraft} : null, cropError: current?.cropError || '',
             numericDraft: current ? {...current.numericDraft} : {}, draftPersisted: Boolean(current?.draftPersisted),
-            output: current?.output ? clone(current.output) : null, videoOutput: current?.videoOutput ? clone(current.videoOutput) : null}),
-        helpers: {actionableWarnings, estimatedDuration, defaults, validateOptions, validCrop, containRect, adjustCrop, safeOutputUrl, validTask, draftStorageKey, validatedDraft}};
+            output: current?.output ? clone(current.output) : null, videoOutput: current?.videoOutput ? clone(current.videoOutput) : null,
+            srtDirty: Boolean(current?.srtDirty), srtCount: current?.srtCues?.length || 0,
+            activeCueIndex: current ? current.activeCueIndex : -1, srtHasBackup: Boolean(current?.srtHasBackup)}),
+        helpers: {actionableWarnings, estimatedDuration, defaults, validateOptions, validCrop, containRect, adjustCrop, safeOutputUrl, validTask, draftStorageKey, validatedDraft,
+            formatSrtTimestamp, parseSrtTimestamp, findActiveCueIndex, sliceWordsBalanced}};
     window.addEventListener('load', init);
 })();
