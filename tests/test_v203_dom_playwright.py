@@ -23,7 +23,7 @@ import app
 
 class RealDomPlaywrightTests(unittest.TestCase):
     def test_m09_and_l02_dom_fixes_in_real_chromium(self):
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
         server = make_server("127.0.0.1", 0, app.app, threaded=True)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -34,7 +34,12 @@ class RealDomPlaywrightTests(unittest.TestCase):
                 patch.dict(app.app.config, TESTING=False),
                 sync_playwright() as pw,
             ):
-                browser = pw.chromium.launch(headless=True)
+                try:
+                    browser = pw.chromium.launch(headless=True)
+                except PlaywrightError as exc:
+                    if "Executable doesn't exist" in str(exc) and os.environ.get("VIETSUB_REQUIRE_BROWSER_TESTS") != "1":
+                        self.skipTest("Playwright Chromium browser binary is not installed in this environment.")
+                    raise
                 context = browser.new_context(viewport={"width": 1280, "height": 720}, reduced_motion="reduce")
                 page = context.new_page()
                 page_errors = []

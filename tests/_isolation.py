@@ -19,6 +19,9 @@ DOWNLOAD_DIR = os.path.join(SANDBOX_DIR, "downloads")
 for _directory in (APPDATA_DIR, LOCALAPPDATA_DIR):
     os.makedirs(_directory, exist_ok=True)
 
+if os.name == "nt" and os.environ.get("LOCALAPPDATA") and "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.environ["LOCALAPPDATA"], "ms-playwright")
+
 os.environ["APPDATA"] = APPDATA_DIR
 os.environ["LOCALAPPDATA"] = LOCALAPPDATA_DIR
 os.environ["VIETSUB_STUDIO_CONFIG_DIR"] = CONFIG_DIR

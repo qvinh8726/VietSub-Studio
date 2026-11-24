@@ -75,6 +75,10 @@ jobs:
         run: python tools/phase3_qa.py --output phase3-qa
       - name: Exercise speed, pitch and experimental CapCut Draft export
         run: python tools/system_qa.py --output system-qa
+      - name: Exercise v2.0.3 real DOM regression checks
+        env:
+          VIETSUB_REQUIRE_BROWSER_TESTS: "1"
+        run: python -m unittest discover -s tests -p test_v203_dom_playwright.py -v
       - uses: actions/upload-artifact@v4
         if: always()
         with:
