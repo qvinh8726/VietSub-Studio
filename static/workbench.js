@@ -343,7 +343,7 @@
     }
     function fitVideo() {
         fitRaf = 0;
-        if (workspace !== 'vietsub') return;
+        if (workspace !== 'vietsub' || !preview) return;
         const viewport = $('preview-viewport'), stage = $('video-stage'), player = $('preview-player');
         const width = player.videoWidth || preview?.video_resolution?.width || 16;
         const height = player.videoHeight || preview?.video_resolution?.height || 9;
@@ -360,9 +360,14 @@
         const player = $('preview-player'), dataMatches = preview && player.dataset.previewId === preview.id;
         const duration = player.duration, ready = dataMatches && !mediaFailed && player.readyState >= 1 && positive(duration);
         const fps = preview?.video_metadata?.frame_rate;
-        $('play-pause-btn').disabled = !ready;
-        $('play-pause-btn').textContent = player.paused ? 'Phát' : 'Tạm dừng';
-        $('play-pause-btn').setAttribute('aria-label', player.paused ? 'Phát video preview' : 'Tạm dừng video preview');
+        const playBtn = $('play-pause-btn');
+        playBtn.disabled = !ready;
+        const playLabel = playBtn.querySelector?.('.btn-label');
+        const playPath = playBtn.querySelector?.('svg path');
+        if (playLabel) playLabel.textContent = player.paused ? 'Phát' : 'Tạm dừng';
+        else if (!playPath) playBtn.textContent = player.paused ? 'Phát' : 'Tạm dừng';
+        if (playPath) playPath.setAttribute('d', player.paused ? 'm8 5 11 7-11 7z' : 'M7 5h4v14H7zm6 0h4v14h-4z');
+        playBtn.setAttribute('aria-label', player.paused ? 'Phát video preview' : 'Tạm dừng video preview');
         for (const id of ['frame-back-btn', 'frame-forward-btn']) {
             $(id).disabled = !ready || !positive(fps);
             $(id).title = positive(fps) ? `Một khung theo ${fps.toFixed(3)} fps; ước lượng với video VFR` : 'Chưa có FPS nguồn để tua từng khung';

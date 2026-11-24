@@ -106,8 +106,20 @@ def build_ytdlp_options(
     progress_hook=None,
     cookie_file=None,
     logger=None,
+    cache_id=None,
+    part=None,
 ):
-    stem = f"{site}-%(id)s"
+    safe_cache_id = (
+        str(cache_id)
+        if cache_id and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(cache_id))
+        else ""
+    )
+    if safe_cache_id:
+        stem = f"{site}-{safe_cache_id}"
+    elif site == "bilibili" and isinstance(part, int) and 0 < part < 10_000:
+        stem = f"{site}-%(id)s-p{part}"
+    else:
+        stem = f"{site}-%(id)s"
     folder = os.path.join(os.fspath(cache_root), stem)
     options = {
         "outtmpl": {
@@ -169,6 +181,7 @@ def download_with_ytdlp(
     is_cancelled=None,
     log=None,
     ydl_class=None,
+    cache_id=None,
 ):
     """Download one video with yt-dlp and return {"path", "video_id", "title", "duration"}.
 
@@ -199,6 +212,10 @@ def download_with_ytdlp(
         if cookie_file:
             working_cookie_file = os.path.join(temporary_dir, "cookies.txt")
             shutil.copyfile(cookie_file, working_cookie_file)
+        part = None
+        if site == "bilibili" and not cache_id:
+            from .web import bilibili_part
+            part = bilibili_part(url)
         options = build_ytdlp_options(
             cache_root,
             site=site,
@@ -207,6 +224,8 @@ def download_with_ytdlp(
             progress_hook=hook,
             cookie_file=working_cookie_file,
             logger=_Logger(log),
+            cache_id=cache_id,
+            part=part,
         )
         try:
             with ydl_class(options) as ydl:

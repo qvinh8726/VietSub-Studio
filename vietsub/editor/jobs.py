@@ -74,6 +74,10 @@ class EditorJobs:
         with self.lock:
             return any(task["job_id"] == job_id and task["status"] not in TERMINAL for task in self.tasks.values())
 
+    def any_active(self):
+        with self.lock:
+            return any(task["status"] not in TERMINAL for task in self.tasks.values())
+
     def protected_paths(self):
         with self.lock:
             return set().union(*(set(task.get("_protected_paths", ())) for task in self.tasks.values()

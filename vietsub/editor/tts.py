@@ -524,10 +524,15 @@ class TTSService:
             _safe_path(str(owned))
             owned.unlink(missing_ok=True)
 
-    def prune_cache(self):
+    def prune_cache(self, *, protected=None):
         """Evict only verified, hash-named owned cache entries; never follow links."""
         from vietsub.manifest import _safe_path
         _safe_path(str(self.cache_dir))
+        protected_paths = {
+            os.path.normcase(os.path.abspath(os.fspath(item)))
+            for item in (protected or ())
+            if item
+        }
         entries = []
         for root, suffix in ((self.cache_dir, ".wav"), (self.cache_dir / "raw-v1", ".audio")):
             _safe_path(str(root))
@@ -535,6 +540,8 @@ class TTSService:
                 continue
             for path in root.glob("*" + suffix):
                 if not re.fullmatch(r"[a-f0-9]{64}", path.stem) or path.is_symlink():
+                    continue
+                if os.path.normcase(os.path.abspath(os.fspath(path))) in protected_paths:
                     continue
                 try:
                     _safe_path(str(path))
@@ -745,6 +752,7 @@ class TTSService:
         deadline = time.monotonic() + self.track_timeout
         warnings, records, providers = [], [], set()
         temporary = None
+        published = False
         silence = b"\x00" * (SAMPLE_RATE * 2)
 
         def checkpoint():
@@ -820,6 +828,7 @@ class TTSService:
                 write_silence(track, max(0, duration_frames - written))
             checkpoint()
             os.replace(temporary, output)
+            published = True
             return {"path": str(output), "provider": next(iter(providers)) if len(providers) == 1 else "mixed",
                     "warnings": list(dict.fromkeys(warnings)), "cues": records}
         finally:
@@ -827,3 +836,8 @@ class TTSService:
             self._cue_progress, self._track_active, self._track_fallback = previous_progress, previous_active, previous_fallback
             if temporary is not None and temporary.exists():
                 temporary.unlink()
+            if published:
+                try:
+                    self.prune_cache()
+                except (OSError, ValueError):
+                    pass

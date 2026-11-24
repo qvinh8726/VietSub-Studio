@@ -662,7 +662,10 @@ test('an independent extract remains actionable and posts its own action when op
 
 
 test('global speed and independent semitone controls persist with the CapCut pitch switch off', async () => {
-    const h = harness(); await h.init(); await h.receive();
+    const legacy = {...plain(helpers.defaults), crop_box: snapshot().manifest.crop_box};
+    delete legacy.tts_change_pitch;
+    const h = harness({handler: (url, opts) => url === '/api/editor/projects/job-a' && (!opts?.method || opts.method === 'GET') ? {snapshot: snapshot(), options: legacy, active_task: null} : undefined});
+    await h.init(); await h.receive();
     h.change('editor-speed-range', '1.5');
     h.change('editor-pitch-range', '4');
     assert.equal(h.editor.state().options.speed, 1.5);
@@ -713,4 +716,25 @@ test('completed status hides historic provider boilerplate but retains fallback 
     const messages = ['CapCut uses an unofficial internal API; live entitlement and protocol stability are not guaranteed.',
         'CapCut lỗi mạng; đã chuyển sang Edge.', 'Câu dài đã được cắt để khớp phụ đề.'];
     assert.deepEqual(plain(helpers.actionableWarnings(messages)), messages.slice(1));
+});
+
+test('select labels strip nested option text when reporting form errors', async () => {
+    const h = harness();
+    await h.init(); await h.receive();
+    const sel = h.elements['editor-mask-mode'];
+    const removed = [];
+    sel.labels = [{
+        textContent: 'Cách che Không che Làm mờ',
+        cloneNode() {
+            return {
+                textContent: 'Cách che',
+                querySelectorAll() { return [{remove() { removed.push(true); }}]; },
+            };
+        },
+    }];
+    h.change('editor-mask-mode', 'broken', 'change');
+    assert.ok(removed.length > 0);
+    assert.match(h.elements['editor-form-error'].textContent, /^Cách che:/);
+    assert.doesNotMatch(h.elements['editor-form-error'].textContent, /Làm mờ/);
+    assert.doesNotMatch(h.elements['editor-pitch-help'].textContent, /Cấu hình cũ/);
 });

@@ -335,13 +335,76 @@ class VideoOCRProcessError(RuntimeError):
         super().__init__(f"Lỗi tiến trình VideOCR (Mã thoát {self.returncode}{detail})")
 
 
+def _prerelease_tokens(prerelease):
+    if not prerelease:
+        return ()
+    tokens = []
+    for part in prerelease.split("."):
+        if not part:
+            raise ValueError("Phiên bản release không đúng định dạng.")
+        tokens.append((0, int(part)) if part.isdigit() else (1, part.lower()))
+    return tuple(tokens)
+
+
+class ReleaseVersion(tuple):
+    """Semantic version 3-tuple whose comparisons preserve SemVer pre-release order."""
+
+    def __new__(cls, major, minor, patch, prerelease=()):
+        instance = super().__new__(cls, (major, minor, patch))
+        instance.prerelease = tuple(prerelease)
+        return instance
+
+    def _sort_key(self):
+        return (tuple(self), 1 if not self.prerelease else 0, self.prerelease)
+
+    @staticmethod
+    def _other_key(other):
+        if isinstance(other, ReleaseVersion):
+            return other._sort_key()
+        if isinstance(other, tuple) and len(other) == 3:
+            return (other, 1, ())
+        return None
+
+    def __eq__(self, other):
+        key = self._other_key(other)
+        return self._sort_key() == key if key is not None else NotImplemented
+
+    def __ne__(self, other):
+        eq = self.__eq__(other)
+        return NotImplemented if eq is NotImplemented else not eq
+
+    def __lt__(self, other):
+        key = self._other_key(other)
+        return self._sort_key() < key if key is not None else NotImplemented
+
+    def __le__(self, other):
+        key = self._other_key(other)
+        return self._sort_key() <= key if key is not None else NotImplemented
+
+    def __gt__(self, other):
+        key = self._other_key(other)
+        return self._sort_key() > key if key is not None else NotImplemented
+
+    def __ge__(self, other):
+        key = self._other_key(other)
+        return self._sort_key() >= key if key is not None else NotImplemented
+
+    def __hash__(self):
+        return hash(self._sort_key())
+
+
 def parse_release_version(value):
     if not isinstance(value, str):
         raise ValueError("Phiên bản release không hợp lệ.")
-    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?", value.strip())
+    match = re.fullmatch(
+        r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
+        value.strip(),
+    )
     if not match:
         raise ValueError("Phiên bản release không đúng định dạng.")
-    return tuple(int(part) for part in match.groups())
+    major, minor, patch = (int(part) for part in match.groups()[:3])
+    prerelease = _prerelease_tokens(match.group(4))
+    return ReleaseVersion(major, minor, patch, prerelease)
 
 
 def is_newer_release(latest_version, current_version=APP_VERSION):
@@ -1310,13 +1373,6 @@ def load_app_config(strict=False):
         quarantine_corrupt_file(CONFIG_PATH)
         return default_config
     merged_config = {**default_config, **saved_config}
-    # Migrate legacy aliases to the current quality-first DeepSeek model.
-    if (
-        merged_config.get("translation_provider") == "deepseek"
-        and str(merged_config.get("translation_api_model") or "").strip().lower()
-        in {"deepseek-chat", "deepseek-v4-flash"}
-    ):
-        merged_config["translation_api_model"] = "deepseek-v4-pro"
     return merged_config
 
 def save_app_config(config):
@@ -1684,9 +1740,12 @@ if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -
     )
 
 
-def schedule_app_exit(delay_seconds=1.5):
+def schedule_app_exit(delay_seconds=1.5, shutdown_timeout=10.0):
     def exit_after_response():
         time.sleep(delay_seconds)
+        cleanup = Thread(target=request_app_shutdown, name="update-shutdown", daemon=True)
+        cleanup.start()
+        cleanup.join(timeout=shutdown_timeout)
         os._exit(0)
 
     Thread(target=exit_after_response, daemon=True).start()
@@ -4589,7 +4648,7 @@ def call_openai_compatible_api(
     return extract_chat_completion_content(payload)
 
 
-def extract_api_translated_srt(content, source_srt):
+def extract_api_translated_srt(content, source_srt, source_lang=None):
     fenced_blocks = re.findall(
         r"```(?:srt)?\s*\n?(.*?)```",
         content,
@@ -4597,7 +4656,7 @@ def extract_api_translated_srt(content, source_srt):
     )
     candidates = fenced_blocks or [content]
     translated_srt = max(candidates, key=lambda value: len(SRT_TIMECODE_PATTERN.findall(value)))
-    return normalize_translated_srt(source_srt, translated_srt.strip())
+    return normalize_translated_srt(source_srt, translated_srt.strip(), source_lang=source_lang)
 
 
 def format_srt_blocks(blocks):
@@ -4672,7 +4731,7 @@ def split_srt_for_translation(srt_content, video_duration_seconds=None):
     return chunks, True
 
 
-def validate_translated_srt(source_srt, translated_srt):
+def validate_translated_srt(source_srt, translated_srt, source_lang=None):
     validate_srt_structure(source_srt, "SRT gốc")
     validate_srt_structure(translated_srt, "SRT dịch")
     source_timecodes = SRT_TIMECODE_PATTERN.findall(source_srt)
@@ -4683,11 +4742,17 @@ def validate_translated_srt(source_srt, translated_srt):
         raise ValueError(
             "Phản hồi Gemini không phải SRT đầy đủ hoặc đã thay đổi mốc thời gian; không lưu file."
         )
-    validate_translation_language(source_srt, translated_srt)
+    validate_translation_language(source_srt, translated_srt, source_lang=source_lang)
     return translated_srt
 
 
 CJK_CHAR_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+KANA_CHAR_PATTERN = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff]")
+HANGUL_CHAR_PATTERN = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]")
+VIETNAMESE_DIACRITIC_PATTERN = re.compile(
+    r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ"
+    r"ÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]"
+)
 
 
 def translation_language_stats(srt_content):
@@ -4701,33 +4766,116 @@ def translation_language_stats(srt_content):
     return cjk_count, word_count, cjk_lines, len(texts)
 
 
-def validate_translation_language(source_srt, translated_srt):
-    """Reject unchanged or bilingual Chinese output before it reaches the result file."""
-    source_cjk, source_words, _, _ = translation_language_stats(source_srt)
-    if source_cjk < 4 or source_cjk / max(1, source_words) < 0.25:
+def validate_translation_language(source_srt, translated_srt, source_lang=None):
+    """Reject unchanged or bilingual source output before it reaches the result file."""
+    if source_lang == "vi":
         return translated_srt
 
+    source_blocks = parse_srt_blocks(source_srt)
+    translated_blocks = parse_srt_blocks(translated_srt)
+    source_texts = [text for _, _, text in source_blocks]
+    translated_texts = [text for _, _, text in translated_blocks]
+    source_joined = "\n".join(source_texts)
+    translated_joined = "\n".join(translated_texts)
+    source_text = re.sub(r"\s+", "", source_joined)
+    translated_text = re.sub(r"\s+", "", translated_joined)
+    unchanged = bool(source_text) and source_text == translated_text
+
+    source_cjk, source_words, _, _ = translation_language_stats(source_srt)
     translated_cjk, translated_words, translated_cjk_lines, translated_lines = (
         translation_language_stats(translated_srt)
     )
-    source_text = re.sub(
-        r"\s+", "", "\n".join(text for _, _, text in parse_srt_blocks(source_srt))
-    )
-    translated_text = re.sub(
-        r"\s+", "", "\n".join(text for _, _, text in parse_srt_blocks(translated_srt))
-    )
-    translated_ratio = translated_cjk / max(1, translated_words)
-    translated_line_ratio = translated_cjk_lines / max(1, translated_lines)
-    unchanged = source_text == translated_text
-    bilingual = (
-        translated_cjk >= max(8, int(source_cjk * 0.2))
-        and (translated_ratio >= 0.12 or translated_line_ratio >= 0.30)
-    )
-    if unchanged or translated_ratio >= 0.35 or bilingual:
-        raise ValueError(
-            "Model vẫn trả về tiếng Trung hoặc song ngữ Trung-Việt; "
-            "hãy chạy lại bước dịch hoặc chọn model dịch mạnh hơn."
+
+    # Japanese (Kana; may also include Kanji)
+    source_kana = len(KANA_CHAR_PATTERN.findall(source_joined))
+    if source_kana >= 4 and (source_kana / max(1, source_words) >= 0.15 or source_lang == "ja"):
+        translated_kana = len(KANA_CHAR_PATTERN.findall(translated_joined))
+        translated_kana_lines = sum(bool(KANA_CHAR_PATTERN.search(text)) for text in translated_texts)
+        kana_ratio = translated_kana / max(1, translated_words)
+        kana_line_ratio = translated_kana_lines / max(1, translated_lines)
+        kana_bilingual = (
+            translated_kana >= max(6, int(source_kana * 0.2))
+            and (kana_ratio >= 0.08 or kana_line_ratio >= 0.30)
         )
+        if unchanged or kana_ratio >= 0.15 or kana_bilingual:
+            raise ValueError(
+                "Model vẫn trả về tiếng Nhật hoặc song ngữ Nhật-Việt; "
+                "hãy chạy lại bước dịch hoặc chọn model dịch mạnh hơn."
+            )
+
+    # Korean (Hangul)
+    source_hangul = len(HANGUL_CHAR_PATTERN.findall(source_joined))
+    if source_hangul >= 4 and (source_hangul / max(1, source_words) >= 0.25 or source_lang == "ko"):
+        translated_hangul = len(HANGUL_CHAR_PATTERN.findall(translated_joined))
+        translated_hangul_lines = sum(bool(HANGUL_CHAR_PATTERN.search(text)) for text in translated_texts)
+        hangul_ratio = translated_hangul / max(1, translated_words)
+        hangul_line_ratio = translated_hangul_lines / max(1, translated_lines)
+        hangul_bilingual = (
+            translated_hangul >= max(6, int(source_hangul * 0.2))
+            and (hangul_ratio >= 0.10 or hangul_line_ratio >= 0.30)
+        )
+        if unchanged or hangul_ratio >= 0.25 or hangul_bilingual:
+            raise ValueError(
+                "Model vẫn trả về tiếng Hàn hoặc song ngữ Hàn-Việt; "
+                "hãy chạy lại bước dịch hoặc chọn model dịch mạnh hơn."
+            )
+
+    # Chinese (CJK)
+    if source_cjk >= 4 and source_cjk / max(1, source_words) >= 0.25:
+        translated_ratio = translated_cjk / max(1, translated_words)
+        translated_line_ratio = translated_cjk_lines / max(1, translated_lines)
+        bilingual = (
+            translated_cjk >= max(8, int(source_cjk * 0.2))
+            and (translated_ratio >= 0.12 or translated_line_ratio >= 0.30)
+        )
+        if unchanged or translated_ratio >= 0.35 or bilingual:
+            raise ValueError(
+                "Model vẫn trả về tiếng Trung hoặc song ngữ Trung-Việt; "
+                "hãy chạy lại bước dịch hoặc chọn model dịch mạnh hơn."
+            )
+        return translated_srt
+
+    # English (or Latin-script untranslated echo when source has no CJK/Kana/Hangul/Vietnamese diacritics)
+    source_vi = len(VIETNAMESE_DIACRITIC_PATTERN.findall(source_joined))
+    source_latin_words = len(re.findall(r"[A-Za-z]{2,}", source_joined))
+    is_english_source = (
+        source_lang == "en"
+        or (
+            source_lang is None
+            and source_vi == 0
+            and source_cjk == 0
+            and source_kana == 0
+            and source_hangul == 0
+            and source_latin_words >= 4
+        )
+    )
+    if is_english_source:
+        comparable = [
+            (" ".join(src.lower().split()), " ".join(dst.lower().split()))
+            for src, dst in zip(source_texts, translated_texts)
+            if len(re.findall(r"[A-Za-z]", src)) >= 4
+        ]
+        if comparable:
+            identical = sum(1 for src, dst in comparable if src == dst)
+            translated_vi = len(VIETNAMESE_DIACRITIC_PATTERN.findall(translated_joined))
+            translated_alpha = len(re.findall(r"[A-Za-zÀ-ỹ]", translated_joined))
+            too_much_echo = (
+                (len(comparable) >= 2 and identical / len(comparable) >= 0.75)
+                or (
+                    len(comparable) == 1
+                    and identical == 1
+                    and len(re.findall(r"[A-Za-z]{2,}", comparable[0][0])) >= 4
+                )
+            )
+            long_without_vietnamese = (
+                len(comparable) >= 6 and translated_alpha >= 120 and translated_vi == 0
+            )
+            if too_much_echo or long_without_vietnamese:
+                raise ValueError(
+                    "Model vẫn trả về nguyên văn tiếng Anh hoặc chưa dịch sang tiếng Việt; "
+                    "hãy chạy lại bước dịch hoặc chọn model dịch mạnh hơn."
+                )
+
     return translated_srt
 
 
@@ -4790,7 +4938,7 @@ def srt_block_times(blocks):
     return times
 
 
-def normalize_translated_srt(source_srt, translated_srt):
+def normalize_translated_srt(source_srt, translated_srt, source_lang=None):
     """Rebuild a translation on the source indexes and timecodes, block by block.
 
     Models sometimes renumber a chunk from 1 or rewrite timecodes. When the block
@@ -4821,7 +4969,7 @@ def normalize_translated_srt(source_srt, translated_srt):
             source_blocks, translated_blocks
         )
     )
-    return validate_translated_srt(source_srt, rebuilt)
+    return validate_translated_srt(source_srt, rebuilt, source_lang=source_lang)
 
 
 def validate_project_result(result):
@@ -4919,7 +5067,7 @@ def stop_gemini_generation(page):
     return False
 
 
-def extract_gemini_translated_srt(response, source_srt):
+def extract_gemini_translated_srt(response, source_srt, source_lang=None):
     if not response:
         raise RuntimeError("Không tìm thấy câu trả lời của AI để trích xuất phụ đề.")
     code_blocks = response.locator("pre")
@@ -4938,7 +5086,7 @@ def extract_gemini_translated_srt(response, source_srt):
         translated_srt = response.inner_text()
     translated_srt = re.sub(r'^```[a-zA-Z0-9]*\n', '', translated_srt, flags=re.MULTILINE)
     translated_srt = re.sub(r'\n```$', '', translated_srt)
-    return normalize_translated_srt(source_srt, translated_srt.strip())
+    return normalize_translated_srt(source_srt, translated_srt.strip(), source_lang=source_lang)
 
 
 def translate_gemini_chunk(
@@ -5013,6 +5161,7 @@ def translate_gemini_chunk(
     translated = extract_gemini_translated_srt(
         find_last_response(gemini_page, response_selectors),
         source_srt,
+        source_lang=source_lang,
     )
     log_to_app(f"Đã dịch xong đoạn {chunk_index}/{chunk_count}.")
     return translated
@@ -5086,7 +5235,7 @@ def translate_api_chunk(runtime_config, source_srt, chunk_index, chunk_count):
                 runtime_config["stream_unsupported"] = True
                 log_to_app(f"{label} không hỗ trợ streaming; chuyển sang JSON đầy đủ.", "error")
                 response = request_translation_completion(runtime_config, messages, stream=False)
-            translated = extract_api_translated_srt(response, source_srt)
+            translated = extract_api_translated_srt(response, source_srt, source_lang=source_lang)
             log_to_app(f"Đã dịch xong đoạn {chunk_index}/{chunk_count}.")
             return translated
         except TranslationApiError as error:
@@ -5248,7 +5397,9 @@ def translate_srt_via_api(srt_path, runtime_config, output_srt=None, source_lang
             if os.path.isfile(part_path):
                 try:
                     with open(part_path, "r", encoding="utf-8-sig") as cached_file:
-                        translated = normalize_translated_srt(source_chunk, cached_file.read().strip())
+                        translated = normalize_translated_srt(
+                            source_chunk, cached_file.read().strip(), source_lang=source_lang
+                        )
                     log_to_app(f"Dùng lại đoạn dịch đã lưu {chunk_index}/{len(translation_chunks)}.")
                 except (OSError, UnicodeError, ValueError):
                     translated = None
@@ -5265,6 +5416,7 @@ def translate_srt_via_api(srt_path, runtime_config, output_srt=None, source_lang
         translated_srt = normalize_translated_srt(
             srt_content,
             "\n\n".join(chunk.strip() for chunk in translated_chunks),
+            source_lang=source_lang,
         )
         write_text_atomic(output_translated_srt, translated_srt)
     except Exception:
@@ -5392,6 +5544,7 @@ def translate_srt_via_gemini_edge(
     translated_srt = normalize_translated_srt(
         srt_content,
         "\n\n".join(chunk.strip() for chunk in translated_chunks),
+        source_lang=source_lang,
     )
     output_translated_srt = translation_output_path(srt_path, output_srt)
     write_text_atomic(output_translated_srt, translated_srt)
@@ -5796,9 +5949,12 @@ def download_douyin_via_browser(aweme_id, target_path, notebook_url="", *, quiet
     return douyin_download_result(aweme_id, target_path, video.title)
 
 
-def run_ytdlp_download(url, site, cache_dir, *, manual_cookie=""):
+def run_ytdlp_download(url, site, cache_dir, *, manual_cookie="", cache_id=None):
     set_download_progress(connections=None)
     cookie_file, cleanup = prepare_ytdlp_cookie_file(site, manual_cookie=manual_cookie)
+    kwargs = {}
+    if cache_id:
+        kwargs["cache_id"] = cache_id
     try:
         return ytdlp_source.download_with_ytdlp(
             url,
@@ -5810,6 +5966,7 @@ def run_ytdlp_download(url, site, cache_dir, *, manual_cookie=""):
             on_progress=report_download_progress,
             is_cancelled=cancel_requested,
             log=lambda message: log_to_app(message, "error"),
+            **kwargs,
         )
     except DownloadCancelledError as error:
         raise_if_download_cancelled(error)
@@ -6022,8 +6179,9 @@ def download_web_video(request, notebook_url=""):
         except SourceError as error:
             log_to_app(f"Giải mã link share {label} qua HTTP chưa được ({error}); mở thẳng link.", "error")
     cache_dir = get_download_cache_dir()
-    if request.video_id:
-        cached = find_cached_download(request.site, request.video_id, cache_dir)
+    cache_id = web_source.cache_video_id(request.site, request.video_id, request.url) if request.video_id else ""
+    if cache_id:
+        cached = find_cached_download(request.site, cache_id, cache_dir)
         if cached:
             log_to_app("Video này đã có trong thư mục tải tạm; dùng lại, không tải lại.")
             return {
@@ -6037,17 +6195,19 @@ def download_web_video(request, notebook_url=""):
     for tier in WEB_DOWNLOAD_STRATEGY.get(request.site, ("ytdlp",)):
         try:
             if tier == "browser":
-                folder_id = request.video_id or short_link_code(request.url)
+                folder_id = cache_id or short_link_code(request.url)
                 stem = f"{request.site}-{folder_id}"
                 target_path = os.path.join(cache_dir, stem, stem + ".mp4")
                 quiet = bool(getattr(workflow_context, "quiet", False))
                 return download_via_browser_capture(request, target_path, notebook_url, quiet=quiet)
             log_to_app(f"Đang tải video {label} bằng yt-dlp: {request.url}")
+            extra_ytdlp = {"cache_id": cache_id} if cache_id and cache_id != request.video_id else {}
             result = run_ytdlp_download(
                 request.url,
                 request.site,
                 cache_dir,
                 manual_cookie=get_source_manual_cookie(request.site) if request.site in SESSION_SITES else "",
+                **extra_ytdlp,
             )
             video_id = result["video_id"] or request.video_id
             title = result["title"] or f"{label} {video_id}"
@@ -6534,7 +6694,8 @@ def normalize_persisted_job(value):
         status = "error"
         error = "App đã đóng khi job đang chạy. Bấm Chạy lại để tiếp tục từ file đã có."
 
-    source_type = value.get("source_type") if value.get("source_type") in {"douyin", "local"} else "douyin"
+    valid_source_types = {"local", *DOWNLOAD_SOURCE_TYPES}
+    source_type = value.get("source_type") if value.get("source_type") in valid_source_types else "douyin"
     result = value.get("result") if isinstance(value.get("result"), dict) else {}
     source_video = str(value.get("source_video") or "")
     if (source_type == "local" and not result.get("source_video_deleted")
@@ -7453,7 +7614,12 @@ def protect_local_control_plane():
     if app.config.get("TESTING"):
         return None
     if not request.path.startswith("/api/") or request.endpoint in {
-        "stream_preview_video", "stream_project_video", "editor.stream_output", "uploader.media_video", "uploader.screenshot",
+        "stream_preview_video",
+        "stream_project_video",
+        "editor.stream_output",
+        "uploader.media_video",
+        "uploader.screenshot",
+        "uploader.session_screenshot",
     }:
         return None
     if not api_request_authorized():
@@ -7586,6 +7752,18 @@ def install_update():
         if workflow_lock.locked() or preview_lock.locked() or queue_active:
             update_install_lock.release()
             return jsonify({"error": "Hãy chờ mọi job và preview hiện tại chạy xong rồi cập nhật app."}), 409
+        editor = globals().get("editor_api")
+        if editor and editor.jobs.any_active():
+            update_install_lock.release()
+            return jsonify({
+                "error": "Auto Edit đang có tác vụ chờ hoặc đang chạy; hãy chờ hoàn tất hoặc huỷ trước khi cập nhật app."
+            }), 409
+        uploader = globals().get("uploader_api")
+        if uploader and uploader.any_active():
+            update_install_lock.release()
+            return jsonify({
+                "error": "Publish Hub đang có phiên đăng nhập, tạo metadata hoặc tác vụ upload đang hoạt động; hãy chờ hoàn tất trước khi cập nhật app."
+            }), 409
 
     prefetch_cancel_event.set()
     if prefetch_thread and prefetch_thread.is_alive():
@@ -7791,7 +7969,7 @@ def prepare_local_preview():
 @app.route('/api/previews/<preview_id>/video')
 def stream_preview_video(preview_id):
     preview = get_video_preview(preview_id)
-    if not preview or not os.path.isfile(preview.get("source_video", "")):
+    if not preview or not storage.safe_regular(preview.get("source_video", "")):
         return jsonify({"error": "Preview không còn tồn tại."}), 404
     source_video = preview["source_video"]
     mimetype = "video/x-matroska" if source_video.lower().endswith(".mkv") else "video/mp4"
@@ -8478,8 +8656,20 @@ def open_folder():
         value
         for result in results
         for key, value in result.items()
-        if key in {"project_dir", "video", "thumbnail", "raw_srt", "translated_srt"} and value
+        if key in {
+            "project_dir", "video", "thumbnail", "raw_srt", "translated_srt",
+            "edited_video", "tts_audio", "extracted_audio",
+        } and value
     }
+    for result in results:
+        if result.get("project_dir"):
+            try:
+                assets = project_manifest.snapshot(result).get("assets", {})
+                for key in ("edited_video", "tts_audio", "extracted_audio"):
+                    if assets.get(key):
+                        allowed_paths.add(assets[key])
+            except (OSError, ValueError, KeyError):
+                pass
     if path not in allowed_paths:
         return jsonify({"error": "Chỉ có thể mở kết quả của quy trình hiện tại."}), 403
     if path and os.path.exists(path):

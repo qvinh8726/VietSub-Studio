@@ -332,6 +332,13 @@ def synthesize_srt(service, srt_path, output_path, *, voice, provider, speed, pi
                     records[cue["index"]] = {key: cue[key] for key in ("index", "start_ms", "end_ms", "window_ms")}
                     records[cue["index"]].update(provider=result["provider"], voice=result["voice"], fit_speed=fit["speed"],
                                                 trimmed=fit["trimmed"], skipped=False, duration_ms=fit["duration_ms"], warnings=cue_warnings)
+                next_offset = offset + service.batch_size
+                if next_offset < len(speakable):
+                    protected = {item["path"] for item in raw[next_offset:] if item.get("path")}
+                    try:
+                        service.prune_cache(protected=protected)
+                    except (OSError, ValueError):
+                        pass
             silence(track, max(0, max(cue["end_ms"] for cue in cues) * SAMPLE_RATE // 1000 - written))
         for cue in cues:
             if cue["index"] not in records:

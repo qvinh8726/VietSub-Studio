@@ -67,7 +67,7 @@ class UploadQueue:
     def __init__(self,path,executor,*,on_finish=None,clock=time.time):
         self.path=Path(path); self.executor=executor; self.on_finish=on_finish; self.clock=clock
         self.lock=RLock(); self.wake=Event();self.stop=Event();self.worker=None;self.events={}
-        self.jobs=[];self._load()
+        self.jobs=[];self._load();self._cleanup_orphan_snapshots()
 
     def _load(self):
         manifest._safe_path(str(self.path))
@@ -79,6 +79,7 @@ class UploadQueue:
             raise ValueError('Upload queue schema không hỗ trợ; không ghi đè.')
         if len(value['jobs'])>500:raise ValueError('Upload queue vượt500 bản ghi.')
         seen=set()
+        interrupted=False
         for job in value['jobs']:
             if (not isinstance(job,dict) or not isinstance(job.get('id'),str) or not re.fullmatch('[0-9a-f]{32}',job['id'])
                     or job['id'] in seen or job.get('status') not in TERMINAL|ACTIVE):
@@ -90,10 +91,37 @@ class UploadQueue:
             if scheduled is not None and (type(scheduled) not in (int,float) or not math.isfinite(scheduled)):
                 raise ValueError('Queue schedule không hợp lệ.')
             if job['status']=='running':
+                interrupted=True
                 job.update(status='uncertain' if job.get('commit_attempted') else 'error',phase='interrupted',
                            error='App đã đóng khi upload. Kiểm tra nền tảng trước khi thử lại; không tự đăng lại.')
             self.jobs.append(job)
         self.events={job['id']:Event() for job in self.jobs}
+        if interrupted:
+            self._persist(self.jobs)
+
+    def _cleanup_orphan_snapshots(self):
+        private_root=self.path.parent/'input-snapshots'
+        try:
+            manifest._safe_path(str(private_root))
+        except (OSError,ValueError):
+            return
+        if not private_root.is_dir():
+            return
+        with self.lock:
+            active_ids={job['id'] for job in self.jobs if job['status'] in ACTIVE}
+        for entry in list(private_root.iterdir()):
+            if entry.is_symlink() or (os.lstat(entry).st_file_attributes if os.name=='nt' else 0) & 0x400:
+                continue
+            prefix=entry.name.split('-',1)[0]
+            if not re.fullmatch(r'[0-9a-f]{32}',prefix) or prefix in active_ids:
+                continue
+            try:
+                if entry.is_dir():
+                    shutil.rmtree(entry,ignore_errors=True)
+                elif entry.is_file():
+                    entry.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _persist(self,jobs):
         payload={'version':1,'jobs':jobs}
@@ -126,6 +154,12 @@ class UploadQueue:
         if not isinstance(request_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,100}',request_id):raise ValueError('Cần request_id ổn định để chống đăng trùng.')
         meta=metadata(meta)
         if not profiles or len(profiles)>30:raise ValueError('Chọn1–30 tài khoản.')
+        from .adapters import UploadError, validate_platform_metadata
+        for profile in profiles:
+            try:
+                validate_platform_metadata(profile['platform'], meta, visibility=visibility)
+            except UploadError as error:
+                raise ValueError(str(error)) from None
         if not storage.safe_regular(source['video']):raise ValueError('Video không còn khả dụng.')
         info=os.stat(source['video'])
         canonical={**source,'profiles':[p['id'] for p in profiles],'metadata':meta,'visibility':visibility,'scheduled_at':scheduled}
@@ -188,7 +222,8 @@ class UploadQueue:
                    and self.publication_key(other,other['profile_id'],other['metadata'],other['visibility'])==publication
                    for other in self.jobs):
                 raise ValueError('Nội dung này đã được đăng hoặc có job chưa rõ kết quả; không retry bản cũ trùng lặp.')
-            self._update(identifier,status='queued',phase='waiting',scheduled_at=None,error='',percent=0,commit_attempted=False)
+            self._update(identifier,status='queued',phase='waiting',scheduled_at=None,error='',percent=0,commit_attempted=False,
+                         screenshot_path='',result_url='',message='',started_at=None,finished_at=None)
             self.events[identifier]=Event()
         self.start();self.wake.set();return self.get(identifier)
 

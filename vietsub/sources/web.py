@@ -91,6 +91,27 @@ def _parse_tiktok(parsed, host):
     return SourceRequest("tiktok", f"https://www.tiktok.com/{user}/video/{video_id}", video_id)
 
 
+def bilibili_part(url):
+    """Return the integer part number ``p`` from a Bilibili video URL, or None."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except ValueError:
+        return None
+    part = (parse_qs(parsed.query).get("p") or [""])[0]
+    if part.isdigit() and 0 < int(part) < 10_000:
+        return int(part)
+    return None
+
+
+def cache_video_id(site, video_id, url=""):
+    """Cache/folder key for a site video, preserving Bilibili ``?p=N`` parts."""
+    if site == "bilibili" and video_id:
+        part = bilibili_part(url)
+        if part is not None:
+            return f"{video_id}-p{part}"
+    return video_id
+
+
 def _parse_bilibili(parsed, host):
     if host in BILIBILI_SHORT_HOSTS:
         if not SHORT_CODE.fullmatch(parsed.path or ""):

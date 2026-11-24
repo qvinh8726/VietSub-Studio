@@ -72,8 +72,16 @@ def verify_release(zip_path, checksum_path, exe_sha256):
         raise RuntimeError("Checksum file does not match the ZIP.")
     with zipfile.ZipFile(zip_path) as archive:
         member = app.find_update_executable_member(archive)
-        if hashlib.sha256(archive.read(member)).hexdigest() != exe_sha256:
+        digest = hashlib.sha256()
+        with archive.open(member, "r") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        member_sha256 = digest.hexdigest()
+        if member_sha256 != exe_sha256:
             raise RuntimeError("Executable inside the ZIP does not match the input EXE.")
+        inner_checksum = archive.read(f"{ZIP_ROOT}/SHA256.txt").decode("ascii")
+        if app.parse_update_checksum(inner_checksum, EXE_NAME) != exe_sha256:
+            raise RuntimeError("SHA256.txt inside the ZIP does not match the input EXE.")
 
 
 def build_release(exe_path, output_dir, *, version=None, clean=False):

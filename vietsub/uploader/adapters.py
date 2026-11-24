@@ -70,7 +70,9 @@ from time import monotonic
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 __all__ = [
-    'PLATFORMS', 'adapter_for', 'UploadError', 'VerificationRequired',
+    'PLATFORMS', 'PLATFORM_TITLE_LIMITS', 'PLATFORM_TAG_LIMITS',
+    'adapter_for', 'validate_platform_metadata',
+    'UploadError', 'VerificationRequired',
     'UploadCancelled', 'UnsupportedMode',
 ]
 
@@ -134,6 +136,46 @@ _CONFIG = {
 PLATFORMS = {key: {'label': value[0], 'login_url': value[1],
                    'upload_url': value[2], 'modes': list(value[3])}
              for key, value in _CONFIG.items()}
+PLATFORM_TITLE_LIMITS = {
+    'tiktok': 2200,
+    'youtube': 100,
+    'facebook': 255,
+    'douyin': 30,
+    'bilibili': 80,
+    'xiaohongshu': 20,
+}
+PLATFORM_TAG_LIMITS = {
+    'bilibili': 10,
+    'xiaohongshu': 10,
+}
+
+
+def validate_platform_metadata(platform, metadata, visibility='draft'):
+    """Validate and normalize metadata against platform limits."""
+    if not isinstance(metadata, Mapping):
+        raise UploadError('metadata must be a mapping.')
+    title, description = metadata.get('title', ''), metadata.get('description', '')
+    if not isinstance(title, str) or not title.strip() or not isinstance(description, str):
+        raise UploadError('A nonempty text title and a text description are required.')
+    tags = metadata.get('hashtags', [])
+    if isinstance(tags, str):
+        tags = re.split(r'[\s,]+', tags.strip()) if tags.strip() else []
+    if not isinstance(tags, (list, tuple)) or any(not isinstance(tag, str) for tag in tags):
+        raise UploadError('hashtags must be text or a list of text values.')
+    tags = [tag.strip().lstrip('#') for tag in tags if tag.strip().lstrip('#')]
+    if any('\x00' in value for value in [title, description] + tags):
+        raise UploadError('Metadata cannot contain NUL characters.')
+    limit = PLATFORM_TITLE_LIMITS.get(platform, 2200)
+    if len(title.strip()) > limit or len(title) > limit:
+        raise UploadError(f'{platform}: tiêu đề vượt quá giới hạn {limit} ký tự (Title exceeds the implemented {limit}-character platform limit).')
+    tag_limit = PLATFORM_TAG_LIMITS.get(platform)
+    if tag_limit is not None and len(tags) > tag_limit:
+        raise UploadError(f'{platform}: chỉ hỗ trợ tối đa {tag_limit} hashtag.')
+    if platform == 'bilibili' and visibility == 'public' and not tags:
+        raise UploadError('Bilibili yêu cầu ít nhất 1 hashtag khi đăng công khai.')
+    body = '\n\n'.join(value for value in (description, ' '.join('#' + tag for tag in tags)) if value)
+    caption = '\n\n'.join(value for value in (title, body) if value)
+    return title, body, caption, tags
 
 # All selectors and regular expressions are developer constants. Metadata is passed
 # only as text to fill/press/filter -- NEVER interpolated into CSS/XPath/JavaScript.
@@ -215,6 +257,20 @@ _ACTIONS = {
     'xiaohongshu': {'public': ('button.publishBtn', 'button:text-is("发布")'),
                     'private': ('button.publishBtn', 'button:text-is("发布")')},
 }
+_YOUTUBE_CONFIRMATIONS = (
+    'video published',
+    'video uploaded',
+    'video scheduled',
+    '视频已发布',
+    '视频已上传',
+    '视频已设为定时发布',
+    'video đã được xuất bản',
+    'đã xuất bản video',
+    'video đã tải lên',
+    'đã tải video lên',
+    'video đã được lên lịch',
+)
+
 _SUCCESS = {
     'tiktok': ('[role="status"]:text-matches("^(Your video has been (uploaded|posted)|Video (uploaded|posted)|Post uploaded)[.!]?$", "i")',
                '.common-modal-confirm-modal:text-matches("(Your video has been (uploaded|posted)|Video uploaded)", "i")'),
@@ -490,29 +546,8 @@ class BrowserUploadAdapter:
             return {'logged_in': None, 'reason': 'Session could not be verified from the known uploader.'}
         return {'logged_in': None, 'reason': 'No positive signed-in evidence; manual verification required.'}
 
-    def _metadata(self, metadata):
-        if not isinstance(metadata, Mapping):
-            raise UploadError('metadata must be a mapping.')
-        title, description = metadata.get('title', ''), metadata.get('description', '')
-        if not isinstance(title, str) or not title.strip() or not isinstance(description, str):
-            raise UploadError('A nonempty text title and a text description are required.')
-        tags = metadata.get('hashtags', [])
-        if isinstance(tags, str):
-            tags = re.split(r'[\s,]+', tags.strip()) if tags.strip() else []
-        if not isinstance(tags, (list, tuple)) or any(not isinstance(tag, str) for tag in tags):
-            raise UploadError('hashtags must be text or a list of text values.')
-        tags = [tag.strip().lstrip('#') for tag in tags if tag.strip().lstrip('#')]
-        if any('\x00' in value for value in [title, description] + tags):
-            raise UploadError('Metadata cannot contain NUL characters.')
-        limit = {'youtube': 100, 'facebook': 255, 'douyin': 30,
-                 'bilibili': 80, 'xiaohongshu': 20}.get(self.platform, 2200)
-        if len(title) > limit:
-            raise UploadError(f'Title exceeds the implemented {limit}-character platform limit.')
-        if self.platform == 'xiaohongshu' and len(tags) > 10:
-            raise UploadError('Xiaohongshu accepts at most 10 hashtags in this adapter.')
-        body = '\n\n'.join(value for value in (description, ' '.join('#' + tag for tag in tags)) if value)
-        caption = '\n\n'.join(value for value in (title, body) if value)
-        return title, body, caption, tags
+    def _metadata(self, metadata, visibility='draft'):
+        return validate_platform_metadata(self.platform, metadata, visibility=visibility)
 
     def upload(self, page, video_path, metadata, *, visibility='draft', cancel=None,
                progress=None, before_publish=None):
@@ -523,7 +558,7 @@ class BrowserUploadAdapter:
             raise UploadError('before_publish must be callable.')
         if progress is not None and not callable(progress):
             raise UploadError('progress must be callable.')
-        title, body, caption, tags = self._metadata(metadata)
+        title, body, caption, tags = self._metadata(metadata, visibility=visibility)
         try:
             if str(video_path).startswith(('\\\\', '//')):
                 raise ValueError('not a local path')
@@ -841,8 +876,17 @@ class BrowserUploadAdapter:
             # share dialogs/links can exist earlier in the wizard. This dialog must
             # be fresh AND explicitly state that the server completed publication.
             heading = _find(signal, (':text-is("Video published")', ':text-is("Video uploaded")',
-                                     ':text-is("视频已发布")', ':text-is("视频已上传")'))
-            if heading is None or not self._result_url(signal):
+                                     ':text-is("Video scheduled")',
+                                     ':text-is("视频已发布")', ':text-is("视频已上传")',
+                                     ':text-is("视频已设为定时发布")',
+                                     ':text-is("Video đã được xuất bản")', ':text-is("Đã xuất bản video")',
+                                     ':text-is("Video đã tải lên")', ':text-is("Đã tải video lên")',
+                                     ':text-is("Video đã được lên lịch")'))
+            if heading is None:
+                normalized = ' '.join(signal.inner_text(timeout=self.action_timeout_ms).split()).casefold()
+                if not any(phrase in normalized for phrase in _YOUTUBE_CONFIRMATIONS):
+                    return None
+            if not self._result_url(signal):
                 return None
         elif self.platform == 'douyin' and visibility != 'draft':
             if not path.startswith('/creator-micro/content/manage'):
@@ -850,7 +894,8 @@ class BrowserUploadAdapter:
         elif self.platform == 'bilibili' and visibility != 'draft':
             if not path.startswith('/platform/upload/success'):
                 return None
-            if signal.inner_text(timeout=self.action_timeout_ms).strip() not in ('投稿成功', '稿件已提交'):
+            text = ' '.join(signal.inner_text(timeout=self.action_timeout_ms).split())
+            if not any(token in text for token in ('投稿成功', '稿件已提交')):
                 return None
         elif self.platform == 'xiaohongshu' and path != '/publish/success':
             return None
@@ -872,7 +917,7 @@ class BrowserUploadAdapter:
     def _result_url(self, confirmation):
         allowed = {
             'tiktok': (('www.tiktok.com',), r'^/@[^/]+/video/\d+$'),
-            'youtube': (('youtu.be', 'www.youtube.com'), r'^/(?:[A-Za-z0-9_-]{11}|watch)$'),
+            'youtube': (('youtu.be', 'www.youtube.com', 'youtube.com'), r'^/(?:[A-Za-z0-9_-]{11}|watch/?|shorts/[A-Za-z0-9_-]{11}/?)$'),
             'facebook': (('www.facebook.com', 'business.facebook.com'), r'^/(?:reel/\d+|[^/]+/posts/[^/]+|watch/?)$'),
             'douyin': (('www.douyin.com',), r'^/video/\d+$'),
             'bilibili': (('www.bilibili.com',), r'^/video/BV[A-Za-z0-9]+/?$'),
@@ -886,11 +931,26 @@ class BrowserUploadAdapter:
                 if (location.scheme == 'https' and location.hostname in allowed[0]
                         and not location.username and not location.password
                         and location.port in (None, 443) and re.fullmatch(allowed[1], location.path)):
-                    if self.platform == 'youtube' and location.path == '/watch':
-                        ids = parse_qs(location.query).get('v', [])
-                        if len(ids) != 1 or not re.fullmatch(r'[A-Za-z0-9_-]{11}', ids[0]):
+                    if self.platform == 'youtube':
+                        if location.hostname == 'youtu.be':
+                            short_match = re.fullmatch(r'^/([A-Za-z0-9_-]{11})/?$', location.path)
+                            if short_match:
+                                return 'https://youtu.be/' + short_match.group(1)
                             continue
-                        return 'https://www.youtube.com/watch?v=' + ids[0]
+                        if location.path in ('/watch', '/watch/'):
+                            ids = parse_qs(location.query).get('v', [])
+                            if len(ids) != 1 or not re.fullmatch(r'[A-Za-z0-9_-]{11}', ids[0]):
+                                continue
+                            return f'https://{location.hostname}/watch?v={ids[0]}'
+                        shorts_match = re.fullmatch(r'^/shorts/([A-Za-z0-9_-]{11})/?$', location.path)
+                        if shorts_match:
+                            return f'https://{location.hostname}/shorts/{shorts_match.group(1)}'
+                        continue
+                    if self.platform == 'facebook' and location.path in ('/watch', '/watch/'):
+                        ids = parse_qs(location.query).get('v', [])
+                        if len(ids) != 1 or not re.fullmatch(r'\d{4,30}', ids[0]):
+                            continue
+                        return f'https://{location.hostname}/watch/?v={ids[0]}'
                     # Strip query/fragment tracking or signed access tokens from logs.
                     return f'https://{location.hostname}{location.path}'
         return ''

@@ -11,6 +11,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import threading
 import uuid
@@ -396,12 +397,19 @@ class ProfileStore:
                 _atomic_json(self.registry_path, payload)
                 return dict(record)
 
-    def delete(self, identifier):
-        """Remove only the account record; private files are deliberately retained."""
+    def delete(self, identifier, *, before_delete=None, clean_artifacts=False):
+        """Remove the account record and optionally purge its screenshots; browser files stay intact."""
         with self.lease(identifier):
+            if before_delete is not None:
+                before_delete()
+            artifact_dir = Path(self.artifact_dir(identifier)) if clean_artifacts else None
             with self._registry():
                 payload = self._read_registry()
                 self._find(payload, _profile_id(identifier))
                 payload["accounts"] = [item for item in payload["accounts"] if item["id"] != identifier]
                 _atomic_json(self.registry_path, payload)
+            if artifact_dir is not None and artifact_dir.exists():
+                _assert_plain_tree(artifact_dir)
+                if artifact_dir.name == "artifacts" and artifact_dir.parent.parent.parent == self._profiles:
+                    shutil.rmtree(artifact_dir, ignore_errors=True)
         return True

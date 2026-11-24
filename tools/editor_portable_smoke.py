@@ -49,7 +49,18 @@ def run(exe, report_path):
             else:raise RuntimeError('Portable app did not become ready')
             token=re.search(r'name="api-token" content="([^"]+)"',html).group(1)
             checks=[]
-            for asset in ('static/editor.js','static/uploader.js','static/workbench.js','static/style.css','static/fonts.css','static/fonts/be-vietnam-pro-regular.ttf'):
+            assets=(
+                'static/app.js','static/editor.js','static/uploader.js',
+                'static/uploader-THIRD-PARTY.txt','static/editor-THIRD-PARTY.txt',
+                'static/style.css','static/motion.css','static/sakuga-vfx.js',
+                'static/workbench.js','static/fonts.css','static/sakuga-LICENSE.txt',
+                'static/fonts/be-vietnam-pro-regular.ttf','static/fonts/be-vietnam-pro-medium.ttf',
+                'static/fonts/be-vietnam-pro-semibold.ttf','static/fonts/be-vietnam-pro-bold.ttf',
+                'static/fonts/noto-sans-sc.ttf','static/fonts/jetbrains-mono.ttf',
+                'static/fonts/be-vietnam-pro-OFL.txt','static/fonts/noto-sans-sc-OFL.txt',
+                'static/fonts/jetbrains-mono-OFL.txt',
+            )
+            for asset in assets:
                 with opener.open('http://127.0.0.1:5000/'+asset,timeout=5) as response:
                     assert response.status==200 and response.read(1)
                 checks.append(asset)

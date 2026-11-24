@@ -606,3 +606,28 @@ test('audio UI exposes one persisted numeric field per option and bounded presen
     assert.equal(h.elements['editor-tts-provider'].getAttribute('aria-describedby'), 'editor-capcut-voice-help');
     assert.match(template, /href="\/static\/motion\.css"/);
 });
+
+test('v2.0.3 M-09 & L-02 frontend fixes preserve empty SVG, clear stage dimensions, hideResult, and encode IDs', () => {
+    const h = harness({withApp: true});
+    h.init();
+
+    assert.match(appSource, /setAttribute\('accept',\s*'video\/mp4,video\/x-matroska,\.mp4,\.mkv'\)/);
+
+    h.elements['video-stage'].style.width = '320px';
+    h.elements['video-stage'].style.height = '180px';
+    h.run('invalidatePreview()');
+    assert.equal(h.elements['video-stage'].style.width, '');
+    assert.equal(h.elements['video-stage'].style.height, '');
+
+    h.run("queueJobs = []; renderQueue()");
+    assert.match(h.elements['queue-list'].innerHTML, /class="queue-empty-icon"/);
+    assert.match(h.elements['queue-list'].innerHTML, /<svg/);
+
+    h.run("showResult({project_dir:'p',video:'p.mp4',raw_srt:'r.srt',translated_srt:'v.srt',publish_metadata:'p.json'},false)");
+    assert.equal(h.elements['res-publish'].textContent, 'p.json');
+    assert.equal(h.elements['res-publish-row'].hidden, false);
+    h.run('hideResult()');
+    assert.equal(h.elements['res-publish'].textContent, '');
+    assert.equal(h.elements['res-publish-row'].hidden, true);
+    assert.match(appSource, /\/api\/queue\/\$\{encodeURIComponent\(id\)\}\/retry/);
+});

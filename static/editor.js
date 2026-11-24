@@ -12,7 +12,7 @@
         banner_text: '', banner_position: 'top', watermark_enabled: false, watermark_path: '', watermark_opacity: .7,
         watermark_corner: 'top_right', reframe: 'original', output_height: 1280, encoder: 'auto',
         audio_mode: 'original', audio_format: 'wav', bgm_volume: .35, tts_enabled: false, ducking_enabled: true,
-        speed: 1, change_audio_pitch: false, pitch_semitones: 0,
+        speed: 1, change_audio_pitch: false, tts_change_pitch: false, pitch_semitones: 0,
         tts_provider: 'capcut_internal', tts_voice: '', tts_speed: 1, tts_pitch: 0, tts_fallback: true,
     });
     const choices = {
@@ -56,6 +56,8 @@
             else if (Object.hasOwn(value, 'change_audio_pitch') && value.change_audio_pitch !== value.tts_change_pitch) {
                 errors.tts_change_pitch = 'Hai giá trị cao độ giọng đọc không khớp nhau.';
             } else options.change_audio_pitch = value.tts_change_pitch;
+        } else if (Object.hasOwn(value, 'change_audio_pitch')) {
+            delete options.tts_change_pitch;
         }
         for (const [key, values] of Object.entries(choices)) if (!values.includes(options[key])) errors[key] = 'Lựa chọn không hợp lệ.';
         for (const [key, [min, max]] of Object.entries(ranges)) {
@@ -233,6 +235,17 @@
         return current?.options.tts_provider === 'edge_tts' ? edge : capcut || (current?.options.tts_fallback === true && edge);
     }
     function needsSeparator() { return current?.options.audio_mode === 'instrumental' && capabilities?.optional?.audio_separator?.available !== true; }
+    function controlLabel(control, fallback) {
+        const label = control?.labels?.[0];
+        if (!label) return fallback;
+        if (typeof label.cloneNode === 'function') {
+            const copy = label.cloneNode(true);
+            copy.querySelectorAll?.('select, input, textarea, button, small, [role="note"]').forEach(node => node.remove());
+            const text = copy.textContent?.replace(/\s+/g, ' ').trim();
+            if (text) return text;
+        }
+        return label.textContent?.trim() || fallback;
+    }
     function checkForm() {
         const validation = validateOptions(current?.options || defaults), errors = validation.errors;
         if (current?.cropError) errors.crop_box = current.cropError;
@@ -247,7 +260,7 @@
         $('editor-crop-error').textContent = cropError;
         for (const field of cropFields) $(`editor-crop-${field}`).setAttribute('aria-invalid', String(Boolean(cropError)));
         $('editor-form-error').textContent = Object.entries(errors).filter(([key]) => key !== 'crop_box')
-            .map(([key, message]) => `${controlByKey[key]?.labels?.[0]?.textContent?.trim() || key}: ${message}`).join(' ');
+            .map(([key, message]) => `${controlLabel(controlByKey[key], key)}: ${message}`).join(' ');
         return {options: validation.options, errors};
     }
     function refreshControls() {

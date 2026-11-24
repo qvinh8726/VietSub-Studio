@@ -1,4 +1,5 @@
 """Publish Hub Flask boundary: scoped media, explicit login, metadata and queue actions."""
+from contextlib import ExitStack
 import copy
 from datetime import datetime, timezone
 import hashlib
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 from threading import Event, RLock, Thread
 import time
 import uuid
@@ -63,6 +65,25 @@ class UploaderAPI:
             return (any(item[2].active(job_id) for item in self.instances.values())
                     or any(task.get('job_id')==job_id and task.get('status') in {'queued','running'} for task in self.meta_tasks.values()))
 
+    def any_active(self):
+        with self.lock:
+            if any(task.get('status') in {'queued','running'} for task in self.sessions.values()):
+                return True
+            if any(task.get('status') in {'queued','running'} for task in self.meta_tasks.values()):
+                return True
+            instances=list(self.instances.values())
+        return any(any(job.get('status') in ACTIVE for job in item[2].snapshot()) for item in instances)
+
+    def _trim_cache(self,mapping,*,terminal_only=False,limit=256):
+        while len(mapping)>limit:
+            if terminal_only:
+                victim=next((key for key,item in mapping.items() if item.get('status') in TERMINAL|{'cancelled'}),None)
+                if victim is None:
+                    break
+            else:
+                victim=next(iter(mapping))
+            mapping.pop(victim,None)
+
     def protected_paths(self):
         with self.lock:
             paths=set().union(*(item[2].protected_paths() for item in self.instances.values()))
@@ -110,6 +131,32 @@ class UploaderAPI:
     def _task(self,task):
         return {key:copy.deepcopy(value) for key,value in task.items() if not key.startswith('_')}
 
+    def _session_screenshot_info(self,task):
+        result=task.get('result')
+        if not isinstance(result,dict):
+            return '',''
+        screenshot=result.get('screenshot_path') or ''
+        if not screenshot:
+            return '',''
+        profile_root=Path(self.app.CONFIG_DIR)/'uploader'/'profiles'/task['profile_id']
+        try:
+            Path(screenshot).resolve().relative_to(profile_root.resolve())
+        except ValueError:
+            return '',''
+        if not storage.safe_regular(screenshot):
+            return '',''
+        sign=hmac.new(self.app.API_TOKEN.encode('ascii'),f"upload-session-screen|{task['id']}|{screenshot}".encode('utf-8'),hashlib.sha256).hexdigest()
+        return screenshot,sign
+
+    def _public_session(self,task):
+        value=self._task(task)
+        result=value.get('result')
+        if isinstance(result,dict):
+            result.pop('screenshot_path',None)
+            _,sign=self._session_screenshot_info(task)
+            result['screenshot_url']=f"/api/uploader/sessions/{value['id']}/screenshot?signature={sign}" if sign else ''
+        return value
+
     def _session_start(self,profile_id,action):
         store,browser,queue=self.services();store.get(profile_id)
         if queue.profile_active(profile_id):raise RuntimeError('Tài khoản có upload đang chờ/chạy; huỷ/chờ trước khi đăng nhập.')
@@ -118,16 +165,25 @@ class UploaderAPI:
                 raise RuntimeError('Đang có thao tác login/check cho tài khoản này.')
             identifier=uuid.uuid4().hex;cancel,finish=Event(),Event()
             task={'id':identifier,'profile_id':profile_id,'action':action,'status':'queued','error':'',
-                  '_cancel':cancel,'_finish':finish,'created_at':time.time()};self.sessions[identifier]=task
+                  '_cancel':cancel,'_finish':finish,'created_at':time.time()}
+            self.sessions[identifier]=task
+            self._trim_cache(self.sessions,terminal_only=True)
+            snapshot=self._public_session(task)
         def execute():
-            task['status']='running'
+            with self.lock:
+                if identifier in self.sessions:self.sessions[identifier]['status']='running'
             try:
                 result=browser.login(profile_id,cancel=cancel,finish=finish) if action=='login' else browser.probe(profile_id)
-                task['result']=result;task['status']='cancelled' if cancel.is_set() else 'success'
+                with self.lock:
+                    if identifier in self.sessions:
+                        self.sessions[identifier]['result']=result
+                        self.sessions[identifier]['status']='cancelled' if cancel.is_set() else 'success'
             except Exception as error:
-                task.update(status='cancelled' if cancel.is_set() else 'error',error=str(error)[:2000])
+                with self.lock:
+                    if identifier in self.sessions:
+                        self.sessions[identifier].update(status='cancelled' if cancel.is_set() else 'error',error=str(error)[:2000])
         Thread(target=execute,name='uploader-session',daemon=True).start()
-        return self._task(task)
+        return snapshot
 
     def _public_job(self,job):
         value={key:copy.deepcopy(val) for key,val in job.items() if key not in {'video','metadata','video_mtime_ns','request_fingerprint','screenshot_path'}}
@@ -188,8 +244,17 @@ class UploaderAPI:
         @bp.delete('/api/uploader/profiles/<profile_id>')
         def delete_profile(profile_id):
             store,_,queue=self.services()
-            if queue.profile_active(profile_id):raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
-            store.delete(profile_id);return jsonify({'ok':True})
+            def check_unused():
+                with self.lock:
+                    if any(t.get('profile_id')==profile_id and t.get('status') in {'queued','running'} for t in self.sessions.values()):
+                        raise RuntimeError('Tài khoản đang có thao tác login/check đang chạy.')
+                if queue.profile_active(profile_id):
+                    raise RuntimeError('Tài khoản còn upload đang chờ/chạy.')
+            store.delete(profile_id,before_delete=check_unused,clean_artifacts=True)
+            with self.lock:
+                for key in [k for k,t in self.sessions.items() if t.get('profile_id')==profile_id and t.get('status') not in {'queued','running'}]:
+                    self.sessions.pop(key,None)
+            return jsonify({'ok':True})
 
         @bp.post('/api/uploader/profiles/<profile_id>/login')
         def login(profile_id):
@@ -201,21 +266,36 @@ class UploaderAPI:
 
         @bp.route('/api/uploader/sessions/<identifier>',methods=['GET'])
         def session_status(identifier):
-            if identifier not in self.sessions:raise KeyError('Không tìm thấy login/check task.')
-            return jsonify(self._task(self.sessions[identifier]))
+            with self.lock:
+                if identifier not in self.sessions:raise KeyError('Không tìm thấy login/check task.')
+                return jsonify(self._public_session(self.sessions[identifier]))
+
+        @bp.get('/api/uploader/sessions/<identifier>/screenshot')
+        def session_screenshot(identifier):
+            with self.lock:
+                if identifier not in self.sessions:raise KeyError('Không tìm thấy login/check task.')
+                screenshot,sign=self._session_screenshot_info(self.sessions[identifier])
+            if not sign or not secrets.compare_digest(sign.encode('ascii'),request.args.get('signature','').encode('utf-8')):
+                return jsonify({'error':'Screenshot không khả dụng hoặc liên kết sai.'}),403
+            if not storage.safe_regular(screenshot):
+                return jsonify({'error':'Screenshot không còn khả dụng.'}),403
+            return send_file(screenshot,mimetype='image/png')
 
         @bp.post('/api/uploader/sessions/<identifier>/finish')
         def finish_login(identifier):
             self._body(())
-            if identifier not in self.sessions:raise KeyError('Không tìm thấy login task.')
-            self.sessions[identifier]['_finish'].set();return jsonify(self._task(self.sessions[identifier]))
+            with self.lock:
+                if identifier not in self.sessions:raise KeyError('Không tìm thấy login task.')
+                self.sessions[identifier]['_finish'].set()
+                return jsonify(self._public_session(self.sessions[identifier]))
 
         @bp.post('/api/uploader/sessions/<identifier>/cancel')
         def cancel_login(identifier):
             self._body(())
-            if identifier not in self.sessions:raise KeyError('Không tìm thấy login task.')
-            self.sessions[identifier]['_cancel'].set();self.sessions[identifier]['_finish'].set()
-            return jsonify(self._task(self.sessions[identifier]))
+            with self.lock:
+                if identifier not in self.sessions:raise KeyError('Không tìm thấy login task.')
+                self.sessions[identifier]['_cancel'].set();self.sessions[identifier]['_finish'].set()
+                return jsonify(self._public_session(self.sessions[identifier]))
 
         @bp.route('/api/uploader/projects/<job_id>',methods=['GET','POST'])
         def project(job_id):
@@ -234,20 +314,27 @@ class UploaderAPI:
             with self.app.operation_admission_lock,self.app.queue_state_lock:
                 if self.app.workflow_lock.locked() or self.app.preview_lock.locked():raise RuntimeError('Hãy chờ VietSub/preview xong trước khi tạo metadata AI.')
                 _,result,value,_=self._project(job_id,ready=True)
-                if not storage.safe_regular(value['assets']['translated_srt']):raise ValueError('Project không có SRT Việt để tạo metadata.')
-            identifier=uuid.uuid4().hex;task={'id':identifier,'job_id':job_id,'status':'queued','error':'',
-                                            '_srt_path':storage.canonical(value['assets']['translated_srt'])};self.meta_tasks[identifier]=task
+                srt_path=value['assets'].get('translated_srt') or ''
+                if not srt_path or not storage.safe_regular(srt_path):raise ValueError('Project không có SRT Việt để tạo metadata.')
+            identifier=uuid.uuid4().hex
+            task={'id':identifier,'job_id':job_id,'status':'queued','error':'','_srt_path':storage.canonical(srt_path)}
+            with self.lock:
+                self.meta_tasks[identifier]=task
+                self._trim_cache(self.meta_tasks,terminal_only=True)
+                snapshot=self._task(task)
             def generate():
-                task['status']='running'
+                with self.lock:
+                    if identifier in self.meta_tasks:self.meta_tasks[identifier]['status']='running'
                 admitted=self.app.workflow_lock.acquire(blocking=False)
                 try:
                     if not admitted:raise RuntimeError('VietSub vừa bắt đầu; hãy tạo metadata lại sau.')
+                    if not storage.safe_regular(srt_path):raise ValueError('Project không có SRT Việt để tạo metadata.')
                     # Share the legacy cancellation event while holding workflow_lock;
                     # /api/cancel must stop this acknowledged workflow as well.
                     self.app.cancel_event.clear()
                     self.app.workflow_context.cancel_event=self.app.cancel_event
                     config=self.app.get_translation_runtime_config(require_ready=True)
-                    prompt=publish.build_prompt(self.app.read_text_file(result['translated_srt']),result.get('project_name',''))
+                    prompt=publish.build_prompt(self.app.read_text_file(srt_path),result.get('project_name',''))
                     if config['provider']=='notebook':
                         @self.app.browser_automation
                         def request_metadata():
@@ -260,17 +347,24 @@ class UploaderAPI:
                     pack=publish.parse_response(response)
                     # Return a proposal; never overwrite a newer user draft or
                     # saved metadata from an asynchronous AI response.
-                    task['metadata']={key:pack[key] for key in ('title','description','hashtags')}
-                    task['status']='success'
-                except Exception as error:task.update(status='error',error=str(error)[:2000])
+                    proposal={key:pack[key] for key in ('title','description','hashtags')}
+                    with self.lock:
+                        if identifier in self.meta_tasks:
+                            self.meta_tasks[identifier]['metadata']=proposal
+                            self.meta_tasks[identifier]['status']='success'
+                except Exception as error:
+                    with self.lock:
+                        if identifier in self.meta_tasks:
+                            self.meta_tasks[identifier].update(status='error',error=str(error)[:2000])
                 finally:
                     if admitted:self.app.workflow_lock.release()
-            Thread(target=generate,name='uploader-metadata',daemon=True).start();return jsonify(self._task(task)),202
+            Thread(target=generate,name='uploader-metadata',daemon=True).start();return jsonify(snapshot),202
 
         @bp.get('/api/uploader/metadata/<identifier>')
         def metadata_status(identifier):
-            if identifier not in self.meta_tasks:raise KeyError('Không tìm thấy metadata task.')
-            return jsonify(self._task(self.meta_tasks[identifier]))
+            with self.lock:
+                if identifier not in self.meta_tasks:raise KeyError('Không tìm thấy metadata task.')
+                return jsonify(self._task(self.meta_tasks[identifier]))
 
         @bp.post('/api/uploader/media')
         def upload_media():
@@ -285,9 +379,14 @@ class UploaderAPI:
                        'metadata':{'title':Path(video.filename).stem[:120],'description':'','hashtags':[]}}
                 atomic_json(directory/'media.json',value)
             except Exception:
-                if path.exists():path.unlink()
+                if path.exists():path.unlink(missing_ok=True)
+                meta_file=directory/'media.json'
+                if meta_file.exists():meta_file.unlink(missing_ok=True)
+                shutil.rmtree(directory,ignore_errors=True)
                 raise
-            with self.lock:self.media[(os.path.abspath(self.app.CONFIG_DIR),identifier)]=value
+            with self.lock:
+                self.media[(os.path.abspath(self.app.CONFIG_DIR),identifier)]=value
+                self._trim_cache(self.media)
             return jsonify(self._media_payload(value)),201
 
         @bp.get('/api/uploader/media/<identifier>/video')
@@ -326,25 +425,27 @@ class UploaderAPI:
                                or job.get('scheduled_at')!=stamp for job in prior)):
                     raise ValueError('request_id đã dùng cho payload khác; không đăng lại.')
                 return jsonify({'jobs':[self._public_job(job) for job in prior]}),202
-            ids=data['profile_ids']
-            if not isinstance(ids,list) or not ids or len(ids)>30 or any(not isinstance(i,str) for i in ids):raise ValueError('Danh sách tài khoản không hợp lệ.')
-            profiles=[store.get(i) for i in dict.fromkeys(ids)]
-            if any(profile.get('session_status') not in {'alive','ready'} for profile in profiles):
-                raise ValueError('Chỉ xếp hàng tài khoản đã đăng nhập và kiểm tra phiên sẵn sàng.')
+            ids=list(dict.fromkeys(data['profile_ids']))
             from .adapters import PLATFORMS
             visibility=data['visibility']
-            if not isinstance(visibility,str) or any(visibility not in PLATFORMS[p['platform']]['modes'] for p in profiles):
-                raise ValueError('Có nền tảng không hỗ trợ chế độ hiển thị đã chọn; không tự chuyển sang public.')
             if visibility=='public' and data.get('confirm_public') is not True:raise ValueError('Cần xác nhận rõ trước khi đăng công khai.')
             scheduled=schedule_time(data.get('scheduled_at'))
-            with self.app.operation_admission_lock,self.app.queue_state_lock:
-                if data.get('job_id'):
-                    if not isinstance(data['job_id'],str):raise ValueError('Project ID không hợp lệ.')
-                    _,_,_,path=self._project(data['job_id'],ready=True)
-                    source={'job_id':data['job_id'],'video':path}
-                else:
-                    value=self._media(data['media_id']);source={'media_id':value['id'],'video':value['path']}
-                records=queue.submit(source,profiles,data['metadata'],visibility,scheduled,data['request_id'])
+            with ExitStack() as stack:
+                for pid in sorted(ids):
+                    stack.enter_context(store.lease(pid))
+                profiles=[store.get(i) for i in ids]
+                if any(profile.get('session_status') not in {'alive','ready'} for profile in profiles):
+                    raise ValueError('Chỉ xếp hàng tài khoản đã đăng nhập và kiểm tra phiên sẵn sàng.')
+                if not isinstance(visibility,str) or any(visibility not in PLATFORMS[p['platform']]['modes'] for p in profiles):
+                    raise ValueError('Có nền tảng không hỗ trợ chế độ hiển thị đã chọn; không tự chuyển sang public.')
+                with self.app.operation_admission_lock,self.app.queue_state_lock:
+                    if data.get('job_id'):
+                        if not isinstance(data['job_id'],str):raise ValueError('Project ID không hợp lệ.')
+                        _,_,_,path=self._project(data['job_id'],ready=True)
+                        source={'job_id':data['job_id'],'video':path}
+                    else:
+                        value=self._media(data['media_id']);source={'media_id':value['id'],'video':value['path']}
+                    records=queue.submit(source,profiles,data['metadata'],visibility,scheduled,data['request_id'])
             return jsonify({'jobs':[self._public_job(j) for j in records]}),202
 
         @bp.post('/api/uploader/queue/<identifier>/cancel')
@@ -355,13 +456,14 @@ class UploaderAPI:
         def retry_upload(identifier):
             data=self._body(('confirm_uncertain',));confirm=data.get('confirm_uncertain',False)
             if type(confirm) is not bool:raise ValueError('confirm_uncertain phải là boolean.')
-            with self.app.operation_admission_lock,self.app.queue_state_lock:
-                store,_,queue=self.services();job=queue.get(identifier)
-                store.get(job['profile_id'])
-                if job.get('job_id'):self._project(job['job_id'],ready=True)
-                elif job.get('media_id'):self._media(job['media_id'])
-                if not storage.safe_regular(job['video']):raise ValueError('Video đã bị dọn; không thể thử lại.')
-                return jsonify(self._public_job(queue.retry(identifier,confirm_uncertain=confirm)))
+            store,_,queue=self.services();job=queue.get(identifier)
+            with store.lease(job['profile_id']):
+                with self.app.operation_admission_lock,self.app.queue_state_lock:
+                    store.get(job['profile_id'])
+                    if job.get('job_id'):self._project(job['job_id'],ready=True)
+                    elif job.get('media_id'):self._media(job['media_id'])
+                    if not storage.safe_regular(job['video']):raise ValueError('Video đã bị dọn; không thể thử lại.')
+                    return jsonify(self._public_job(queue.retry(identifier,confirm_uncertain=confirm)))
 
         @bp.get('/api/uploader/queue/<identifier>/screenshot')
         def screenshot(identifier):

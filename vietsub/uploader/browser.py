@@ -250,6 +250,21 @@ class BrowserRuntime:
         return report
 
     @staticmethod
+    def _safe_business_error(error, upload_error_class):
+        fallback = "Uploader browser operation failed; see private local diagnostic screenshot if available."
+        if type(error) is not upload_error_class:
+            return fallback
+        text = " ".join(str(error or "").split()).strip()
+        if not text or len(text) > 240:
+            return fallback
+        lowered = text.lower()
+        sensitive = ("http://", "https://", "://", "cookie", "token", "secret", "bearer",
+                     "authorization", "sessionid", "password", "passwd", "auth=")
+        if any(marker in lowered for marker in sensitive):
+            return fallback
+        return text
+
+    @staticmethod
     def _result(adapter, value):
         if not isinstance(value, dict) or value.get("status") not in ("success", "draft"):
             raise RuntimeError("Uploader did not confirm publication or draft save.")
@@ -260,7 +275,7 @@ class BrowserRuntime:
                 parsed = urlsplit(candidate)
                 platform = getattr(adapter, "platform", "")
                 public_hosts = {
-                    "tiktok": ("www.tiktok.com",), "youtube": ("www.youtube.com", "youtu.be"),
+                    "tiktok": ("www.tiktok.com",), "youtube": ("www.youtube.com", "youtube.com", "youtu.be"),
                     "facebook": ("www.facebook.com", "business.facebook.com"),
                     "douyin": ("www.douyin.com",), "bilibili": ("www.bilibili.com",),
                     "xiaohongshu": ("www.xiaohongshu.com",),
@@ -272,6 +287,10 @@ class BrowserRuntime:
                     if platform == "youtube" and parsed.path == "/watch":
                         ids = parse_qs(parsed.query).get("v", [])
                         if len(ids) == 1 and re.fullmatch(r"[A-Za-z0-9_-]{11}", ids[0]):
+                            query = "v=" + ids[0]
+                    elif platform == "facebook" and parsed.path in ("/watch", "/watch/"):
+                        ids = parse_qs(parsed.query).get("v", [])
+                        if len(ids) == 1 and re.fullmatch(r"\d{4,30}", ids[0]):
                             query = "v=" + ids[0]
                     url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
             except ValueError:
@@ -332,7 +351,7 @@ class BrowserRuntime:
                         elif isinstance(error, module.UnsupportedMode):
                             safe = module.UnsupportedMode("Requested publication mode is not supported by this platform adapter.")
                         else:
-                            safe = module.UploadError("Uploader browser operation failed; see private local diagnostic screenshot if available.")
+                            safe = module.UploadError(self._safe_business_error(error, module.UploadError))
                             self._log(profile_id, "Uploader operation failed; no page or credential details were logged.")
                         safe.screenshot_path = shot
                         raise safe from None
