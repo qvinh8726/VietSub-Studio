@@ -9274,13 +9274,30 @@ def run_desktop_app():
 
 def main():
     if "--self-check-crypto" in sys.argv:
+        out_path = ""
+        idx = sys.argv.index("--self-check-crypto")
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            out_path = sys.argv[idx + 1]
         try:
             from vietsub import updater as _release_updater
             _release_updater.self_check_ed25519()
-            print("Ed25519 RFC 8032 OK")
+            message = "Ed25519 RFC 8032 OK"
+            if out_path:
+                with open(out_path, "w", encoding="utf-8") as handle:
+                    handle.write(message + "\n")
+            if sys.stdout is not None:
+                print(message)
             return 0
         except Exception as error:
-            print(f"Ed25519 self-check failed: {error}", file=sys.stderr)
+            message = f"Ed25519 self-check failed: {error}"
+            if out_path:
+                try:
+                    with open(out_path, "w", encoding="utf-8") as handle:
+                        handle.write(message + "\n")
+                except OSError:
+                    pass
+            if sys.stderr is not None:
+                print(message, file=sys.stderr)
             return 1
     if not acquire_instance_lock():
         log_to_app("VietSub Studio đang chạy ở một tiến trình khác.", "error")

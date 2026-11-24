@@ -156,11 +156,20 @@ jobs:
           New-Item -ItemType Directory -Path $smokeConfigDir -Force | Out-Null
           $env:VIETSUB_STUDIO_CONFIG_DIR = $smokeConfigDir
 
-          # 1. Verify bundled Cryptodome Ed25519 native extensions & RFC 8032 verification inside the frozen EXE.
-          $cryptoOut = & $exe --self-check-crypto 2>&1
-          if ($LASTEXITCODE -ne 0 -or ($cryptoOut -join "`n") -notmatch "Ed25519 RFC 8032 OK") {
-            throw "Packaged Ed25519 self-check failed (exit $LASTEXITCODE): $($cryptoOut -join ' ')"
+          # 1. Verify bundled Cryptodome Ed25519 native extensions & RFC 8032 verification inside the frozen GUI EXE.
+          $cryptoOutFile = Join-Path $env:RUNNER_TEMP "vietsub-crypto-selfcheck.txt"
+          if (Test-Path $cryptoOutFile) { Remove-Item -Force $cryptoOutFile }
+          $cryptoProc = Start-Process -FilePath $exe -ArgumentList @("--self-check-crypto", $cryptoOutFile) -PassThru
+          if (-not $cryptoProc.WaitForExit(60000)) {
+            Stop-Process -Id $cryptoProc.Id -Force -ErrorAction SilentlyContinue
+            throw "Packaged Ed25519 self-check timed out after 60 seconds."
           }
+          $cryptoText = if (Test-Path $cryptoOutFile) { (Get-Content -Raw -Path $cryptoOutFile).Trim() } else { "" }
+          if ($cryptoProc.ExitCode -ne 0 -or $cryptoText -notmatch "Ed25519 RFC 8032 OK") {
+            throw "Packaged Ed25519 self-check failed (exit $($cryptoProc.ExitCode)): $cryptoText"
+          }
+          Remove-Item -Force $cryptoOutFile -ErrorAction SilentlyContinue
+          Write-Host "PASS [1/6] --self-check-crypto: $cryptoText (exit 0)"
 
           $process = Start-Process -FilePath $exe -ArgumentList "--server" -PassThru
           try {
@@ -196,6 +205,7 @@ jobs:
             if ($health.checks.js_runtime.detail -match "yt-dlp-ejs") {
               throw "yt-dlp-ejs is missing from the packaged executable."
             }
+            Write-Host "PASS [2/6] /api/health: yt-dlp + yt-dlp-ejs OK"
 
             # 3. Verify Publish Hub bundled selectors.json + YouTube API lazy imports (requests/certifi).
             $upCaps = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/uploader/capabilities" -Headers $authHeaders -TimeoutSec 15
@@ -209,6 +219,7 @@ jobs:
             if (-not $ytProf.id -or $null -eq $ytProf.youtube_api) {
               throw "Packaged YouTube profile creation failed to load youtube_api module."
             }
+            Write-Host "PASS [3/6] /api/uploader/capabilities (platforms=$($upCaps.platforms.Count), default=$($upCaps.default_upload_mode)) + YouTube profile OK"
 
             # 4. Verify Phase 1 / 3.1 / 3.2 endpoints: glossaries, channel-presets, editor capabilities, update.
             $glossaries = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/glossaries" -Headers $authHeaders -TimeoutSec 15
@@ -219,6 +230,7 @@ jobs:
             if ($edCaps.subtitle_animations -notcontains "word_pop") { throw "Packaged /api/editor/capabilities missing word_pop." }
             $upd = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/update" -Headers $authHeaders -TimeoutSec 20
             if ($null -eq $upd.current_version) { throw "Packaged /api/update failed." }
+            Write-Host "PASS [4/6] /api/glossaries + /api/channel-presets + /api/editor/capabilities + /api/update (v$($upd.current_version), auto=$($upd.automatic_update_supported)) OK"
 
             # 5. Negative security boundary checks (TESTING=False): missing token -> 403, foreign Origin -> 403, non-JSON -> 415.
             foreach ($neg in @(
@@ -240,6 +252,7 @@ jobs:
               if ($code -ne $neg.Expected) {
                 throw "Security check '$($neg.Name)' expected HTTP $($neg.Expected), got $code."
               }
+              Write-Host "PASS [5/6] Security check '$($neg.Name)' -> HTTP $code"
             }
 
             $second = Start-Process -FilePath $exe -ArgumentList "--server" -PassThru
@@ -249,6 +262,7 @@ jobs:
             if ($second.ExitCode -ne 2) {
               throw "A second packaged instance returned unexpected code $($second.ExitCode)."
             }
+            Write-Host "PASS [6/6] Duplicate instance exit code = 2"
           } finally {
             $testProcesses = Get-CimInstance Win32_Process -Filter "Name='VietSub Studio.exe'" |
               Where-Object { $_.ExecutablePath -eq $exe }
