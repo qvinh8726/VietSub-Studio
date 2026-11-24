@@ -81,6 +81,14 @@ class ReleaseAssetContractTests(unittest.TestCase):
                 "VietSub-Studio-Portable-v1.2.3.zip.sha256.txt",
             ),
         )
+        self.assertEqual(
+            app.signed_release_asset_names("1.2.3"),
+            (
+                "VietSub-Studio-Portable-v1.2.3.zip",
+                "VietSub-Studio-Portable-v1.2.3.zip.sha256.txt",
+                "VietSub-Studio-Portable-v1.2.3.zip.sig",
+            ),
+        )
         self.assertEqual(app.UPDATE_ZIP_EXE_MEMBER, EXPECTED_EXE_MEMBER)
 
     def test_a_checksum_asset_without_the_txt_suffix_is_not_accepted(self):
@@ -168,6 +176,56 @@ class MakeReleaseTests(unittest.TestCase):
                 sorted(app.release_asset_names("1.2.3")),
             )
 
+    def test_signed_build_release_produces_and_verifies_ed25519_signature(self):
+        from tools import sign_release
+
+        make_release = load_make_release()
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            executable = root / "VietSub Studio.exe"
+            executable.write_bytes(b"MZ" + bytes(range(256)) * 4)
+            key_path = root / "offline-key.pem"
+            info = sign_release.generate_keypair(key_path, passphrase="correct horse battery staple")
+            trusted = {info["key_id"]: info["public_key_hex"]}
+            output_dir = root / "release"
+
+            zip_path, _ = make_release.build_release(
+                executable,
+                output_dir,
+                version="1.2.3",
+                sign_key=str(key_path),
+                passphrase="correct horse battery staple",
+                expected_public_keys=trusted,
+            )
+
+            self.assertEqual(
+                sorted(path.name for path in output_dir.iterdir()),
+                sorted(app.signed_release_asset_names("1.2.3")),
+            )
+            assert_release_matches_contract(self, output_dir, "1.2.3", executable.read_bytes())
+            sig_path = Path(f"{zip_path}.sig")
+            sig_text = sig_path.read_text(encoding="ascii")
+            zip_sha = make_release.sha256_file(zip_path)
+            self.assertEqual(
+                app.app_updater.verify_release_signature(
+                    "1.2.3", Path(zip_path).name, zip_sha, sig_text, public_keys=trusted
+                ),
+                info["key_id"],
+            )
+            # Flip 1 byte in ZIP or signature -> verification rejects.
+            bad_zip = bytearray(Path(zip_path).read_bytes())
+            bad_zip[-1] ^= 0x01
+            bad_sha = hashlib.sha256(bytes(bad_zip)).hexdigest()
+            with self.assertRaises(RuntimeError):
+                app.app_updater.verify_release_signature(
+                    "1.2.3", Path(zip_path).name, bad_sha, sig_text, public_keys=trusted
+                )
+            with self.assertRaises(RuntimeError):
+                app.app_updater.verify_release_signature(
+                    "1.2.3", Path(zip_path).name, zip_sha, sig_text[:-3] + ("A" if sig_text[-3] != "A" else "B") + sig_text[-2:],
+                    public_keys=trusted,
+                )
+
 
 class ReleaseMetadataTests(unittest.TestCase):
     def test_app_version_matches_the_newest_changelog_release(self):
@@ -188,11 +246,22 @@ class PublishedReleaseDirectoryTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("RELEASE_DIR"), "RELEASE_DIR is not set")
     def test_release_directory_matches_the_updater_contract(self):
         release_dir = Path(os.environ["RELEASE_DIR"])
+        require_sig = os.environ.get("REQUIRE_RELEASE_SIGNATURE") == "1"
+        expected_names = (
+            app.signed_release_asset_names(app.APP_VERSION)
+            if require_sig
+            else app.release_asset_names(app.APP_VERSION)
+        )
         self.assertEqual(
             sorted(path.name for path in release_dir.iterdir()),
-            sorted(app.release_asset_names(app.APP_VERSION)),
+            sorted(expected_names),
         )
         assert_release_matches_contract(self, release_dir, app.APP_VERSION)
+        if require_sig:
+            zip_name, _, sig_name = app.signed_release_asset_names(app.APP_VERSION)
+            zip_sha = hashlib.sha256((release_dir / zip_name).read_bytes()).hexdigest()
+            sig_text = (release_dir / sig_name).read_text(encoding="ascii")
+            app.app_updater.verify_release_signature(app.APP_VERSION, zip_name, zip_sha, sig_text)
 
 
 class UpdateHelperEnvironmentTests(unittest.TestCase):

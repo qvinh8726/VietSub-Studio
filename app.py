@@ -29,8 +29,9 @@ from flask import Flask, render_template, request, jsonify, send_file, send_from
 from werkzeug.exceptions import HTTPException, InternalServerError
 from werkzeug.serving import make_server
 
-from vietsub import storage, publish
+from vietsub import storage, publish, redaction
 from vietsub import manifest as project_manifest
+from vietsub import updater as app_updater
 from vietsub.sources import browser as browser_source
 from vietsub.sources import browser_capture
 from vietsub.sources import cookies as cookie_utils
@@ -234,6 +235,13 @@ WINDOWS_RESERVED_NAMES = {
 }
 API_TOKEN = secrets.token_urlsafe(32)
 API_TOKEN_HEADER = "X-VietSub-Token"
+redaction.register_secret(API_TOKEN)
+redaction.register_path_root(CONFIG_DIR, "<APP_DATA>")
+redaction.register_path_root(LOCALAPPDATA, "<LOCAL_DATA>")
+if getattr(sys, "frozen", False) and RESOURCE_DIR != CONFIG_DIR:
+    redaction.register_path_root(RESOURCE_DIR, "<APP_RUNTIME>")
+for _env_secret_name in ("VIETSUB_CAPCUT_COOKIE", "VIETSUB_CAPCUT_BEARER"):
+    redaction.register_secret(os.environ.get(_env_secret_name, ""))
 app.config["MAX_CONTENT_LENGTH"] = MAX_LOCAL_VIDEO_BYTES + 16 * 1024 * 1024
 
 # Global status state
@@ -335,168 +343,40 @@ class VideoOCRProcessError(RuntimeError):
         super().__init__(f"Lỗi tiến trình VideOCR (Mã thoát {self.returncode}{detail})")
 
 
-def _prerelease_tokens(prerelease):
-    if not prerelease:
-        return ()
-    tokens = []
-    for part in prerelease.split("."):
-        if not part:
-            raise ValueError("Phiên bản release không đúng định dạng.")
-        tokens.append((0, int(part)) if part.isdigit() else (1, part.lower()))
-    return tuple(tokens)
+_prerelease_tokens = app_updater._prerelease_tokens
+ReleaseVersion = app_updater.ReleaseVersion
+parse_release_version = app_updater.parse_release_version
 
 
-class ReleaseVersion(tuple):
-    """Semantic version 3-tuple whose comparisons preserve SemVer pre-release order."""
-
-    def __new__(cls, major, minor, patch, prerelease=()):
-        instance = super().__new__(cls, (major, minor, patch))
-        instance.prerelease = tuple(prerelease)
-        return instance
-
-    def _sort_key(self):
-        return (tuple(self), 1 if not self.prerelease else 0, self.prerelease)
-
-    @staticmethod
-    def _other_key(other):
-        if isinstance(other, ReleaseVersion):
-            return other._sort_key()
-        if isinstance(other, tuple) and len(other) == 3:
-            return (other, 1, ())
-        return None
-
-    def __eq__(self, other):
-        key = self._other_key(other)
-        return self._sort_key() == key if key is not None else NotImplemented
-
-    def __ne__(self, other):
-        eq = self.__eq__(other)
-        return NotImplemented if eq is NotImplemented else not eq
-
-    def __lt__(self, other):
-        key = self._other_key(other)
-        return self._sort_key() < key if key is not None else NotImplemented
-
-    def __le__(self, other):
-        key = self._other_key(other)
-        return self._sort_key() <= key if key is not None else NotImplemented
-
-    def __gt__(self, other):
-        key = self._other_key(other)
-        return self._sort_key() > key if key is not None else NotImplemented
-
-    def __ge__(self, other):
-        key = self._other_key(other)
-        return self._sort_key() >= key if key is not None else NotImplemented
-
-    def __hash__(self):
-        return hash(self._sort_key())
-
-
-def parse_release_version(value):
-    if not isinstance(value, str):
-        raise ValueError("Phiên bản release không hợp lệ.")
-    match = re.fullmatch(
-        r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
-        value.strip(),
+def is_newer_release(latest_version, current_version=None):
+    return app_updater.is_newer_release(
+        latest_version, APP_VERSION if current_version is None else current_version
     )
-    if not match:
-        raise ValueError("Phiên bản release không đúng định dạng.")
-    major, minor, patch = (int(part) for part in match.groups()[:3])
-    prerelease = _prerelease_tokens(match.group(4))
-    return ReleaseVersion(major, minor, patch, prerelease)
 
 
-def is_newer_release(latest_version, current_version=APP_VERSION):
-    return parse_release_version(latest_version) > parse_release_version(current_version)
-
-
-def validate_release_url(value):
-    parsed = urlparse(value or "")
-    expected_prefix = f"/{GITHUB_REPOSITORY.lower()}/releases/"
-    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "github.com":
-        raise ValueError("Link cập nhật không thuộc GitHub chính thức.")
-    if not parsed.path.lower().startswith(expected_prefix):
-        raise ValueError("Link cập nhật không thuộc repository chính thức.")
-    return value
-
-
-def validate_release_download_url(value, version):
-    parsed = urlparse(value or "")
-    expected_prefix = f"/{GITHUB_REPOSITORY.lower()}/releases/download/v{version}/"
-    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "github.com":
-        raise ValueError("File cập nhật không thuộc GitHub chính thức.")
-    if not parsed.path.lower().startswith(expected_prefix):
-        raise ValueError("File cập nhật không thuộc đúng release chính thức.")
-    return value
+validate_release_url = app_updater.validate_release_url
+validate_release_download_url = app_updater.validate_release_download_url
 
 
 def fetch_latest_release_payload():
-    req = urllib.request.Request(
-        LATEST_RELEASE_API,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": f"VietSub-Studio/{APP_VERSION}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError("Không thể kiểm tra bản cập nhật từ GitHub.") from error
-    if not isinstance(payload, dict):
-        raise RuntimeError("Dữ liệu release từ GitHub không hợp lệ.")
-    return payload
+    return app_updater.fetch_latest_release_payload(current_version=APP_VERSION)
 
 
-def release_asset_names(version):
-    base_name = f"VietSub-Studio-Portable-v{version}.zip"
-    return base_name, f"{base_name}.sha256.txt"
-
-
-def select_update_assets(payload, version):
-    zip_name, checksum_name = release_asset_names(version)
-    assets = {
-        str(item.get("name", "")): item
-        for item in payload.get("assets", [])
-        if isinstance(item, dict)
-    }
-    zip_asset = assets.get(zip_name)
-    checksum_asset = assets.get(checksum_name)
-    if not zip_asset or not checksum_asset:
-        raise RuntimeError("Release mới chưa có đủ file ZIP và checksum để tự cập nhật.")
-    for asset in (zip_asset, checksum_asset):
-        validate_release_download_url(asset.get("browser_download_url"), version)
-    return zip_asset, checksum_asset
+release_asset_names = app_updater.release_asset_names
+release_signature_name = app_updater.release_signature_name
+signed_release_asset_names = app_updater.signed_release_asset_names
+select_update_assets = app_updater.select_update_assets
 
 
 def get_update_status(force=False):
-    now = time.time()
-    with update_cache_lock:
-        cached = update_cache.get("status")
-        if cached and not force and now - update_cache["checked_at"] < UPDATE_CACHE_TTL_SECONDS:
-            return dict(cached)
-
-        payload = fetch_latest_release_payload()
-        latest_version = str(payload.get("tag_name", "")).strip().lstrip("v")
-        parse_release_version(latest_version)
-        release_url = validate_release_url(payload.get("html_url") or LATEST_RELEASE_URL)
-        try:
-            select_update_assets(payload, latest_version)
-            install_assets_available = True
-        except (RuntimeError, ValueError):
-            install_assets_available = False
-        status = {
-            "current_version": APP_VERSION,
-            "latest_version": latest_version,
-            "update_available": is_newer_release(latest_version),
-            "release_name": str(payload.get("name") or f"VietSub Studio v{latest_version}"),
-            "release_url": release_url,
-            "automatic_update_supported": supports_in_place_update() and install_assets_available,
-        }
-        update_cache.update({"checked_at": now, "status": status})
-        return dict(status)
+    return app_updater.get_update_status(
+        force=force,
+        cache=update_cache,
+        cache_lock=update_cache_lock,
+        current_version=APP_VERSION,
+        fetch_payload=fetch_latest_release_payload,
+        supports_update=supports_in_place_update,
+    )
 
 
 def reset_progress(job_id=""):
@@ -522,7 +402,7 @@ def reset_progress(job_id=""):
 
 
 def mark_current_job_persistence_error(error):
-    message = f"Không thể lưu trạng thái hàng đợi: {error}"
+    message = redaction.redact_error(f"Không thể lưu trạng thái hàng đợi: {error}")
     with queue_state_lock:
         candidate_jobs = copy.deepcopy(workflow_jobs)
         for job in candidate_jobs:
@@ -536,13 +416,14 @@ def mark_current_job_persistence_error(error):
 
 
 def update_progress(*, status=None, step=None, error=None, result=None, result_ready=None):
+    safe_error = redaction.redact_error(error) if error is not None else None
     with status_lock:
         if status is not None:
             progress_status["status"] = status
         if step is not None:
             progress_status["step"] = step
-        if error is not None:
-            progress_status["error"] = error
+        if safe_error is not None:
+            progress_status["error"] = safe_error
         if result:
             progress_status["result"].update(result)
         if result_ready is not None:
@@ -558,8 +439,8 @@ def update_progress(*, status=None, step=None, error=None, result=None, result_r
                         job["status"] = status
                     if step is not None:
                         job["step"] = step
-                    if error is not None:
-                        job["error"] = error
+                    if safe_error is not None:
+                        job["error"] = safe_error
                     if result:
                         job["result"].update(result)
                     if result_ready is not None:
@@ -1124,6 +1005,7 @@ def protect_text_secret(secret):
     """Encrypt any secret text (API key, Douyin cookie) for the current Windows user."""
     if not secret:
         return ""
+    redaction.register_secret(secret)
     raw = secret.encode("utf-8")
     if os.name != "nt":
         return "plain:" + base64.b64encode(raw).decode("ascii")
@@ -1159,7 +1041,9 @@ def unprotect_config_secret(protected):
     if not isinstance(protected, str):
         raise ValueError("API key đã lưu không hợp lệ.")
     if protected.startswith("plain:"):
-        return base64.b64decode(protected[6:], validate=True).decode("utf-8")
+        plain = base64.b64decode(protected[6:], validate=True).decode("utf-8")
+        redaction.register_secret(plain)
+        return plain
     if not protected.startswith("dpapi:") or os.name != "nt":
         raise ValueError("API key đã lưu không thể giải mã trên máy này.")
 
@@ -1189,7 +1073,9 @@ def unprotect_config_secret(protected):
         raw = ctypes.string_at(output_blob.data, output_blob.size)
     finally:
         ctypes.windll.kernel32.LocalFree(output_blob.data)
-    return raw.decode("utf-8")
+    text = raw.decode("utf-8")
+    redaction.register_secret(text)
+    return text
 
 
 def url_origin(url):
@@ -1248,7 +1134,9 @@ def get_translation_api_key(config):
         if protected:
             return validate_translation_api_key(unprotect_config_secret(protected), allow_empty=True)
         # Development configs created before DPAPI storage kept the key in plain text.
-        return validate_translation_api_key(config.get("translation_api_key", ""), allow_empty=True)
+        plain_key = validate_translation_api_key(config.get("translation_api_key", ""), allow_empty=True)
+        redaction.register_secret(plain_key)
+        return plain_key
     return ""
 
 
@@ -1521,222 +1409,32 @@ def ensure_initial_desktop_shortcut():
         return ""
 
 
-def parse_update_checksum(text, expected_filename):
-    for line in str(text or "").splitlines():
-        match = re.fullmatch(r"\s*([0-9A-Fa-f]{64})\s+\*?(.+?)\s*", line)
-        if match and match.group(2) == expected_filename:
-            return match.group(1).lower()
-    raise ValueError("File checksum của release không hợp lệ.")
-
-
-def find_update_executable_member(archive):
-    members = {
-        item.filename.replace("\\", "/"): item
-        for item in archive.infolist()
-        if not item.is_dir()
-    }
-    member = members.get(UPDATE_ZIP_EXE_MEMBER)
-    if member is None or member.file_size <= 0:
-        raise RuntimeError("ZIP cập nhật không chứa đúng file VietSub Studio.exe.")
-    if member.file_size > UPDATE_DOWNLOAD_MAX_BYTES:
-        raise RuntimeError("File EXE cập nhật vượt quá kích thước cho phép.")
-    return member
+parse_update_checksum = app_updater.parse_update_checksum
+parse_update_signature = app_updater.parse_update_signature
+find_update_executable_member = app_updater.find_update_executable_member
 
 
 def download_release_asset(url, destination, max_bytes):
-    request_headers = {
-        "Accept": "application/octet-stream",
-        "User-Agent": f"VietSub-Studio/{APP_VERSION}",
-    }
-    digest = hashlib.sha256()
-    total_bytes = 0
-    req = urllib.request.Request(url, headers=request_headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response, open(destination, "wb") as output:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total_bytes += len(chunk)
-                if total_bytes > max_bytes:
-                    raise RuntimeError("File cập nhật vượt quá kích thước cho phép.")
-                digest.update(chunk)
-                output.write(chunk)
-    except OSError as error:
-        raise RuntimeError("Không thể tải file cập nhật từ GitHub.") from error
-    return digest.hexdigest(), total_bytes
+    return app_updater.download_release_asset(
+        url, destination, max_bytes, current_version=APP_VERSION
+    )
 
 
 def prepare_update_executable(payload):
-    if not supports_in_place_update():
-        raise RuntimeError("Tự cập nhật tại chỗ chỉ hỗ trợ bản portable one-file.")
-
-    latest_version = str(payload.get("tag_name", "")).strip().lstrip("v")
-    parse_release_version(latest_version)
-    if not is_newer_release(latest_version):
-        raise RuntimeError("Bạn đang dùng phiên bản mới nhất.")
-    zip_asset, checksum_asset = select_update_assets(payload, latest_version)
-    zip_name, checksum_name = release_asset_names(latest_version)
-
-    update_dir = tempfile.mkdtemp(prefix="VietSub-Studio-update-")
-    staged_path = ""
-    try:
-        checksum_path = os.path.join(update_dir, checksum_name)
-        download_release_asset(
-            checksum_asset["browser_download_url"],
-            checksum_path,
-            1024 * 1024,
-        )
-        with open(checksum_path, "r", encoding="utf-8-sig") as checksum_file:
-            expected_hash = parse_update_checksum(checksum_file.read(), zip_name)
-
-        zip_path = os.path.join(update_dir, zip_name)
-        downloaded_hash, downloaded_size = download_release_asset(
-            zip_asset["browser_download_url"],
-            zip_path,
-            UPDATE_DOWNLOAD_MAX_BYTES,
-        )
-        if downloaded_hash.lower() != expected_hash:
-            raise RuntimeError("Checksum ZIP cập nhật không khớp; đã huỷ cài đặt.")
-        api_digest = str(zip_asset.get("digest") or "").lower()
-        if api_digest and api_digest != f"sha256:{downloaded_hash.lower()}":
-            raise RuntimeError("Digest GitHub của file cập nhật không khớp.")
-        declared_size = int(zip_asset.get("size") or 0)
-        if declared_size and downloaded_size != declared_size:
-            raise RuntimeError("Kích thước file cập nhật không khớp với GitHub.")
-
-        extracted_exe = os.path.join(update_dir, "VietSub Studio.exe")
-        try:
-            with zipfile.ZipFile(zip_path) as archive:
-                member = find_update_executable_member(archive)
-                with archive.open(member) as source, open(extracted_exe, "wb") as destination:
-                    shutil.copyfileobj(source, destination, length=1024 * 1024)
-        except (OSError, zipfile.BadZipFile) as error:
-            raise RuntimeError("Không thể đọc ZIP cập nhật đã tải.") from error
-
-        with open(extracted_exe, "rb") as executable_file:
-            if executable_file.read(2) != b"MZ":
-                raise RuntimeError("File EXE cập nhật không hợp lệ.")
-
-        target_path = os.path.abspath(sys.executable)
-        if not os.path.isfile(target_path):
-            raise FileNotFoundError("Không tìm thấy file VietSub Studio.exe hiện tại.")
-        staged_path = os.path.join(
-            os.path.dirname(target_path),
-            f".VietSub Studio.update-{uuid.uuid4().hex}.exe",
-        )
-        shutil.copy2(extracted_exe, staged_path)
-        return {
-            "version": latest_version,
-            "target_path": target_path,
-            "staged_path": staged_path,
-            "update_dir": update_dir,
-        }
-    except Exception:
-        if staged_path and os.path.exists(staged_path):
-            try:
-                os.remove(staged_path)
-            except OSError:
-                pass
-        shutil.rmtree(update_dir, ignore_errors=True)
-        raise
+    return app_updater.prepare_update_executable(
+        payload,
+        current_version=APP_VERSION,
+        supports_update=supports_in_place_update,
+        current_executable=sys.executable,
+        download_asset=download_release_asset,
+    )
 
 
 def launch_update_helper(update_package):
-    # PyInstaller >= 6.9 treats a process started from the same one-file executable
-    # as a worker that reuses the parent's unpacked files. The updated app must
-    # outlive this process, so it needs a fresh bootloader environment.
-    helper_env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.upper().startswith("_PYI_") and key.upper() != "_MEIPASS2"
-    }
-    helper_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    helper_env.update({
-        "VIETSUB_UPDATE_PID": str(os.getpid()),
-        "VIETSUB_UPDATE_TARGET": update_package["target_path"],
-        "VIETSUB_UPDATE_STAGED": update_package["staged_path"],
-        "VIETSUB_UPDATE_TEMP": update_package["update_dir"],
-    })
-    helper_script = r"""
-$ErrorActionPreference = 'Stop'
-$appPid = [int]$env:VIETSUB_UPDATE_PID
-$target = $env:VIETSUB_UPDATE_TARGET
-$staged = $env:VIETSUB_UPDATE_STAGED
-$updateTemp = $env:VIETSUB_UPDATE_TEMP
-$backup = "$target.old"
-$targetDir = Split-Path -Parent $target
-Wait-Process -Id $appPid -ErrorAction SilentlyContinue
-$replaced = $false
-for ($attempt = 0; $attempt -lt 40; $attempt++) {
-    try {
-        if (-not (Test-Path -LiteralPath $target)) {
-            if (Test-Path -LiteralPath $backup) {
-                Move-Item -LiteralPath $backup -Destination $target -Force
-            } else {
-                throw 'Không còn file ứng dụng gốc để thay thế.'
-            }
-        }
-        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-        Move-Item -LiteralPath $target -Destination $backup -Force
-        try {
-            Move-Item -LiteralPath $staged -Destination $target -Force
-        } catch {
-            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-            if (Test-Path -LiteralPath $backup) {
-                Move-Item -LiteralPath $backup -Destination $target -Force
-            }
-            throw
-        }
-        $replaced = $true
-        break
-    } catch {
-        Start-Sleep -Milliseconds 500
-    }
-}
-if (-not $replaced) {
-    if (-not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath $backup)) {
-        Move-Item -LiteralPath $backup -Destination $target -Force
-    }
-    if (Test-Path -LiteralPath $target) {
-        Start-Process -FilePath $target -WorkingDirectory $targetDir
-    }
-    exit 1
-}
-try {
-    $newProcess = Start-Process -FilePath $target -WorkingDirectory $targetDir -PassThru
-    Start-Sleep -Seconds 8
-    if ($newProcess.HasExited) { throw 'Bản cập nhật thoát trước khi khởi động ổn định.' }
-} catch {
-    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-    if (Test-Path -LiteralPath $backup) {
-        Move-Item -LiteralPath $backup -Destination $target -Force
-        Start-Process -FilePath $target -WorkingDirectory $targetDir
-    }
-    exit 1
-}
-if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-if (Test-Path -LiteralPath $updateTemp) { Remove-Item -LiteralPath $updateTemp -Recurse -Force }
-"""
-    creation_flags = (
-        getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    )
-    return subprocess.Popen(
-        [
-            POWERSHELL_EXE,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            helper_script,
-        ],
-        env=helper_env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        creationflags=creation_flags,
+    return app_updater.launch_update_helper(
+        update_package,
+        popen=subprocess.Popen,
+        powershell_exe=POWERSHELL_EXE,
     )
 
 
@@ -1777,7 +1475,7 @@ def write_durable_log(message):
                 os.replace(LOG_PATH, f"{LOG_PATH}.1")
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             # One entry per line: text from APIs or tools cannot fake extra log entries.
-            safe_message = str(message).replace("\r", "\\r").replace("\n", "\\n")
+            safe_message = redaction.redact_text(message).replace("\r", "\\r").replace("\n", "\\n")
             with open(LOG_PATH, "a", encoding="utf-8") as handle:
                 handle.write(f"{timestamp} {safe_message}\n")
     except OSError:
@@ -1790,8 +1488,9 @@ def log_to_app(msg, log_type="system", *, durable=True, quiet=None):
     quiet=None takes the flag of this thread's workflow context (True for the prefetch).
     """
     quiet = getattr(workflow_context, "quiet", False) if quiet is None else bool(quiet)
+    safe_msg = redaction.redact_text(msg, redact_paths=(log_type == "error"))
     prefix = "[PREFETCH] " if quiet else ""
-    console_message = f"{prefix}[{log_type.upper()}] {msg}"
+    console_message = f"{prefix}[{log_type.upper()}] {safe_msg}"
     if durable:
         write_durable_log(console_message)
     if sys.stdout is not None:
@@ -1809,11 +1508,11 @@ def log_to_app(msg, log_type="system", *, durable=True, quiet=None):
         return
     with status_lock:
         if log_type == "system":
-            progress_status["logs"].append(f"[*] {msg}")
+            progress_status["logs"].append(f"[*] {safe_msg}")
         elif log_type == "ocr":
-            progress_status["logs"].append(f"[VideOCR] {msg}")
+            progress_status["logs"].append(f"[VideOCR] {safe_msg}")
         elif log_type == "error":
-            progress_status["logs"].append(f"[!] {msg}")
+            progress_status["logs"].append(f"[!] {safe_msg}")
         overflow = len(progress_status["logs"]) - MAX_LOG_LINES
         if overflow > 0:
             del progress_status["logs"][:overflow]
@@ -7645,13 +7344,17 @@ def add_response_security_headers(response):
     return response
 
 
+def api_error(message, status_code=400):
+    return jsonify({"error": redaction.redact_error(message)}), status_code
+
+
 @app.errorhandler(QueuePersistenceError)
 def handle_queue_persistence_error(error):
     message = str(error)
     prefix = "Không thể lưu trạng thái hàng đợi"
     if not message.startswith(prefix):
         message = f"{prefix}: {message}"
-    return jsonify({"error": message}), 503
+    return api_error(message, 503)
 
 
 @app.errorhandler(HTTPException)
@@ -7662,7 +7365,7 @@ def handle_api_http_error(error):
         message = "File tải lên vượt quá giới hạn 8 GiB của ứng dụng."
     else:
         message = f"Yêu cầu không hợp lệ (HTTP {error.code}: {error.name})."
-    return jsonify({"error": message}), error.code
+    return api_error(message, error.code)
 
 
 @app.errorhandler(InternalServerError)
@@ -7671,8 +7374,9 @@ def handle_api_internal_error(error):
         return error
     original = getattr(error, "original_exception", None)
     detail = f" ({type(original).__name__}: {original})" if original else ""
-    log_to_app(f"Lỗi máy chủ cục bộ ở {request.path}{detail}", "error")
-    return jsonify({"error": f"Lỗi nội bộ của VietSub Studio{detail}."}), 500
+    safe_detail = redaction.redact_error(detail) if detail else ""
+    log_to_app(f"Lỗi máy chủ cục bộ ở {request.path}{safe_detail}", "error")
+    return api_error(f"Lỗi nội bộ của VietSub Studio{safe_detail}.", 500)
 
 
 # Web routes
@@ -7711,10 +7415,10 @@ def show_edge():
     try:
         show_edge_for_login(config.get("notebook_url"))
     except (RuntimeError, ValueError, OSError) as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(str(error), 400)
     except Exception as error:
         # Playwright errors are not RuntimeError subclasses.
-        return jsonify({"error": f"Không mở được {browser_label(short=True)}: {error}"}), 400
+        return api_error(f"Không mở được {browser_label(short=True)}: {error}", 400)
     return jsonify({"ok": True})
 
 
@@ -7788,7 +7492,7 @@ def install_update():
             shutil.rmtree(update_package["update_dir"], ignore_errors=True)
         prefetch_cancel_event.clear()
         update_install_lock.release()
-        return jsonify({"error": str(error)}), 400
+        return api_error(str(error), 400)
 
     schedule_app_exit()
     if app.config.get("TESTING"):
@@ -7810,7 +7514,7 @@ def create_shortcut():
             config["desktop_shortcut_initialized"] = True
             save_app_config(config)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(str(error), 400)
     return jsonify({"ok": True, "path": shortcut_path})
 
 
@@ -7838,7 +7542,7 @@ def health():
         )
     except (OSError, UnicodeError, ValueError) as error:
         translation_ok = False
-        translation_detail = str(error)
+        translation_detail = redaction.redact_error(error)
     browser_kind = get_browser_kind(config)
     browser_name = browser_label(browser_kind)
     browser_executable = resolve_browser_executable(config)
@@ -7882,8 +7586,11 @@ def health():
             "connected": check_browser_status(),
             "label": browser_name,
             "detail": (
-                f"{browser_name}: {browser_executable}. Chỉ mở khi dịch bằng Notebook, khi tải video cần "
-                "trình duyệt hoặc khi bạn bấm mở trang đăng nhập; dùng profile riêng của app."
+                redaction.redact_text(
+                    f"{browser_name}: {browser_executable}. Chỉ mở khi dịch bằng Notebook, khi tải video cần "
+                    "trình duyệt hoặc khi bạn bấm mở trang đăng nhập; dùng profile riêng của app.",
+                    redact_paths=True,
+                )
                 if browser_available
                 else missing_browser_message(browser_kind)
             ),
@@ -7944,11 +7651,11 @@ def prepare_preview():
     try:
         return jsonify(create_video_preview(data.get("url"))), 201
     except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(error, 400)
     except RuntimeError as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
     except (FileNotFoundError, TimeoutError, OSError) as error:
-        return jsonify({"error": str(error)}), 500
+        return api_error(error, 500)
 
 
 @app.route('/api/previews/local', methods=['POST'])
@@ -7959,11 +7666,11 @@ def prepare_local_preview():
     try:
         return jsonify(create_local_video_preview(upload)), 201
     except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(error, 400)
     except RuntimeError as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
     except OSError as error:
-        return jsonify({"error": f"Không thể lưu video local: {error}"}), 500
+        return api_error(f"Không thể lưu video local: {error}", 500)
 
 
 @app.route('/api/previews/<preview_id>/video')
@@ -8033,9 +7740,9 @@ def get_project(job_id):
                 raise ValueError("Workspace không hợp lệ.")
             return jsonify(project_handoff_payload(job, project, value, asset))
     except KeyError as error:
-        return jsonify({"error": error.args[0]}), 404
+        return api_error(error.args[0] if error.args else error, 404)
     except (RuntimeError, ValueError, OSError) as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/projects/<job_id>/handoff', methods=['POST'])
@@ -8067,9 +7774,9 @@ def handoff_project(job_id):
                 log_to_app(f"[Workbench] Đã bàn giao {value['project_name']} sang {data['workspace']}.")
                 return jsonify(payload)
     except KeyError as error:
-        return jsonify({"error": error.args[0]}), 404
+        return api_error(error.args[0] if error.args else error, 404)
     except (RuntimeError, ValueError, OSError) as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/editor/projects/<job_id>/capcut-draft', methods=['POST'])
@@ -8108,11 +7815,11 @@ def export_capcut_draft(job_id):
                 protected_paths=[*project['assets'].values(), options.get('watermark_path')])
             return jsonify(editor_api._signed(task)), 202
     except KeyError as error:
-        return jsonify({'error': error.args[0]}), 404
+        return api_error(error.args[0] if error.args else error, 404)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return api_error(error, 400)
     except (RuntimeError, OSError) as error:
-        return jsonify({'error': str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/projects/<job_id>/video')
@@ -8134,9 +7841,9 @@ def stream_project_video(job_id):
             mimetype = "video/x-matroska" if video.lower().endswith(".mkv") else "video/mp4"
             return send_file(video, conditional=True, mimetype=mimetype)
     except KeyError as error:
-        return jsonify({"error": error.args[0]}), 404
+        return api_error(error.args[0] if error.args else error, 404)
     except (RuntimeError, ValueError, OSError) as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/queue', methods=['GET', 'POST'])
@@ -8171,9 +7878,9 @@ def handle_queue():
         )
         return jsonify(job), 201
     except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(error, 400)
     except RuntimeError as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/queue/bulk-delete', methods=['POST'])
@@ -8187,11 +7894,11 @@ def bulk_delete_queue():
             keep_srt=data.get("keep_srt", True), dry_run=data.get("dry_run", False),
         ))
     except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(error, 400)
     except QueuePersistenceError:
         raise
     except (RuntimeError, OSError) as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/queue/start', methods=['POST'])
@@ -8199,7 +7906,7 @@ def start_queue():
     try:
         start_workflow_queue()
     except RuntimeError as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
     return jsonify({"status": "started"}), 202
 
 
@@ -8208,9 +7915,9 @@ def delete_queue_job(job_id):
     try:
         return jsonify(remove_queued_job(job_id))
     except ValueError as error:
-        return jsonify({"error": str(error)}), 404
+        return api_error(error, 404)
     except RuntimeError as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/queue/<job_id>/retry', methods=['POST'])
@@ -8218,11 +7925,11 @@ def retry_job(job_id):
     try:
         return jsonify(retry_queue_job(job_id))
     except ValueError as error:
-        return jsonify({"error": str(error)}), 404
+        return api_error(error, 404)
     except FileNotFoundError as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(error, 400)
     except RuntimeError as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
 
 
 @app.route('/api/queue/finished', methods=['DELETE'])
@@ -8230,7 +7937,7 @@ def clear_queue_finished():
     try:
         clear_finished_jobs()
     except RuntimeError as error:
-        return jsonify({"error": str(error)}), 409
+        return api_error(error, 409)
     return jsonify({"ok": True})
 
 def apply_browser_settings(config, data):
@@ -8356,9 +8063,9 @@ def apply_settings_update(data):
             config["cookies_file"] = validate_cookies_file_setting(data["cookies_file"])
         save_app_config(config)
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return api_error(e, 400)
     except OSError as e:
-        return jsonify({"error": f"Không thể lưu cấu hình: {e}"}), 503
+        return api_error(f"Không thể lưu cấu hình: {e}", 503)
     try:
         api_key_set = bool(get_translation_api_key(config))
     except (OSError, UnicodeError, ValueError):
@@ -8555,9 +8262,9 @@ def open_source_login(site_key):
     try:
         open_source_in_browser(site_key)
     except (RuntimeError, OSError) as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(error, 400)
     except Exception as error:
-        return jsonify({"error": f"Không mở được {browser_label(short=True)}: {error}"}), 400
+        return api_error(f"Không mở được {browser_label(short=True)}: {error}", 400)
     return jsonify({"ok": True})
 
 
@@ -8578,7 +8285,7 @@ def test_translation_connection():
             max_tokens=16,
         )
     except (OSError, RuntimeError, UnicodeError, ValueError) as error:
-        return jsonify({"error": str(error)}), 400
+        return api_error(error, 400)
     return jsonify({
         "ok": True,
         "provider": runtime_config["label"],
@@ -8612,7 +8319,7 @@ def get_history():
             })
         return jsonify(history)
     except Exception as e:
-        print(f"Error querying history: {e}")
+        log_to_app(f"Không đọc được lịch sử Douzy: {e}", "error", durable=False)
         return jsonify([])
 
 @app.route('/api/process', methods=['POST'])
@@ -8623,9 +8330,9 @@ def process():
     try:
         queue_workflow(data.get("url"), data.get("lang", "ch"), data.get("name"))
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return api_error(e, 400)
     except RuntimeError as e:
-        return jsonify({"error": str(e)}), 409
+        return api_error(e, 409)
     return jsonify({"status": "started"}), 202
 
 
@@ -8680,7 +8387,7 @@ def open_folder():
                 subprocess.Popen([EXPLORER_EXE, f"/select,{path}"])
             return jsonify({"ok": True})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return api_error(e, 500)
     return jsonify({"error": "Đường dẫn kết quả không còn tồn tại."}), 400
 
 def initialize_uploader_state():

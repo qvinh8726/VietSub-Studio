@@ -39,7 +39,7 @@ def parse_cookie_header(text):
         name, separator, cookie_value = part.partition("=")
         name = name.strip()
         if not separator or not COOKIE_NAME_PATTERN.fullmatch(name):
-            raise ValueError(f"Cookie không đúng dạng tên=giá trị: {part[:40]}")
+            raise ValueError("Cookie không đúng dạng tên=giá trị.")
         pairs.append((name, cookie_value.strip()))
     return pairs
 

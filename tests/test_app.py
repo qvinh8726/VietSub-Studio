@@ -2019,6 +2019,9 @@ class AutomaticUpdateTests(unittest.TestCase):
                 self.assertFalse(app.supports_in_place_update())
 
     def test_release_zip_is_verified_and_staged_next_to_the_current_exe(self):
+        from Cryptodome.PublicKey import ECC
+        from Cryptodome.Signature import eddsa
+
         with tempfile.TemporaryDirectory() as temporary_dir:
             directory = Path(temporary_dir)
             current_exe = directory / "VietSub Studio.exe"
@@ -2028,8 +2031,17 @@ class AutomaticUpdateTests(unittest.TestCase):
                 archive.writestr("VietSub Studio/VietSub Studio.exe", b"MZnew-version")
             zip_bytes = release_zip.read_bytes()
             zip_hash = hashlib.sha256(zip_bytes).hexdigest()
-            zip_name, checksum_name = app.release_asset_names("9.9.9")
+            zip_name, checksum_name, sig_name = app.signed_release_asset_names("9.9.9")
             checksum_bytes = f"{zip_hash.upper()}  {zip_name}\n".encode("ascii")
+
+            key = ECC.generate(curve="Ed25519")
+            raw_pub = key.public_key().export_key(format="raw")
+            key_id = app.app_updater.public_key_id(raw_pub)
+            message = app.app_updater.canonical_release_message("9.9.9", zip_name, zip_hash)
+            sig_bytes = app.app_updater.format_signature_text(
+                key_id, eddsa.new(key, "rfc8032").sign(message)
+            ).encode("ascii")
+
             base_url = "https://github.com/qvinh8726/VietSub-Studio/releases/download/v9.9.9"
             payload = {
                 "tag_name": "v9.9.9",
@@ -2045,17 +2057,28 @@ class AutomaticUpdateTests(unittest.TestCase):
                         "browser_download_url": f"{base_url}/{checksum_name}",
                         "size": len(checksum_bytes),
                     },
+                    {
+                        "name": sig_name,
+                        "browser_download_url": f"{base_url}/{sig_name}",
+                        "size": len(sig_bytes),
+                    },
                 ],
             }
 
             def fake_download(url, destination, _max_bytes):
-                content = checksum_bytes if url.endswith(checksum_name) else zip_bytes
+                if url.endswith(checksum_name):
+                    content = checksum_bytes
+                elif url.endswith(sig_name):
+                    content = sig_bytes
+                else:
+                    content = zip_bytes
                 Path(destination).write_bytes(content)
                 return hashlib.sha256(content).hexdigest(), len(content)
 
             update_package = None
             try:
                 with (
+                    patch.dict(app.app_updater.RELEASE_PUBLIC_KEYS, {key_id: raw_pub.hex()}, clear=True),
                     patch.object(app, "is_packaged_app", return_value=True),
                     patch.object(app.sys, "executable", str(current_exe)),
                     patch.object(app, "download_release_asset", side_effect=fake_download),

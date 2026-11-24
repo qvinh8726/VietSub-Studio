@@ -14,12 +14,12 @@ a = Analysis(
     binaries=[],
     datas=datas,
     # yt-dlp is imported lazily; yt_dlp_ejs holds the YouTube challenge scripts.
-    hiddenimports=['webview', 'yt_dlp', 'yt_dlp_ejs'],
+    hiddenimports=['webview', 'yt_dlp', 'yt_dlp_ejs', 'Cryptodome.PublicKey.ECC', 'Cryptodome.Signature.eddsa', 'Cryptodome.Hash.SHA512'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     # Heavy speech/separation runtimes execute in an external Python worker only.
-    excludes=['edge_tts', 'audio_separator', 'onnxruntime', 'torch', 'torchaudio', 'demucs'],
+    excludes=['edge_tts', 'audio_separator', 'onnxruntime', 'torch', 'torchaudio', 'demucs', 'Cryptodome.SelfTest'],
     noarchive=False,
     optimize=0,
 )

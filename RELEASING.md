@@ -140,7 +140,31 @@ Published updaters depend on every point below. `tools/make_release.py` produces
 - Never publish a flat ZIP without the `VietSub Studio/` folder, a checksum named `.zip.sha256`, or the CI artifact ZIP. This is how the 1.5.3 release broke automatic updates for 1.3.0 to 1.5.2.
 - `build-manifest.json`, `dependencies.txt`, and the bare EXE belong to the `VietSub-Studio-build-info-<commit>` artifact. The updater does not need them on the release.
 
-Releases are not code-signed yet. Anyone who can publish a release on this repository can publish a matching checksum, so keep two-factor authentication enabled on every account with release access.
+### Ed25519 Signed Releases (v2.1.0+)
+
+Starting with the Phase 1 Security Hardening updater (`vietsub/updater.py`), in-app automatic updates fail closed unless an Ed25519 signature asset is also present and verified against `RELEASE_PUBLIC_KEYS` embedded in `vietsub/updater.py`:
+
+- Release assets required for signed auto-updates (3 files):
+  ```text
+  VietSub-Studio-Portable-v<version>.zip
+  VietSub-Studio-Portable-v<version>.zip.sha256.txt
+  VietSub-Studio-Portable-v<version>.zip.sig
+  ```
+- Smooth upgrade path: builds from `v2.0.x` upgrading to `v2.1.0` ignore `.zip.sig` and verify SHA-256 + GitHub digest as before; once updated to `v2.1.0`, every subsequent auto-update enforces SHA-256 + `.zip.sig` + hardcoded Ed25519 public keys (with no env override in frozen builds).
+- One-time offline key generation (outside the repository — never commit `*.pem` or upload the private key to GitHub Secrets):
+  ```powershell
+  python tools/sign_release.py keygen --out "$env:USERPROFILE\.vietsub-signing\release-ed25519.pem"
+  ```
+  Paste the printed `"<key_id>": "<public_key_hex>"` into `RELEASE_PUBLIC_KEYS` in `vietsub/updater.py` before tagging `v2.1.0`.
+- Signing CI-built release assets offline after extracting `VietSub-Studio-Portable-v<version>-release-assets`:
+  ```powershell
+  python tools/sign_release.py sign --release-dir "C:\path\to\release" --key "$env:USERPROFILE\.vietsub-signing\release-ed25519.pem"
+  $env:RELEASE_DIR = "C:\path\to\release"
+  $env:REQUIRE_RELEASE_SIGNATURE = "1"
+  python -m unittest discover -s tests -p test_release_contract.py -v
+  Remove-Item Env:RELEASE_DIR, Env:REQUIRE_RELEASE_SIGNATURE
+  ```
+- CI `package-smoke` continues running `make_release.py` in unsigned staging mode (2 files) and validates signing/verification using ephemeral keys inside `MakeReleaseTests`, keeping private keys completely out of GitHub.
 
 ## Tiếng Việt
 
@@ -209,4 +233,4 @@ Các bản đã phát hành phụ thuộc vào từng điểm dưới đây. `to
 - Không bao giờ phát hành ZIP phẳng thiếu thư mục `VietSub Studio/`, file checksum tên `.zip.sha256`, hoặc file ZIP của artifact CI. Release 1.5.3 hỏng tự cập nhật cho các bản 1.3.0 đến 1.5.2 chính vì lỗi này.
 - `build-manifest.json`, `dependencies.txt` và file EXE rời thuộc artifact `VietSub-Studio-build-info-<commit>`. Trình cập nhật không cần chúng trên release.
 
-Release chưa được ký số. Ai publish được release trên repository này cũng publish được checksum khớp, nên hãy bật xác thực hai lớp cho mọi tài khoản có quyền phát hành.
+Release phát hành chính thức cần ký Ed25519 ngoại tuyến bằng `tools/sign_release.py` (tạo tệp `.zip.sig` thứ 3 bên cạnh `.zip` và `.zip.sha256.txt`); **tuyệt đối không lưu private key trong repo hay GitHub Secrets**, luôn bật 2FA cho tài khoản có quyền phát hành. Bản `v2.0.x` lên `v2.1.0` dùng SHA-256 cũ; từ `v2.1.0` trở đi trình cập nhật bắt buộc xác minh cả SHA-256 và chữ ký Ed25519.

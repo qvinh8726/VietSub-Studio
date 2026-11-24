@@ -84,7 +84,18 @@ def verify_release(zip_path, checksum_path, exe_sha256):
             raise RuntimeError("SHA256.txt inside the ZIP does not match the input EXE.")
 
 
-def build_release(exe_path, output_dir, *, version=None, clean=False):
+def build_release(
+    exe_path,
+    output_dir,
+    *,
+    version=None,
+    clean=False,
+    sign_key=None,
+    sign_key_env=None,
+    passphrase=None,
+    passphrase_env=None,
+    expected_public_keys=None,
+):
     version = str(version or app.APP_VERSION).strip().lstrip("v")
     app.parse_release_version(version)
     exe_path = validate_executable(exe_path)
@@ -107,6 +118,18 @@ def build_release(exe_path, output_dir, *, version=None, clean=False):
 
     checksum_path.write_bytes(f"{sha256_file(zip_path)}  {zip_name}\n".encode("ascii"))
     verify_release(zip_path, checksum_path, exe_sha256)
+    if sign_key or sign_key_env:
+        from tools import sign_release
+
+        sign_release.sign_release_zip(
+            zip_path,
+            version=version,
+            key_path=sign_key,
+            key_env=sign_key_env,
+            passphrase=passphrase,
+            passphrase_env=passphrase_env,
+            expected_public_keys=expected_public_keys,
+        )
     return zip_path, checksum_path
 
 
@@ -116,14 +139,26 @@ def main(argv=None):
     parser.add_argument("--output", default=str(REPO_ROOT / "release"))
     parser.add_argument("--version", default=None, help="Defaults to app.APP_VERSION.")
     parser.add_argument("--clean", action="store_true", help="Replace a non-empty output directory.")
+    parser.add_argument("--sign-key", default="", help="Optional Ed25519 private key PEM outside repo.")
+    parser.add_argument("--sign-key-env", default="", help="Optional env var with Ed25519 private key PEM.")
+    parser.add_argument("--passphrase-env", default="", help="Optional env var holding signing passphrase.")
     args = parser.parse_args(argv)
 
     zip_path, checksum_path = build_release(
-        args.exe, args.output, version=args.version, clean=args.clean
+        args.exe,
+        args.output,
+        version=args.version,
+        clean=args.clean,
+        sign_key=args.sign_key or None,
+        sign_key_env=args.sign_key_env or None,
+        passphrase_env=args.passphrase_env or None,
     )
     print(f"ZIP:      {zip_path}")
     print(f"Checksum: {checksum_path}")
     print(checksum_path.read_text(encoding="ascii").strip())
+    sig_path = Path(f"{zip_path}.sig")
+    if sig_path.is_file():
+        print(f"Sig:      {sig_path}")
     return 0
 
 

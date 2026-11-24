@@ -140,12 +140,15 @@ class EditorJobs:
                     self._update(identifier, output_path="", output_kind="", assets={})
                 # Keep inputs/project reserved until even error-state persistence
                 # has finished; cleanup cannot unlink assets during that window.
-                self._update(identifier, phase=state, error=str(error)[:6000])
+                from vietsub import redaction
+                safe_error = redaction.redact_error(error)[:6000]
+                self._update(identifier, phase=state, error=safe_error)
                 if finish:
                     try:
                         finish(self.snapshot(identifier), state)
                     except Exception as persist_error:
-                        self._update(identifier, error=f"{error}; không lưu được trạng thái manifest: {persist_error}"[:6000])
+                        safe_persist = redaction.redact_error(persist_error)
+                        self._update(identifier, error=f"{safe_error}; không lưu được trạng thái manifest: {safe_persist}"[:6000])
                 self._update(identifier, status=state, finished_at=time.time())
             finally:
                 self.work.task_done()

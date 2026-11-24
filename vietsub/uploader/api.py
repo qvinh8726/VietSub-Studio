@@ -14,7 +14,7 @@ import time
 import uuid
 
 from flask import Blueprint, jsonify, request, send_file
-from vietsub import manifest, publish, storage
+from vietsub import manifest, publish, redaction, storage
 from .queue import UploadQueue, ACTIVE, TERMINAL, metadata, schedule_time, atomic_json
 
 
@@ -181,7 +181,7 @@ class UploaderAPI:
             except Exception as error:
                 with self.lock:
                     if identifier in self.sessions:
-                        self.sessions[identifier].update(status='cancelled' if cancel.is_set() else 'error',error=str(error)[:2000])
+                        self.sessions[identifier].update(status='cancelled' if cancel.is_set() else 'error',error=redaction.redact_error(error)[:2000])
         Thread(target=execute,name='uploader-session',daemon=True).start()
         return snapshot
 
@@ -220,12 +220,12 @@ class UploaderAPI:
     def _routes(self):
         bp=self.bp
         @bp.errorhandler(ValueError)
-        def invalid(error):return jsonify({'error':str(error)}),400
+        def invalid(error):return jsonify({'error':redaction.redact_error(error)}),400
         @bp.errorhandler(KeyError)
-        def missing(error):return jsonify({'error':error.args[0]}),404
+        def missing(error):return jsonify({'error':redaction.redact_error(error.args[0] if error.args else error)}),404
         @bp.errorhandler(RuntimeError)
         @bp.errorhandler(OSError)
-        def conflict(error):return jsonify({'error':str(error)}),409
+        def conflict(error):return jsonify({'error':redaction.redact_error(error)}),409
 
         @bp.get('/api/uploader/capabilities')
         def capabilities():
@@ -355,7 +355,7 @@ class UploaderAPI:
                 except Exception as error:
                     with self.lock:
                         if identifier in self.meta_tasks:
-                            self.meta_tasks[identifier].update(status='error',error=str(error)[:2000])
+                            self.meta_tasks[identifier].update(status='error',error=redaction.redact_error(error)[:2000])
                 finally:
                     if admitted:self.app.workflow_lock.release()
             Thread(target=generate,name='uploader-metadata',daemon=True).start();return jsonify(snapshot),202

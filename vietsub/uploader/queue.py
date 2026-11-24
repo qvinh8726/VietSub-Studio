@@ -13,7 +13,7 @@ from threading import Event, RLock, Thread
 import time
 import uuid
 
-from vietsub import manifest, storage
+from vietsub import manifest, redaction, storage
 
 MAX_QUEUE_BYTES = 8 * 1024 * 1024
 TERMINAL = {'success', 'error', 'needs_verification', 'cancelled', 'uncertain'}
@@ -280,11 +280,11 @@ class UploadQueue:
             result=self.executor(task_input,cancel,progress,checkpoint) or {}
             if result.get('status') not in {'success','draft'}:raise RuntimeError('Không có xác nhận upload/draft từ nền tảng.')
             if not committed:raise RuntimeError('Adapter thiếu checkpoint trước khi đăng; không công bố thành công.')
-            self._update(identifier,status='success',phase='done',percent=100,result_url=result.get('url',''),message=result.get('message',''),finished_at=self.clock())
+            self._update(identifier,status='success',phase='done',percent=100,result_url=result.get('url',''),message=redaction.redact_text(result.get('message','')),finished_at=self.clock())
         except Exception as error:
             from .adapters import VerificationRequired
             state='uncertain' if committed else 'error' if persistence_failed else 'needs_verification' if isinstance(error,VerificationRequired) else 'cancelled' if cancel.is_set() or self.stop.is_set() else 'error'
-            self._update(identifier,status=state,phase=state,error=('Lỗi lưu checkpoint; uploader đã dừng để tránh đăng thiếu xác nhận.' if persistence_failed else str(error)[:3000]),
+            self._update(identifier,status=state,phase=state,error=('Lỗi lưu checkpoint; uploader đã dừng để tránh đăng thiếu xác nhận.' if persistence_failed else redaction.redact_error(error)[:3000]),
                          screenshot_path=getattr(error,'screenshot_path',''),finished_at=self.clock())
         finally:
             if snapshot_dir is not None:

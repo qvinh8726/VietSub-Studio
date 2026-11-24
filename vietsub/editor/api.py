@@ -14,7 +14,7 @@ import zlib
 
 from flask import Blueprint, jsonify, request, send_file
 
-from vietsub import manifest, storage
+from vietsub import manifest, redaction, storage
 from .jobs import EditorJobs, TERMINAL
 from .options import DEFAULTS, FONTS, PRESETS, normalize
 from . import renderer, runtime
@@ -206,16 +206,16 @@ class EditorAPI:
 
         @bp.errorhandler(ValueError)
         def invalid(error):
-            return jsonify({"error": str(error)}), 400
+            return jsonify({"error": redaction.redact_error(error)}), 400
 
         @bp.errorhandler(KeyError)
         def missing(error):
-            return jsonify({"error": error.args[0]}), 404
+            return jsonify({"error": redaction.redact_error(error.args[0] if error.args else error)}), 404
 
         @bp.errorhandler(RuntimeError)
         @bp.errorhandler(OSError)
         def conflict(error):
-            return jsonify({"error": str(error)}), 409
+            return jsonify({"error": redaction.redact_error(error)}), 409
 
         @bp.get("/api/editor/capabilities")
         def capabilities():
