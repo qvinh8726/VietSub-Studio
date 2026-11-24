@@ -20,11 +20,13 @@ import uuid
 PLATFORMS = ("tiktok", "youtube", "facebook", "douyin", "bilibili", "xiaohongshu")
 SCHEMA_VERSION = 1
 SESSION_STATUSES = frozenset(("unknown", "alive", "expired", "needs_verification", "error"))
+UPLOAD_METHODS = frozenset(("browser", "youtube_api"))
 _MAX_REGISTRY_BYTES = 2 * 1024 * 1024
 _SAFE_DETAILS = frozenset((
     "session_alive", "session_expired", "verification_required", "probe_failed",
     "login_completed", "login_cancelled", "login_timeout", "browser_unavailable",
     "upload_failed", "upload_completed", "login_required", "unknown",
+    "oauth_connected", "oauth_expired", "oauth_revoked",
 ))
 _DEFAULT_DETAILS = {
     "unknown": "unknown", "alive": "session_alive", "expired": "session_expired",
@@ -352,8 +354,56 @@ class ProfileStore:
     def config_path(self, identifier):
         return str(_assert_plain_path(self._directory(self.get(identifier)) / "config.json", kind="file"))
 
+    def oauth_path(self, identifier):
+        return str(_assert_plain_path(self._directory(self.get(identifier)) / "youtube_oauth.json", kind="file"))
+
     def artifact_dir(self, identifier):
         return str(_mkdir(self._directory(self.get(identifier)) / "artifacts"))
+
+    def trace_dir(self, identifier):
+        return str(_mkdir(self._directory(self.get(identifier)) / "artifacts" / "traces"))
+
+    def get_config(self, identifier):
+        record = self.get(identifier)
+        path = _assert_plain_path(self._directory(record) / "config.json", kind="file")
+        result = {
+            "schema_version": SCHEMA_VERSION,
+            "id": record["id"],
+            "platform": record["platform"],
+            "upload_method": "browser",
+        }
+        if not path.exists():
+            return result
+        descriptor = _open_private(path, os.O_RDONLY)
+        try:
+            with os.fdopen(descriptor, "rb") as handle:
+                raw = handle.read(64 * 1024 + 1)
+            if len(raw) <= 64 * 1024:
+                data = json.loads(raw.decode("utf-8"))
+                if isinstance(data, dict):
+                    method = data.get("upload_method")
+                    if method in UPLOAD_METHODS and (method != "youtube_api" or record["platform"] == "youtube"):
+                        result["upload_method"] = method
+        except (OSError, ValueError, TypeError, UnicodeError):
+            pass
+        return result
+
+    def update_config(self, identifier, *, upload_method):
+        if upload_method not in UPLOAD_METHODS:
+            raise ValueError("Phương thức đăng không hợp lệ (chỉ hỗ trợ browser hoặc youtube_api).")
+        record = self.get(identifier)
+        if upload_method == "youtube_api" and record["platform"] != "youtube":
+            raise ValueError("Chỉ tài khoản YouTube mới hỗ trợ YouTube Data API v3.")
+        with self.lease(identifier):
+            path = Path(self.config_path(identifier))
+            payload = {
+                "schema_version": SCHEMA_VERSION,
+                "id": record["id"],
+                "platform": record["platform"],
+                "upload_method": upload_method,
+            }
+            _atomic_json(path, payload)
+            return dict(payload)
 
     def save_storage_state(self, identifier, state):
         """Private atomic snapshot; never included in account metadata or logs."""
@@ -403,6 +453,7 @@ class ProfileStore:
             if before_delete is not None:
                 before_delete()
             artifact_dir = Path(self.artifact_dir(identifier)) if clean_artifacts else None
+            oauth_file = Path(self.oauth_path(identifier)) if clean_artifacts else None
             with self._registry():
                 payload = self._read_registry()
                 self._find(payload, _profile_id(identifier))
@@ -412,4 +463,8 @@ class ProfileStore:
                 _assert_plain_tree(artifact_dir)
                 if artifact_dir.name == "artifacts" and artifact_dir.parent.parent.parent == self._profiles:
                     shutil.rmtree(artifact_dir, ignore_errors=True)
+            if oauth_file is not None and oauth_file.exists():
+                _assert_plain_path(oauth_file, kind="file")
+                if oauth_file.name == "youtube_oauth.json" and oauth_file.parent.parent.parent == self._profiles:
+                    oauth_file.unlink(missing_ok=True)
         return True

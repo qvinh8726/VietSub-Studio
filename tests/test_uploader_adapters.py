@@ -1034,7 +1034,7 @@ assert len(module.PLATFORMS) == 6
         tree = ast.parse(_MODULE_PATH.read_text(encoding='utf-8'))
         imports = {node.names[0].name.split('.')[0] for node in ast.walk(tree) if isinstance(node, ast.Import)}
         imports.update(node.module.split('.')[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
-        self.assertLessEqual(imports, {'__future__', 'collections', 'pathlib', 're', 'time', 'urllib'})
+        self.assertLessEqual(imports, {'__future__', 'collections', 'json', 'pathlib', 're', 'time', 'urllib'})
         forbidden = {'sleep', 'screenshot', 'launch', 'new_context', 'new_page', 'close', 'evaluate', 'request', 'get'}
         calls = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
         self.assertFalse((forbidden - {'get'}) & calls)

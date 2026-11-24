@@ -12,17 +12,22 @@ Protocol::
     adapter.probe(page)  # {'logged_in': True | False | None, 'reason': str}
     adapter.upload(page, video_path, {'title': ..., 'description': ...,
                    'hashtags': [...]}, visibility='draft', cancel=None,
-                   progress=None, before_publish=None)
+                   progress=None, before_publish=None, upload_mode='auto',
+                   confirm_submitted=None, on_awaiting_submit=None,
+                   on_step=None, assisted_timeout_ms=None)
 
 ``cancel`` is a zero-argument predicate or threading.Event; ``progress`` receives
 (percent, message). ``before_publish`` is a zero-argument durable parent checkpoint;
 its exception aborts submission. It is invoked before the ONE final publish/save-draft
-click, never before file selection or ordinary wizard steps. Read-only safety checks
-are repeated after the checkpoint, since it may block while the browser form changes.
-Callers MUST NOT automatically retry VerificationRequired after that checkpoint.
-Success/draft results require a fresh, distinctive platform confirmation. Challenges,
-authentication, paywalls, unknown privacy and unconfirmed submissions raise
-VerificationRequired. We never solve challenges or change legal declarations.
+click (or before confirming a manual assisted submit), never before file selection or
+ordinary wizard steps. Read-only safety checks are repeated after the checkpoint, since
+it may block while the browser form changes. Callers MUST NOT automatically retry
+VerificationRequired after that checkpoint.
+
+Success/draft results require a fresh, distinctive platform confirmation (or explicit
+user confirmation in ``assisted`` mode). Challenges, authentication, paywalls, unknown
+privacy and unconfirmed submissions raise VerificationRequired. We never solve
+challenges or change legal declarations.
 
 Capabilities: TikTok public/private/draft; YouTube public/private (not its implicit
 close-to-autosave draft); Facebook *Page/Meta Business Suite* public/draft, NOT
@@ -64,6 +69,7 @@ SOFTWARE.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from pathlib import Path
 import re
 from time import monotonic
@@ -71,6 +77,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 __all__ = [
     'PLATFORMS', 'PLATFORM_TITLE_LIMITS', 'PLATFORM_TAG_LIMITS',
+    'UPLOAD_STEPS', 'UPLOAD_MODES', 'ASSISTED_SUBMIT_TIMEOUT_MS',
     'adapter_for', 'validate_platform_metadata',
     'UploadError', 'VerificationRequired',
     'UploadCancelled', 'UnsupportedMode',
@@ -95,6 +102,18 @@ UPSTREAM_SOURCES = {
 UPSTREAM_LICENSE = {'spdx': 'MIT', 'url': _UPSTREAM + 'LICENSE',
                     'copyright': 'Copyright (c) 2023 dreammis'}
 
+UPLOAD_STEPS = (
+    'open_studio',
+    'check_session',
+    'upload_file',
+    'fill_metadata',
+    'set_visibility',
+    'submit',
+    'confirm',
+)
+UPLOAD_MODES = ('auto', 'assisted')
+ASSISTED_SUBMIT_TIMEOUT_MS = 600_000
+
 
 class UploadError(RuntimeError):
     """Invalid request or a failed/bounded-out pre-submission upload."""
@@ -112,7 +131,8 @@ class UnsupportedMode(UploadError):
     """The requested platform/mode has no implemented safe submission path."""
 
 
-# Private immutable-by-convention records drive navigation, not mutable UI metadata.
+# Private immutable-by-convention records drive navigation, not mutable UI metadata
+# and never external selector overrides.
 _CONFIG = {
     'tiktok': ('TikTok', 'https://www.tiktok.com/login?lang=en',
                'https://www.tiktok.com/tiktokstudio/upload?lang=en',
@@ -149,6 +169,9 @@ PLATFORM_TAG_LIMITS = {
     'xiaohongshu': 10,
 }
 
+_SELECTORS_PATH = Path(__file__).resolve().parent / 'selectors.json'
+_DEFAULT_SELECTORS = json.loads(_SELECTORS_PATH.read_text(encoding='utf-8'))
+
 
 def validate_platform_metadata(platform, metadata, visibility='draft'):
     """Validate and normalize metadata against platform limits."""
@@ -176,119 +199,6 @@ def validate_platform_metadata(platform, metadata, visibility='draft'):
     body = '\n\n'.join(value for value in (description, ' '.join('#' + tag for tag in tags)) if value)
     caption = '\n\n'.join(value for value in (title, body) if value)
     return title, body, caption, tags
-
-# All selectors and regular expressions are developer constants. Metadata is passed
-# only as text to fill/press/filter -- NEVER interpolated into CSS/XPath/JavaScript.
-_FILE = {
-    'tiktok': ('input[type="file"][accept*="video"]', 'input[type="file"]'),
-    'youtube': ('ytcp-uploads-dialog input[type="file"]', 'input[type="file"][accept*="video"]',
-                'input[type="file"]'),
-    'facebook': ('[data-surface$="lib:bizweb_create_post:media"] input[type="file"][accept*="video"]',
-                 '[data-surface$="lib:bizweb_create_post:media"] input[type="file"]'),
-    'douyin': ('input[type="file"][class*="upload-btn-input"]',
-               'input[type="file"][accept*="video"]'),
-    'bilibili': ('input[type="file"][accept*="video"]', '.upload-wrp input[type="file"]'),
-    'xiaohongshu': ('div[class^="upload-content"] input[type="file"].upload-input',
-                    'input[type="file"][accept*="video"]'),
-}
-_TITLE = {
-    'youtube': ('#title-textarea #textbox', 'ytcp-social-suggestions-textbox#title-textarea [contenteditable="true"]'),
-    'facebook': ('[data-surface$="bizweb_create_reel:left_panel"] input[type="text"]:not([role]):visible',),
-    'douyin': ('input[placeholder*="填写作品标题"]', 'input[placeholder*="作品标题"]'),
-    'bilibili': ('.video-title input.input-val', 'input[placeholder="请输入稿件标题"]',
-                 'input[placeholder*="标题"]'),
-    'xiaohongshu': ('input[placeholder*="填写标题"]', 'input[placeholder*="输入标题"]'),
-}
-_BODY = {
-    'tiktok': ('div.public-DraftEditor-content[contenteditable="true"]',
-               'div[contenteditable="true"][role="textbox"]', '[contenteditable="true"][data-e2e="caption-editor"]'),
-    'youtube': ('#description-textarea #textbox',
-                'ytcp-social-suggestions-textbox#description-textarea [contenteditable="true"]'),
-    'facebook': ('[data-surface$="lib:bizweb_create_reel"] [contenteditable="true"]:visible',),
-    'douyin': ('div.zone-container[contenteditable="true"]',
-               'div[contenteditable="true"][data-placeholder*="描述"]'),
-    'bilibili': ('.video-desc .ql-editor[contenteditable="true"]',
-                 '.video-desc [contenteditable="true"]', 'textarea[placeholder*="简介"]'),
-    'xiaohongshu': ('.tiptap[contenteditable="true"]', '.ql-editor[contenteditable="true"]',
-                    '[contenteditable="true"]:has(p[data-placeholder*="输入正文描述"])'),
-}
-_AUTH = ('input[type="password"]', 'input[name="email"]',
-         'div[class*="login-box"]', '.login-panel', '.passport-login-container',
-         ':text-is("扫码登录")', ':text-is("手机号登录")')
-_CHALLENGE = ('iframe[src*="captcha"]', '[id*="captcha" i]', '[class*="captcha" i]',
-              '[class*="uc_verification"]', 'input[autocomplete="one-time-code"]',
-              'input[placeholder*="验证码"]', ':text-is("Verify you are human")',
-              ':text-is("Security verification")', ':text-is("安全验证")',
-              ':text-is("身份验证")', ':text-is("Confirm your identity")',
-              ':text-is("Payment required")', ':text-is("Subscribe to continue")')
-_ERROR = ('[role="alert"]:text-matches("upload failed|processing failed|上传失败|处理失败|投稿失败", "i")',
-          '.error-message:text-matches("upload failed|processing failed|上传失败|处理失败", "i")')
-_PROCESSING = ('[role="status"]:text-matches("^(Processing(?! (complete|completed|finished))|Uploading(?! (complete|completed))|正在处理|处理中|正在上传)([.。… 0-9%]|$)", "i")',
-               'ytcp-video-upload-progress:text-matches("(^|[—•]) *Processing(?! (complete|completed|finished))([. …0-9%]|$)|正在处理|处理中", "i")',
-               '.processing-status:text-matches("^Processing(?! (complete|completed|finished))([. …0-9%]|$)|正在处理|处理中", "i")')
-_SCHEDULE_ACTIVE = (
-    '[role="switch"][aria-label="Schedule"][aria-checked="true"]',
-    'input[aria-label="Schedule"]:checked',
-    'label.semi-radio-checked:text-is("定时发布")',
-    '[role="radio"][aria-checked="true"]:text-is("定时发布")',
-    '.custom-switch-card:has-text("定时发布") [aria-checked="true"]',
-    '.custom-switch-card:has-text("定时发布") input:checked',
-    '.custom-switch-card:has-text("定时发布") .d-switch-checked',
-    '.schedule-switch input:checked',
-)
-_ACTIONS = {
-    'tiktok': {
-        'public': ('button[data-e2e="post_video_button"]', 'div.button-group > button:text-is("Post")',
-                   'button:text-is("Post")'),
-        'private': ('button[data-e2e="post_video_button"]', 'div.button-group > button:text-is("Post")',
-                    'button:text-is("Post")'),
-        'draft': ('button[data-e2e="save_draft_button"]', 'button:text-is("Save draft")',
-                  'button:text-is("Save as draft")'),
-    },
-    'youtube': {'public': ('#done-button',), 'private': ('#done-button',)},
-    'douyin': {
-        'public': ('button:text-is("发布")',), 'private': ('button:text-is("发布")',),
-        'draft': ('button:text-is("暂存草稿")', 'button:text-is("存草稿")', 'button:text-is("保存草稿")'),
-    },
-    'bilibili': {
-        'public': ('.submit-add', 'button:text-is("立即投稿")', 'button:text-is("投稿")'),
-        'draft': ('button:text-is("存草稿")', 'button:text-is("保存草稿")', '.submit-draft'),
-    },
-    'xiaohongshu': {'public': ('button.publishBtn', 'button:text-is("发布")'),
-                    'private': ('button.publishBtn', 'button:text-is("发布")')},
-}
-_YOUTUBE_CONFIRMATIONS = (
-    'video published',
-    'video uploaded',
-    'video scheduled',
-    '视频已发布',
-    '视频已上传',
-    '视频已设为定时发布',
-    'video đã được xuất bản',
-    'đã xuất bản video',
-    'video đã tải lên',
-    'đã tải video lên',
-    'video đã được lên lịch',
-)
-
-_SUCCESS = {
-    'tiktok': ('[role="status"]:text-matches("^(Your video has been (uploaded|posted)|Video (uploaded|posted)|Post uploaded)[.!]?$", "i")',
-               '.common-modal-confirm-modal:text-matches("(Your video has been (uploaded|posted)|Video uploaded)", "i")'),
-    'youtube': ('ytcp-video-share-dialog',),
-    'facebook': ('[role="dialog"]:text-matches("Your reel (has been|was) published|Reel published|Reel 已发布|Reels 已发布|你的 Reels 已发布", "i")',
-                 '[role="status"]:text-matches("^(Your reel (has been|was) published|Reel published)[.!]?$", "i")'),
-    'douyin': ('[role="status"]:text-is("发布成功")', '.semi-toast-content:text-is("发布成功")',
-               ':text-is("视频发布成功")'),
-    'bilibili': ('.upload-success', ':text-is("投稿成功")', ':text-is("稿件已提交")'),
-    'xiaohongshu': (':text-is("发布成功")', ':text-is("笔记发布成功")'),
-}
-_DRAFT_SUCCESS = {
-    'tiktok': ('[role="status"]:text-matches("^(Draft saved|Saved to drafts|Your video has been saved as a draft)[.!]?$", "i")',),
-    'facebook': ('[role="dialog"]:text-matches("Reel saved as (a )?draft|Your reel was saved as (a )?draft|已保存为草稿", "i")',
-                 '[role="status"]:text-matches("^(Reel saved as (a )?draft|Draft saved)[.!]?$", "i")'),
-    'douyin': (':text-is("草稿保存成功")', ':text-is("已保存至草稿")', ':text-is("暂存成功")'),
-    'bilibili': (':text-is("草稿保存成功")', ':text-is("已保存草稿")', ':text-is("存稿成功")'),
-}
 
 
 def _find(root, selectors, *, attached=False):
@@ -330,14 +240,32 @@ def _enabled(control):
             and 'disabled' not in (control.get_attribute('class', timeout=1_000) or '').lower())
 
 
+def _is_signalled(flag):
+    if flag is None:
+        return False
+    if callable(flag):
+        return bool(flag())
+    if hasattr(flag, 'is_set'):
+        return bool(flag.is_set())
+    raise UploadError('signal flag must be a predicate or an Event.')
+
+
 class _Run:
     """Per-call state: adapters do not retain a Page, callbacks or submission state."""
 
-    def __init__(self, adapter, page, cancel=None, progress=None, before_publish=None):
+    def __init__(self, adapter, page, cancel=None, progress=None, before_publish=None, *,
+                 upload_mode='auto', confirm_submitted=None, on_awaiting_submit=None,
+                 on_step=None, assisted_timeout_ms=None):
         self.adapter, self.page = adapter, page
         self.cancel, self.progress, self.before_publish = cancel, progress, before_publish
+        self.upload_mode = upload_mode
+        self.confirm_submitted = confirm_submitted
+        self.on_awaiting_submit = on_awaiting_submit
+        self.on_step = on_step
+        self.assisted_timeout_ms = assisted_timeout_ms
         self.root = page
         self.submitted = False
+        self.awaiting_user_submit = False
         self.invariants = []
 
     def cancelled(self):
@@ -349,34 +277,47 @@ class _Run:
             return bool(self.cancel.is_set())
         raise UploadError('cancel must be a predicate or an Event.')
 
+    def user_confirmed(self):
+        return _is_signalled(self.confirm_submitted)
+
     def active(self):
         if self.cancelled():
             raise UploadCancelled('Upload cancelled; reconcile the platform if already submitted.'
                                   if self.submitted else 'Upload cancelled before submission.')
         if self.page.is_closed():
-            raise VerificationRequired('Browser closed; submission state requires reconciliation.'
-                                       if self.submitted else 'Browser page is closed.')
+            err = VerificationRequired('Browser closed; submission state requires reconciliation.'
+                                       if (self.submitted or self.awaiting_user_submit) else 'Browser page is closed.')
+            if self.submitted or self.awaiting_user_submit:
+                err.uncertain = True
+            raise err
+
+    def on_allowed_host(self):
+        location = urlsplit(str(self.page.url))
+        return (location.scheme == 'https' and location.hostname in self.adapter.hosts
+                and not location.username and not location.password and location.port in (None, 443))
 
     def guard(self):
         self.active()
         if self.adapter.platform == 'tiktok' and self.submitted and self.root is not self.page:
-            if self.page.locator('iframe[data-tt="Upload_index_iframe"]').count() == 0:
+            iframe_selectors = self.adapter._platform_sel['iframe']
+            if self.page.locator(iframe_selectors[0]).count() == 0:
                 self.root = self.page  # server-confirmation view replaced the upload iframe
         reason, state = self.adapter._barrier(self.page, self.root)
         if reason:
             raise VerificationRequired(reason)
-        location = urlsplit(str(self.page.url))
-        if (location.scheme != 'https' or location.hostname not in self.adapter.hosts
-                or location.username or location.password or location.port not in (None, 443)):
+        if not self.on_allowed_host():
             raise VerificationRequired('Unexpected platform redirect; no further browser actions allowed.')
+        error_selectors = self.adapter._common['error']
         for root in (self.page, self.root) if self.root is not self.page else (self.page,):
-            if _find(root, _ERROR) is not None:
+            if _find(root, error_selectors) is not None:
                 if self.submitted:
                     raise VerificationRequired('Platform reported a submission error; reconcile before retrying.')
                 raise UploadError('Platform reported an upload/processing error.')
 
-    def emit(self, percent, message):
+    def emit(self, percent, message, *, step=None):
         self.active()
+        if self.on_step is not None and step is not None:
+            self.on_step(step)
         if self.progress is not None:
             self.progress(percent, message)
 
@@ -426,16 +367,109 @@ class _Run:
         self.invariants.append(lambda: _checked(control))
         return control
 
+    def _emit_confirmed(self, result):
+        # Do not let nonessential post-confirmation reporting turn a confirmed publish
+        # into a retryable failure in the parent executor.
+        if self.on_step is not None:
+            try:
+                self.on_step('confirm')
+            except Exception:
+                pass
+        if self.progress is not None:
+            try:
+                self.progress(100, result['message'])
+            except Exception:
+                pass
+
+    def _finish_assisted(self, visibility, response_state):
+        timeout_ms = (self.assisted_timeout_ms if self.assisted_timeout_ms is not None
+                      else self.adapter.assisted_submit_timeout_ms)
+        self.awaiting_user_submit = True
+        self.emit(88, 'Form filled; waiting for manual submit in browser.', step='submit')
+        if self.on_awaiting_submit is not None:
+            self.on_awaiting_submit(timeout_ms / 1000.0)
+        deadline = monotonic() + timeout_ms / 1000.0
+        for _ in range(max(1, (timeout_ms + 249) // 250)):
+            if self.cancelled():
+                raise UploadCancelled('Upload cancelled while waiting for manual submit.')
+            if self.page.is_closed():
+                err = VerificationRequired('Browser closed while awaiting manual submit; reconcile on the platform.')
+                err.uncertain = True
+                raise err
+            if self.user_confirmed():
+                if self.before_publish is not None:
+                    self.before_publish()
+                self.submitted = True
+                result_url = ''
+                if self.on_allowed_host():
+                    try:
+                        confirmation = self.adapter._confirmation(self, visibility)
+                        if confirmation is not None:
+                            result_url = self.adapter._result_url(confirmation)
+                    except Exception:
+                        result_url = ''
+                result = {
+                    'status': 'draft' if visibility == 'draft' else 'success',
+                    'url': result_url,
+                    'message': ('Draft save confirmed manually.' if visibility == 'draft'
+                                else f'{visibility.capitalize()} publication confirmed manually.'),
+                }
+                self._emit_confirmed(result)
+                return result
+            confirmation = None
+            if self.on_allowed_host():
+                try:
+                    if self.adapter.platform == 'tiktok' and self.root is not self.page:
+                        iframe_selectors = self.adapter._platform_sel['iframe']
+                        if self.page.locator(iframe_selectors[0]).count() == 0:
+                            self.root = self.page
+                    confirmation = self.adapter._confirmed(self, visibility, response_state)
+                except Exception:
+                    confirmation = None
+            if confirmation:
+                if self.before_publish is not None:
+                    self.before_publish()
+                self.submitted = True
+                result = {
+                    'status': 'draft' if visibility == 'draft' else 'success',
+                    'url': self.adapter._result_url(confirmation),
+                    'message': ('Draft save confirmed.' if visibility == 'draft'
+                                else f'{visibility.capitalize()} publication confirmed.'),
+                }
+                self._emit_confirmed(result)
+                return result
+            remaining = (deadline - monotonic()) * 1000
+            if remaining <= 0:
+                break
+            try:
+                self.page.wait_for_timeout(min(250, max(1, int(remaining))))
+            except Exception:
+                if self.page.is_closed():
+                    err = VerificationRequired('Browser closed while awaiting manual submit; reconcile on the platform.')
+                    err.uncertain = True
+                    raise err from None
+                raise
+        raise VerificationRequired('Assisted upload timed out awaiting manual submit; check the platform before retrying.')
+
     def finish(self, control, visibility, *, response_state=None):
+        processing_selectors = self.adapter._common['processing']
+        schedule_selectors = self.adapter._common['schedule_active']
         self.wait(lambda: _enabled(control) and self.adapter._progress_complete(self.root)
-                  and _find(self.root, _PROCESSING) is None,
+                  and _find(self.root, processing_selectors) is None,
                   'Final action is not ready or media is still processing.',
                   self.adapter.processing_timeout_ms, processing=True)
         if self.adapter._confirmation(self, visibility, baseline=True) is not None:
             raise VerificationRequired('A pre-existing success signal makes this submission ambiguous; not submitted.')
-        self.emit(90, 'Ready for final submission checkpoint.')
+        if self.upload_mode == 'assisted':
+            self.guard()
+            if _find(self.root, schedule_selectors) is not None:
+                raise VerificationRequired('Disable platform scheduling manually; the parent owns local scheduling.')
+            if not all(check() for check in self.invariants):
+                raise VerificationRequired('Requested privacy/publication option changed before submission; not submitted.')
+            return self._finish_assisted(visibility, response_state)
+        self.emit(90, 'Ready for final submission checkpoint.', step='submit')
         self.guard()
-        if _find(self.root, _SCHEDULE_ACTIVE) is not None:
+        if _find(self.root, schedule_selectors) is not None:
             raise VerificationRequired('Disable platform scheduling manually; the parent owns local scheduling.')
         if not all(check() for check in self.invariants):
             raise VerificationRequired('Requested privacy/publication option changed before submission; not submitted.')
@@ -448,18 +482,23 @@ class _Run:
         self.guard()
         if not all(check() for check in self.invariants):
             raise VerificationRequired('Requested privacy/publication option changed before submission; not submitted.')
-        if _find(self.root, _SCHEDULE_ACTIVE) is not None:
+        if _find(self.root, schedule_selectors) is not None:
             raise VerificationRequired('Disable platform scheduling manually; the parent owns local scheduling.')
         if self.adapter._confirmation(self, visibility, baseline=True) is not None:
             raise VerificationRequired('A pre-existing success signal makes this submission ambiguous; not submitted.')
         if (not self.adapter._progress_complete(self.root)
-                or _find(self.root, _PROCESSING) is not None or not _enabled(control)):
+                or _find(self.root, processing_selectors) is not None or not _enabled(control)):
             raise VerificationRequired('Final action readiness changed after the checkpoint; not submitted.')
         self.submitted = True
         try:
             control.click(timeout=self.adapter.action_timeout_ms)
         except Exception:
             raise VerificationRequired('Final click outcome unknown; do not automatically retry.') from None
+        if self.on_step is not None:
+            try:
+                self.on_step('confirm')
+            except Exception:
+                pass
         confirmation = self.wait(
             lambda: self.adapter._confirmed(self, visibility, response_state),
             'No distinctive completion signal was observed.', self.adapter.confirmation_timeout_ms)
@@ -467,13 +506,7 @@ class _Run:
                   'url': self.adapter._result_url(confirmation),
                   'message': ('Draft save confirmed.' if visibility == 'draft'
                               else f'{visibility.capitalize()} publication confirmed.')}
-        # Do not let nonessential post-confirmation reporting turn a confirmed publish
-        # into a retryable failure in the parent executor.
-        if self.progress is not None:
-            try:
-                self.progress(100, result['message'])
-            except Exception:
-                pass
+        self._emit_confirmed(result)
         return result
 
 
@@ -485,10 +518,18 @@ class BrowserUploadAdapter:
     confirmation_timeout_ms = 90_000
     action_timeout_ms = 5_000
     probe_timeout_ms = 8_000
+    assisted_submit_timeout_ms = ASSISTED_SUBMIT_TIMEOUT_MS
 
-    def __init__(self, platform):
+    def __init__(self, platform, selectors=None):
         self.platform = platform
         self.label, self.login_url, self.upload_url, self.modes, self.hosts = _CONFIG[platform]
+        source = (selectors if isinstance(selectors, Mapping)
+                  and isinstance(selectors.get('common'), Mapping)
+                  and isinstance(selectors.get('platforms'), Mapping)
+                  and platform in selectors['platforms']
+                  else _DEFAULT_SELECTORS)
+        self._common = source['common']
+        self._platform_sel = source['platforms'][platform]
 
     def _barrier(self, page, root=None):
         location = urlsplit(str(page.url))
@@ -499,10 +540,12 @@ class BrowserUploadAdapter:
         if (host == 'accounts.google.com' or host == 'passport.bilibili.com'
                 or '/login' in path or '/signin' in path):
             return 'Platform login is required; use the parent manual-login flow.', False
+        challenge_selectors = self._common['challenge']
+        auth_selectors = self._common['auth']
         for scope in (page, root) if root is not None and root is not page else (page,):
-            if _find(scope, _CHALLENGE) is not None:
+            if _find(scope, challenge_selectors) is not None:
                 return 'Captcha, verification or paywall requires manual action.', None
-            if _find(scope, _AUTH) is not None:
+            if _find(scope, auth_selectors) is not None:
                 return 'Platform login is required; use the parent manual-login flow.', False
         return '', None
 
@@ -515,9 +558,10 @@ class BrowserUploadAdapter:
             raise UploadError('Platform navigation failed; no submission was attempted.') from None
         run.guard()
         if self.platform == 'tiktok':
-            frame = _find(run.page, ('iframe[data-tt="Upload_index_iframe"]',))
+            iframe_selectors = self._platform_sel['iframe']
+            frame = _find(run.page, iframe_selectors)
             if frame is not None:
-                run.root = run.page.frame_locator('iframe[data-tt="Upload_index_iframe"]')
+                run.root = run.page.frame_locator(iframe_selectors[0])
                 run.guard()
 
     def probe(self, page):
@@ -533,12 +577,15 @@ class BrowserUploadAdapter:
                     return {'logged_in': state, 'reason': reason}
                 run.guard()
                 root = page
-                if self.platform == 'tiktok' and _find(page, ('iframe[data-tt="Upload_index_iframe"]',)) is not None:
-                    root = page.frame_locator('iframe[data-tt="Upload_index_iframe"]')
-                    reason, state = self._barrier(page, root)
-                    if reason:
-                        return {'logged_in': state, 'reason': reason}
-                positive = ('a[href*="/latest/home"]',) if self.platform == 'facebook' else _FILE[self.platform]
+                if self.platform == 'tiktok':
+                    iframe_selectors = self._platform_sel['iframe']
+                    if _find(page, iframe_selectors) is not None:
+                        root = page.frame_locator(iframe_selectors[0])
+                        reason, state = self._barrier(page, root)
+                        if reason:
+                            return {'logged_in': state, 'reason': reason}
+                positive = (self._platform_sel['session_anchor'] if self.platform == 'facebook'
+                            else self._platform_sel['file'])
                 if _find(root, positive, attached=self.platform != 'facebook') is not None:
                     return {'logged_in': True, 'reason': 'Authenticated uploader control observed.'}
                 page.wait_for_timeout(250)
@@ -550,14 +597,24 @@ class BrowserUploadAdapter:
         return validate_platform_metadata(self.platform, metadata, visibility=visibility)
 
     def upload(self, page, video_path, metadata, *, visibility='draft', cancel=None,
-               progress=None, before_publish=None):
+               progress=None, before_publish=None, upload_mode='auto',
+               confirm_submitted=None, on_awaiting_submit=None, on_step=None,
+               assisted_timeout_ms=None):
         """Upload and commit once, returning only after a distinctive confirmation."""
         if visibility not in self.modes:
             raise UnsupportedMode(f'{self.label} does not implement the requested visibility mode.')
+        if upload_mode not in UPLOAD_MODES:
+            raise UploadError('upload_mode must be auto or assisted.')
         if before_publish is not None and not callable(before_publish):
             raise UploadError('before_publish must be callable.')
         if progress is not None and not callable(progress):
             raise UploadError('progress must be callable.')
+        if on_awaiting_submit is not None and not callable(on_awaiting_submit):
+            raise UploadError('on_awaiting_submit must be callable.')
+        if on_step is not None and not callable(on_step):
+            raise UploadError('on_step must be callable.')
+        if confirm_submitted is not None and not (callable(confirm_submitted) or hasattr(confirm_submitted, 'is_set')):
+            raise UploadError('confirm_submitted must be a predicate or an Event.')
         title, body, caption, tags = self._metadata(metadata, visibility=visibility)
         try:
             if str(video_path).startswith(('\\\\', '//')):
@@ -568,58 +625,55 @@ class BrowserUploadAdapter:
                 raise ValueError('not a video file')
         except (OSError, ValueError, TypeError):
             raise UploadError('A trusted existing nonempty local video file is required.') from None
-        run = _Run(self, page, cancel, progress, before_publish)
+        run = _Run(self, page, cancel, progress, before_publish,
+                   upload_mode=upload_mode, confirm_submitted=confirm_submitted,
+                   on_awaiting_submit=on_awaiting_submit, on_step=on_step,
+                   assisted_timeout_ms=assisted_timeout_ms)
         try:
             self._navigate(run)
-            run.emit(5, 'Known platform uploader opened.')
+            run.emit(5, 'Known platform uploader opened.', step='open_studio')
             if self.platform == 'facebook':
                 self._facebook_identity(run)
+            run.emit(12, 'Platform session verified.', step='check_session')
             if self.platform == 'facebook':
                 self._facebook_file(run, path)
             else:
-                file_input = run.require(_FILE[self.platform], 'Video file input not recognized.', attached=True)
+                file_input = run.require(self._platform_sel['file'], 'Video file input not recognized.', attached=True)
                 run.guard()
                 file_input.set_input_files(str(path), timeout=self.action_timeout_ms)
-            run.emit(25, 'Local video selected; waiting for platform form.')
+            run.emit(25, 'Local video selected; waiting for platform form.', step='upload_file')
             if self.platform == 'facebook':
                 return self._facebook(run, title, body, visibility)
             if self.platform == 'youtube':
                 return self._youtube(run, title, body, visibility)
             if self.platform == 'tiktok':
-                run.fill(_BODY[self.platform], caption, 'Caption editor not recognized.')
+                run.fill(self._platform_sel['body'], caption, 'Caption editor not recognized.')
             else:
-                run.fill(_TITLE[self.platform], title, 'Title editor not recognized.', editable=False)
+                run.fill(self._platform_sel['title'], title, 'Title editor not recognized.', editable=False)
                 if self.platform == 'bilibili':
                     self._bilibili_body(run, body)
                 else:
-                    run.fill(_BODY[self.platform], body, 'Description editor not recognized.')
+                    run.fill(self._platform_sel['body'], body, 'Description editor not recognized.')
+            run.emit(50, 'Metadata filled.', step='fill_metadata')
             if self.platform == 'bilibili':
                 self._bilibili_options(run, tags, visibility)
             elif visibility != 'draft':
                 self._privacy(run, visibility)
-            run.emit(65, 'Metadata and requested visibility read back.')
-            final = run.require(_ACTIONS[self.platform][visibility], 'Final action not recognized.')
+            run.emit(65, 'Metadata and requested visibility read back.', step='set_visibility')
+            final = run.require(self._platform_sel['actions'][visibility], 'Final action not recognized.')
             self._media_ready(run, final)
             return run.finish(final, visibility)
         except UploadError:
             raise
         except Exception:
-            if run.submitted:
-                raise VerificationRequired('Submission outcome unknown; do not automatically retry.') from None
+            if run.submitted or run.awaiting_user_submit:
+                err = VerificationRequired('Submission outcome unknown; do not automatically retry.')
+                err.uncertain = True
+                raise err from None
             raise VerificationRequired('Browser form could not be completed safely; manual verification required.') from None
 
     def _media_ready(self, run, final):
-        platform = self.platform
-        signals = {
-            'tiktok': (':text-is("Uploaded")', ':text-is("Upload complete")',
-                       '[data-e2e="upload-success"]', 'video[src^="blob:"]'),
-            'douyin': ('[class^="long-card"] :text-is("重新上传")', ':text-is("上传成功")',
-                       '[class*="upload-success"]'),
-            'bilibili': ('.upload-status:text-is("上传完成")', ':text-is("上传完成")',
-                         '.file-item .success'),
-            'xiaohongshu': ('.preview-new:text-matches("上传成功|重新上传|100%")',
-                            ':text-is("上传成功")'),
-        }[platform]
+        signals = self._platform_sel['media_ready']
         # A preview alone is not enough; all visible progressbars must be complete.
         def ready():
             return (_find(run.root, signals) is not None and self._progress_complete(run.root)
@@ -644,64 +698,56 @@ class BrowserUploadAdapter:
 
     def _privacy(self, run, visibility):
         if self.platform == 'tiktok':
-            target = {'public': 'Everyone', 'private': 'Only you'}[visibility]
-            triggers = ('[data-e2e="post-visibility"]', '[data-e2e="privacy-selector"]',
-                        'div.privacy-container [role="combobox"]',
-                        '[role="combobox"][aria-label="Who can watch this video"]')
+            accepted = set(self._platform_sel['privacy_labels'][visibility])
+            triggers = self._platform_sel['privacy_triggers']
             trigger = run.require(triggers, 'TikTok privacy control not recognized.')
             run.click(trigger)
-            options = ('[role="option"]:text-is("Everyone")', '[role="menuitemradio"]:text-is("Everyone")') if visibility == 'public' else ('[role="option"]:text-is("Only you")', '[role="menuitemradio"]:text-is("Only you")')
+            options = self._platform_sel['privacy_options'][visibility]
             option = run.require(options, 'Requested TikTok privacy option unavailable.')
             run.click(option)
-            run.wait(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() == target,
+            run.wait(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() in accepted,
                      'TikTok privacy was not read back; public fallback is forbidden.')
-            run.invariants.append(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() == target)
+            run.invariants.append(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() in accepted)
         elif self.platform == 'douyin':
-            selectors = (('label.semi-radio:text-is("公开")', '[role="radio"]:text-is("公开")')
-                         if visibility == 'public' else
-                         ('label.semi-radio:text-is("仅自己可见")', 'label.semi-radio:text-is("私密")',
-                          '[role="radio"]:text-is("仅自己可见")'))
+            selectors = self._platform_sel['privacy_options'][visibility]
             run.choose(selectors, 'Explicit requested Douyin visibility not available.')
         elif self.platform == 'xiaohongshu':
-            trigger = run.require(('[data-testid="visibility-select"]',
-                                   '.permission-setting [role="combobox"]',
-                                   '.permission-dropdown', '.publish-permission .d-select'),
+            trigger = run.require(self._platform_sel['privacy_triggers'],
                                   'Xiaohongshu visibility control not recognized.')
             run.click(trigger)
-            names = ('[role="option"]:text-is("公开可见")', '.d-options :text-is("公开可见")') if visibility == 'public' else ('[role="option"]:text-is("仅自己可见")', '.d-options :text-is("仅自己可见")')
+            names = self._platform_sel['privacy_options'][visibility]
             option = run.require(names, 'Requested Xiaohongshu visibility unavailable.')
             run.click(option)
-            expected = '公开可见' if visibility == 'public' else '仅自己可见'
-            run.wait(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() == expected,
+            accepted = set(self._platform_sel['privacy_labels'][visibility])
+            run.wait(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() in accepted,
                      'Xiaohongshu privacy was not read back; public fallback is forbidden.')
-            run.invariants.append(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() == expected)
+            run.invariants.append(lambda: trigger.inner_text(timeout=self.action_timeout_ms).strip() in accepted)
 
     def _youtube(self, run, title, body, visibility):
-        run.fill(_TITLE['youtube'], title, 'YouTube title editor not recognized.')
-        run.fill(_BODY['youtube'], body, 'YouTube description editor not recognized.')
-        audience = run.require(('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_MFK"]',
-                                'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]'),
-                               'YouTube audience controls not recognized.')
-        audience_controls = run.root.locator('tp-yt-paper-radio-button[name^="VIDEO_MADE_FOR_KIDS_"]')
+        run.fill(self._platform_sel['title'], title, 'YouTube title editor not recognized.')
+        run.fill(self._platform_sel['body'], body, 'YouTube description editor not recognized.')
+        run.emit(50, 'YouTube metadata filled.', step='fill_metadata')
+        run.require(self._platform_sel['audience_controls'],
+                    'YouTube audience controls not recognized.')
+        audience_controls = run.root.locator(self._platform_sel['audience_group'])
         if not any(_checked(audience_controls.nth(i)) for i in range(audience_controls.count())):
             raise VerificationRequired('Select the correct YouTube audience manually or set a channel default; not guessed.')
         visibility_selectors = (f'tp-yt-paper-radio-button[name="{visibility.upper()}"]',)
         for _ in range(4):
             if _find(run.root, visibility_selectors) is not None:
                 break
-            next_button = run.require(('#next-button',), 'YouTube Next step not recognized.')
+            next_button = run.require(self._platform_sel['wizard_next'], 'YouTube Next step not recognized.')
             run.wait(lambda: _enabled(next_button), 'YouTube Next is blocked.',
                      self.processing_timeout_ms, processing=True)
             # Observe the real wizard state rather than blindly clicking Next
             # several times or sleeping for guessed animation durations.
-            dialog = run.require(('ytcp-uploads-dialog',), 'YouTube upload wizard not recognized.')
+            dialog = run.require(self._platform_sel['wizard_dialog'], 'YouTube upload wizard not recognized.')
 
             def wizard_state():
                 step = dialog.get_attribute('current-step', timeout=self.action_timeout_ms)
                 if step is not None:
                     return ('step', step)
-                heading = _find(run.root, ('ytcp-uploads-dialog #step-title',
-                                           'ytcp-uploads-dialog .step-title'))
+                heading = _find(run.root, self._platform_sel['wizard_step_headings'])
                 if heading is not None:
                     return ('title', heading.inner_text(timeout=self.action_timeout_ms).strip())
                 badge = _find(run.root, tuple(
@@ -718,63 +764,58 @@ class BrowserUploadAdapter:
                      or (wizard_state() is not None and wizard_state() != old_step),
                      'YouTube wizard did not advance after Next.')
         run.choose(visibility_selectors, 'Explicit YouTube visibility step unavailable.')
-        final = run.require(('#done-button',), 'YouTube Save/Publish action not recognized.')
-        progress = ('ytcp-video-upload-progress:text-matches("Upload complete|Checks complete|Finished processing|上传完成|检查完毕", "i")',
-                    '.progress-label:text-matches("Upload complete|Checks complete|Finished processing|上传完成|检查完毕", "i")')
+        final = run.require(self._platform_sel['actions'][visibility], 'YouTube Save/Publish action not recognized.')
+        progress = self._platform_sel['upload_ready']
         run.wait(lambda: _find(run.root, progress) is not None
                  and self._progress_complete(run.root) and _enabled(final),
                  'YouTube upload/checks have not completed.', self.processing_timeout_ms, processing=True)
-        run.emit(75, 'YouTube visibility explicitly selected; upload completed.')
+        run.emit(75, 'YouTube visibility explicitly selected; upload completed.', step='set_visibility')
         return run.finish(final, visibility)
 
     def _bilibili_body(self, run, body):
-        control = run.require(_BODY['bilibili'], 'Bilibili description editor not recognized.')
+        body_selectors = self._platform_sel['body']
+        control = run.require(body_selectors, 'Bilibili description editor not recognized.')
         editable = control.get_attribute('contenteditable', timeout=self.action_timeout_ms) == 'true'
-        run.fill(_BODY['bilibili'], body, 'Bilibili description editor not recognized.', editable=editable)
+        run.fill(body_selectors, body, 'Bilibili description editor not recognized.', editable=editable)
 
     def _bilibili_options(self, run, tags, visibility):
         if tags:
-            tag_input = run.require(('.tag-container input', '.tag-wrp input',
-                                     'input[placeholder="请输入标签"]'), 'Bilibili tags control not recognized.')
+            tag_input = run.require(self._platform_sel['tag_input'], 'Bilibili tags control not recognized.')
             for tag in tags:
                 run.guard()
                 tag_input.fill(tag, timeout=self.action_timeout_ms)
                 tag_input.press('Enter', timeout=self.action_timeout_ms)
-            tokens = run.require(('.tag-container', '.tag-wrp'), 'Bilibili tag readback unavailable.')
+            tokens = run.require(self._platform_sel['tag_container'], 'Bilibili tag readback unavailable.')
             if not all(tag in tokens.inner_text(timeout=self.action_timeout_ms) for tag in tags):
                 raise VerificationRequired('Bilibili tags were not retained; not submitted.')
         if visibility == 'public':
-            category = run.require(('.select-item-cont .select-item.selected',
-                                    '.video-type .selected', '[data-testid="selected-category"]'),
+            category = run.require(self._platform_sel['category_selected'],
                                    'Choose a Bilibili category manually; the adapter will not guess.')
             if not category.inner_text(timeout=self.action_timeout_ms).strip():
                 raise VerificationRequired('Bilibili category has no readable selection.')
-            declaration = run.require(('.copyright [role="radio"][aria-checked="true"]',
-                                       '.copyright input[type="radio"]:checked',
-                                       '.copyright .check-radio-v2-checked'),
-                                      'Choose the correct Bilibili copyright declaration manually.')
+            run.require(self._platform_sel['copyright_checked'],
+                        'Choose the correct Bilibili copyright declaration manually.')
             if not tags:
                 raise UploadError('Bilibili public submission requires at least one metadata hashtag.')
 
     def _facebook_identity(self, run):
-        combo = run.require(('[data-surface$="bizweb_create_post:left_panel"] [role="combobox"][aria-haspopup="listbox"]:has(img[alt="Facebook"])',),
+        combo = run.require(self._platform_sel['identity_combo'],
                             'Meta Facebook Page destination not recognized.')
         if not combo.inner_text(timeout=self.action_timeout_ms).replace('\u200b', '').strip():
             raise VerificationRequired('Meta Page identity is empty; not uploaded.')
         assets = parse_qs(urlsplit(str(run.page.url)).query).get('asset_id', [])
         if len(assets) != 1 or not assets[0].isascii() or not assets[0].isdigit():
             raise VerificationRequired('Meta requires one remembered numeric Page asset_id; not uploaded.')
-        if _find(run.root, ('[data-surface$="bizweb_create_post:left_panel"] [aria-checked="true"]:has(img[alt="Instagram"])',
-                            '[data-surface$="bizweb_create_post:left_panel"] [aria-checked="true"]:has(img[alt="WhatsApp"])')) is not None:
+        if _find(run.root, self._platform_sel['disallowed_destinations']) is not None:
             raise VerificationRequired('Disable other Meta publishing destinations manually; Facebook only.')
 
     def _facebook_file(self, run, path):
-        file_input = _find(run.root, _FILE['facebook'], attached=True)
+        file_input = _find(run.root, self._platform_sel['file'], attached=True)
         if file_input is None:
             # Meta lazily mounts its hidden input only when this scoped local-media
             # action opens a chooser. Use the chooser's real file element, not a
             # general Add/Create button and not OS keyboard automation.
-            media = run.require(('[data-surface$="lib:bizweb_create_post:media"]',),
+            media = run.require(self._platform_sel['media_surface'],
                                 'Meta media surface not recognized.')
             if media.locator('img').count() != 0:
                 raise VerificationRequired('Meta composer already contains media; not overwritten.')
@@ -789,58 +830,68 @@ class BrowserUploadAdapter:
         file_input.set_input_files(str(path), timeout=self.action_timeout_ms)
 
     def _facebook(self, run, title, body, visibility):
-        reel = run.require(('[data-surface$="lib:bizweb_create_reel"]',), 'Meta Reel wizard not recognized.')
-        run.wait(lambda: _find(run.root, (':text-is("100%")',)) is not None
+        reel = run.require(self._platform_sel['reel_wizard'], 'Meta Reel wizard not recognized.')
+        run.wait(lambda: _find(run.root, self._platform_sel['upload_ready']) is not None
                  and self._progress_complete(run.root), 'Meta media upload has not completed.',
                  self.processing_timeout_ms, processing=True)
-        run.fill(_TITLE['facebook'], title, 'Meta Reel title input not recognized.', editable=False)
-        run.fill(_BODY['facebook'], body, 'Meta Reel caption editor not recognized.')
-        steps = reel.locator('[role="button"][aria-labelledby]:not([aria-haspopup])')
+        run.fill(self._platform_sel['title'], title, 'Meta Reel title input not recognized.', editable=False)
+        run.fill(self._platform_sel['body'], body, 'Meta Reel caption editor not recognized.')
+        run.emit(50, 'Meta Reel metadata filled.', step='fill_metadata')
+        steps = reel.locator(self._platform_sel['wizard_steps'])
         if steps.count() != 3:
             raise VerificationRequired('Meta Reel wizard step structure changed; not submitted.')
-        footer_selector = '[data-surface$="bizweb_create_reel:footer"] [role="button"]:not([aria-label])'
+        footer_selector = self._platform_sel['footer_actions']
         for index in (0, 1):
             run.wait(lambda: steps.nth(index).get_attribute('aria-current', timeout=self.action_timeout_ms) == 'step',
                      'Meta Reel current step not recognized.')
             actions = run.root.locator(footer_selector)
-            if actions.count() != 2:
-                raise VerificationRequired('Meta Reel footer structure changed; not submitted.')
-            action = actions.nth(1)
+            if actions.count() == 2:
+                action = actions.nth(1)
+            else:
+                action = _find(run.root, self._platform_sel['footer_next_fallback'])
+                if action is None:
+                    raise VerificationRequired('Meta Reel footer structure changed; not submitted.')
             run.wait(lambda: _enabled(action), 'Meta Reel Next step is not ready.',
                      self.processing_timeout_ms, processing=True)
             run.click(action)
             run.wait(lambda: steps.nth(index + 1).get_attribute('aria-current', timeout=self.action_timeout_ms) == 'step',
                      'Meta Reel Next step did not advance.')
-        story = run.require(('[data-surface$="bizweb_create_reel:left_panel"] input[role="switch"][aria-label="Share to story"]',
-                             '[data-surface$="bizweb_create_reel:left_panel"] input[role="switch"]:is([aria-label="分享到快拍"], [data-testid="share-to-story"])',
-                             '[data-surface$="bizweb_create_reel:left_panel"] input[role="switch"] >> xpath=self::input[ancestor::div[.//img[@alt="Facebook"] and count(.//input[@role="switch"])=1]]'),
+        story = run.require(self._platform_sel['story_switch'],
                             'Meta story-sharing option not recognized.')
         if _checked(story):
             raise VerificationRequired('Disable Meta story sharing manually before a Facebook-only upload.')
-        modes = run.root.locator('[data-surface$="bizweb_create_reel:left_panel"] [role="button"][aria-pressed]:not([aria-haspopup])')
-        if modes.count() != 3:
-            raise VerificationRequired('Meta publish-now/schedule/draft modes not recognized; not submitted.')
-        selected = modes.nth(2 if visibility == 'draft' else 0)
+        modes = run.root.locator(self._platform_sel['publish_modes'])
+        if modes.count() == 3:
+            selected = modes.nth(2 if visibility == 'draft' else 0)
+        else:
+            selected = _find(run.root, self._platform_sel['publish_modes_fallback'][visibility])
+            if selected is None:
+                raise VerificationRequired('Meta publish-now/schedule/draft modes not recognized; not submitted.')
         if not _checked(selected):
             run.click(selected)
         run.wait(lambda: _checked(selected), 'Requested Meta publication mode was not selected.')
         run.invariants.append(lambda: _checked(selected) and not _checked(story))
         final_actions = run.root.locator(footer_selector)
-        if final_actions.count() != 2:
-            raise VerificationRequired('Meta final footer structure changed; not submitted.')
-        final = final_actions.nth(1)
+        if final_actions.count() == 2:
+            final = final_actions.nth(1)
+        else:
+            final = _find(run.root, self._platform_sel['footer_submit_fallback'][visibility])
+            if final is None:
+                raise VerificationRequired('Meta final footer structure changed; not submitted.')
         state = {'accepted': False, 'error': False}
+        allowed_mutations = set(self._platform_sel['graphql_mutations'])
 
         def observed(response):
             # Observe only the browser's own final-creation response, not an asset
             # upload/ad response. No additional API calls or credential extraction.
-            if not run.submitted:
+            if not (run.submitted or run.awaiting_user_submit):
                 return
             try:
                 data = response.request.post_data or ''
+                friendly_names = parse_qs(data).get('fb_api_req_friendly_name', [])
                 if (urlsplit(response.url).hostname != 'business.facebook.com'
                         or '/api/graphql' not in urlsplit(response.url).path
-                        or parse_qs(data).get('fb_api_req_friendly_name') != ['BusinessComposerStoryCreationMutation']):
+                        or len(friendly_names) != 1 or friendly_names[0] not in allowed_mutations):
                     return
                 payload = response.json()
                 creation = payload.get('data', {}).get('xfamily_content_create', {})
@@ -857,13 +908,14 @@ class BrowserUploadAdapter:
 
         run.page.on('response', observed)
         try:
-            run.emit(75, 'Meta Page destination and explicit publication mode verified.')
+            run.emit(75, 'Meta Page destination and explicit publication mode verified.', step='set_visibility')
             return run.finish(final, visibility, response_state=state)
         finally:
             run.page.remove_listener('response', observed)
 
     def _confirmation(self, run, visibility, *, baseline=False):
-        selectors = _DRAFT_SUCCESS[self.platform] if visibility == 'draft' else _SUCCESS[self.platform]
+        selectors = (self._platform_sel['draft_success'] if visibility == 'draft'
+                     else self._platform_sel['success'])
         signal = _find(run.root, selectors)
         if signal is None and run.root is not run.page:
             signal = _find(run.page, selectors)
@@ -875,16 +927,10 @@ class BrowserUploadAdapter:
         if self.platform == 'youtube':
             # share dialogs/links can exist earlier in the wizard. This dialog must
             # be fresh AND explicitly state that the server completed publication.
-            heading = _find(signal, (':text-is("Video published")', ':text-is("Video uploaded")',
-                                     ':text-is("Video scheduled")',
-                                     ':text-is("视频已发布")', ':text-is("视频已上传")',
-                                     ':text-is("视频已设为定时发布")',
-                                     ':text-is("Video đã được xuất bản")', ':text-is("Đã xuất bản video")',
-                                     ':text-is("Video đã tải lên")', ':text-is("Đã tải video lên")',
-                                     ':text-is("Video đã được lên lịch")'))
+            heading = _find(signal, self._platform_sel['confirm_headings'])
             if heading is None:
                 normalized = ' '.join(signal.inner_text(timeout=self.action_timeout_ms).split()).casefold()
-                if not any(phrase in normalized for phrase in _YOUTUBE_CONFIRMATIONS):
+                if not any(phrase in normalized for phrase in self._platform_sel['confirm_phrases']):
                     return None
             if not self._result_url(signal):
                 return None
@@ -895,7 +941,7 @@ class BrowserUploadAdapter:
             if not path.startswith('/platform/upload/success'):
                 return None
             text = ' '.join(signal.inner_text(timeout=self.action_timeout_ms).split())
-            if not any(token in text for token in ('投稿成功', '稿件已提交')):
+            if not any(token in text for token in self._platform_sel['success_tokens']):
                 return None
         elif self.platform == 'xiaohongshu' and path != '/publish/success':
             return None
@@ -905,7 +951,7 @@ class BrowserUploadAdapter:
         # A completed POST or optimistic toast during server processing is not a
         # completed publication. Keep the caller's browser alive and reconcile on
         # a bounded timeout instead of returning a fake success.
-        if not self._progress_complete(run.root) or _find(run.root, _PROCESSING) is not None:
+        if not self._progress_complete(run.root) or _find(run.root, self._common['processing']) is not None:
             return None
         if response_state is not None:
             if response_state['error']:
@@ -956,8 +1002,8 @@ class BrowserUploadAdapter:
         return ''
 
 
-def adapter_for(platform):
+def adapter_for(platform, selectors=None):
     """Return a fresh adapter, rejecting aliases and unknown platform identifiers."""
     if not isinstance(platform, str) or platform not in _CONFIG:
         raise UnsupportedMode('Unknown upload platform.')
-    return BrowserUploadAdapter(platform)
+    return BrowserUploadAdapter(platform, selectors=selectors)

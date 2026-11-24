@@ -7319,6 +7319,7 @@ def protect_local_control_plane():
         "uploader.media_video",
         "uploader.screenshot",
         "uploader.session_screenshot",
+        "uploader.trace",
     }:
         return None
     if not api_request_authorized():

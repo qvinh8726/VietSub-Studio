@@ -378,6 +378,10 @@
 <div><label class="field-label" for="uploader-visibility">Chế độ</label><select class="select-input" id="uploader-visibility"><option selected="" value="draft">Bản nháp</option><option value="private">Riêng tư</option><option value="public">Công khai</option></select></div>
 <div><label class="field-label" for="uploader-schedule-mode">Thời điểm</label><select class="select-input" id="uploader-schedule-mode"><option selected="" value="now">Ngay khi tới lượt</option><option value="local">Hẹn giờ cục bộ</option></select></div>
 </div>
+<label class="field-label" for="uploader-upload-mode">Cách đăng qua trình duyệt</label>
+<select aria-describedby="uploader-upload-mode-help" class="select-input" id="uploader-upload-mode"><option selected="" value="assisted">Bán tự động — khuyên dùng (tự điền, bạn bấm Đăng)</option><option value="auto">Tự động hoàn toàn</option></select>
+<small class="field-help" id="uploader-upload-mode-help">Bán tự động mở trình duyệt, tự điền thông tin rồi dừng trước nút Đăng để bạn xử lý CAPTCHA (nếu có) và bấm Đăng thủ công. Tài khoản YouTube dùng API v3 sẽ luôn tải thẳng qua API.</small>
+<label class="uploader-check" id="uploader-debug-mode-row"><input id="uploader-debug-mode" type="checkbox"/><span>Chế độ Debug · mở trình duyệt &amp; lưu Playwright Trace (.zip) khi lỗi</span></label>
 <label class="field-label" for="uploader-scheduled-at">Ngày giờ · Asia/Saigon (UTC+07:00)</label><input aria-describedby="uploader-schedule-warning uploader-submit-error" class="text-input" disabled id="uploader-scheduled-at" step="60" type="datetime-local"/>
 </fieldset>
 <p class="uploader-notice" id="uploader-schedule-warning">Hẹn giờ cục bộ, không phải lịch trên nền tảng: app và máy tính phải đang chạy, có mạng vào giờ đăng. Giờ luôn là Asia/Saigon (UTC+07:00).</p>

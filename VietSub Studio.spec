@@ -3,6 +3,7 @@
 datas = [
     ('templates', 'templates'),
     ('static', 'static'),
+    ('vietsub/uploader/selectors.json', 'vietsub/uploader'),
     ('avatar.jpg', '.'),
     ('avatar.ico', '.'),
 ]

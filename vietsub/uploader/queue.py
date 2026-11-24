@@ -17,7 +17,9 @@ from vietsub import manifest, redaction, storage
 
 MAX_QUEUE_BYTES = 8 * 1024 * 1024
 TERMINAL = {'success', 'error', 'needs_verification', 'cancelled', 'uncertain'}
-ACTIVE = {'queued', 'scheduled', 'running'}
+ACTIVE = {'queued', 'scheduled', 'running', 'awaiting_user_submit'}
+UPLOAD_MODES = {'auto', 'assisted'}
+UPLOAD_STEPS = {'open_studio', 'check_session', 'upload_file', 'fill_metadata', 'set_visibility', 'submit', 'confirm'}
 
 
 def metadata(value):
@@ -66,7 +68,7 @@ def atomic_json(path,value):
 class UploadQueue:
     def __init__(self,path,executor,*,on_finish=None,clock=time.time):
         self.path=Path(path); self.executor=executor; self.on_finish=on_finish; self.clock=clock
-        self.lock=RLock(); self.wake=Event();self.stop=Event();self.worker=None;self.events={}
+        self.lock=RLock(); self.wake=Event();self.stop=Event();self.worker=None;self.events={};self.confirm_events={}
         self.jobs=[];self._load();self._cleanup_orphan_snapshots()
 
     def _load(self):
@@ -90,12 +92,27 @@ class UploadQueue:
             scheduled=job.get('scheduled_at')
             if scheduled is not None and (type(scheduled) not in (int,float) or not math.isfinite(scheduled)):
                 raise ValueError('Queue schedule không hợp lệ.')
-            if job['status']=='running':
+            job.setdefault('upload_mode','auto')
+            job.setdefault('debug_mode',False)
+            job.setdefault('step','')
+            job.setdefault('failed_step','')
+            job.setdefault('trace_path','')
+            job.setdefault('awaiting_deadline',None)
+            if job['status'] in {'running','awaiting_user_submit'}:
                 interrupted=True
-                job.update(status='uncertain' if job.get('commit_attempted') else 'error',phase='interrupted',
-                           error='App đã đóng khi upload. Kiểm tra nền tảng trước khi thử lại; không tự đăng lại.')
+                was_awaiting=job['status']=='awaiting_user_submit'
+                uncertain=bool(job.get('commit_attempted') or was_awaiting)
+                job.update(
+                    status='uncertain' if uncertain else 'error',
+                    phase='interrupted',
+                    commit_attempted=uncertain,
+                    awaiting_deadline=None,
+                    error='App đã đóng khi đang chờ bấm Đăng thủ công. Kiểm tra nền tảng trước khi thử lại; không tự đăng lại.'
+                    if was_awaiting else 'App đã đóng khi upload. Kiểm tra nền tảng trước khi thử lại; không tự đăng lại.',
+                )
             self.jobs.append(job)
         self.events={job['id']:Event() for job in self.jobs}
+        self.confirm_events={job['id']:Event() for job in self.jobs}
         if interrupted:
             self._persist(self.jobs)
 
@@ -144,14 +161,20 @@ class UploadQueue:
             if not job:raise KeyError('Không tìm thấy upload job.')
             return copy.deepcopy(job)
 
+    def confirm_event(self,identifier):
+        with self.lock:
+            return self.confirm_events.setdefault(identifier,Event())
+
     def _update(self,identifier,**fields):
         with self.lock:
             candidate=copy.deepcopy(self.jobs)
             job=next(j for j in candidate if j['id']==identifier);job.update(fields,updated_at=self.clock())
             self._persist(candidate);self.jobs=candidate
 
-    def submit(self,source,profiles,meta,visibility,scheduled,request_id):
+    def submit(self,source,profiles,meta,visibility,scheduled,request_id,*,upload_mode='auto',debug_mode=False):
         if not isinstance(request_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,100}',request_id):raise ValueError('Cần request_id ổn định để chống đăng trùng.')
+        if upload_mode not in UPLOAD_MODES:raise ValueError('upload_mode chỉ hỗ trợ auto hoặc assisted.')
+        if type(debug_mode) is not bool:raise ValueError('debug_mode phải là boolean.')
         meta=metadata(meta)
         if not profiles or len(profiles)>30:raise ValueError('Chọn1–30 tài khoản.')
         from .adapters import UploadError, validate_platform_metadata
@@ -162,7 +185,8 @@ class UploadQueue:
                 raise ValueError(str(error)) from None
         if not storage.safe_regular(source['video']):raise ValueError('Video không còn khả dụng.')
         info=os.stat(source['video'])
-        canonical={**source,'profiles':[p['id'] for p in profiles],'metadata':meta,'visibility':visibility,'scheduled_at':scheduled}
+        canonical={**source,'profiles':[p['id'] for p in profiles],'metadata':meta,'visibility':visibility,
+                   'scheduled_at':scheduled,'upload_mode':upload_mode,'debug_mode':debug_mode}
         fingerprint=hashlib.sha256(json.dumps(canonical,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
         with self.lock:
             prior=[j for j in self.jobs if j.get('request_id')==request_id]
@@ -182,11 +206,14 @@ class UploadQueue:
                 records.append({'id':uuid.uuid4().hex,'profile_id':profile['id'],'platform':profile['platform'],
                     'job_id':source.get('job_id',''),'media_id':source.get('media_id',''),'video':source['video'],
                     'video_size':info.st_size,'video_mtime_ns':info.st_mtime_ns,'metadata':copy.deepcopy(meta),'visibility':visibility,
+                    'upload_mode':upload_mode,'debug_mode':debug_mode,'step':'','failed_step':'','trace_path':'','awaiting_deadline':None,
                     'scheduled_at':scheduled,'status':'scheduled' if scheduled and scheduled>self.clock() else 'queued',
                     'phase':'waiting','percent':0,'error':'','result_url':'','screenshot_path':'','commit_attempted':False,
                     'created_at':self.clock(),'request_id':request_id,'request_fingerprint':fingerprint})
             self._persist([*self.jobs,*records]);self.jobs.extend(records)
-            for record in records:self.events[record['id']]=Event()
+            for record in records:
+                self.events[record['id']]=Event()
+                self.confirm_events[record['id']]=Event()
         self.start();self.wake.set();return copy.deepcopy(records)
 
     def start(self):
@@ -207,9 +234,18 @@ class UploadQueue:
     def cancel(self,identifier):
         with self.lock:
             job=self.get(identifier)
-            if job['status'] in {'queued','scheduled'}:self._update(identifier,status='cancelled',phase='cancelled')
-            self.events[identifier].set()
+            if job['status'] in {'queued','scheduled'}:
+                self._update(identifier,status='cancelled',phase='cancelled',awaiting_deadline=None)
+            self.events.setdefault(identifier,Event()).set()
         self.wake.set();return self.get(identifier)
+
+    def confirm_submitted(self,identifier):
+        with self.lock:
+            job=self.get(identifier)
+            if job['status']!='awaiting_user_submit':
+                raise ValueError('Chỉ có thể xác nhận đã đăng khi tác vụ đang chờ bạn bấm Đăng thủ công.')
+            self.confirm_events.setdefault(identifier,Event()).set()
+            return self.get(identifier)
 
     def retry(self,identifier,*,confirm_uncertain=False):
         with self.lock:
@@ -222,22 +258,26 @@ class UploadQueue:
                    and self.publication_key(other,other['profile_id'],other['metadata'],other['visibility'])==publication
                    for other in self.jobs):
                 raise ValueError('Nội dung này đã được đăng hoặc có job chưa rõ kết quả; không retry bản cũ trùng lặp.')
-            self._update(identifier,status='queued',phase='waiting',scheduled_at=None,error='',percent=0,commit_attempted=False,
-                         screenshot_path='',result_url='',message='',started_at=None,finished_at=None)
+            self._update(identifier,status='queued',phase='waiting',step='',failed_step='',scheduled_at=None,error='',percent=0,
+                         commit_attempted=False,screenshot_path='',trace_path='',awaiting_deadline=None,result_url='',message='',
+                         started_at=None,finished_at=None)
             self.events[identifier]=Event()
+            self.confirm_events[identifier]=Event()
         self.start();self.wake.set();return self.get(identifier)
 
     def _execute(self,job):
-        identifier=job['id'];cancel=self.events[identifier]
+        identifier=job['id'];cancel=self.events.setdefault(identifier,Event())
+        self.confirm_events.setdefault(identifier,Event())
         committed=False
         persistence_failed=False
         snapshot_dir=None
+        last_step=['']
         try:
             if cancel.is_set():raise RuntimeError('Đã huỷ upload.')
             if not storage.safe_regular(job['video']):raise ValueError('Video đã bị di chuyển/xóa.')
             info=os.stat(job['video'])
             if (info.st_size,info.st_mtime_ns)!=(job['video_size'],job['video_mtime_ns']):raise ValueError('Video đã đổi sau khi xếp lịch; không upload file khác.')
-            self._update(identifier,status='running',phase='snapshot',started_at=self.clock())
+            self._update(identifier,status='running',phase='snapshot',step='',failed_step='',awaiting_deadline=None,started_at=self.clock())
             # Upload an independent, task-private copy, never the mutable source
             # pathname after navigation/auth waits. No hardlink (edits would leak).
             private_root=self.path.parent/'input-snapshots'
@@ -264,7 +304,7 @@ class UploadQueue:
                 nonlocal committed,persistence_failed
                 if cancel.is_set() or self.stop.is_set():raise RuntimeError('Đã huỷ trước bước đăng cuối.')
                 try:
-                    self._update(identifier,commit_attempted=True,phase='committing')
+                    self._update(identifier,commit_attempted=True,phase='committing',awaiting_deadline=None)
                 except Exception:
                     # This latch lives outside sanitized browser/adapter errors.
                     # Even if they wrap the exception, no later account may post.
@@ -272,19 +312,44 @@ class UploadQueue:
                     raise
                 committed=True
             def progress(**fields):
-                allowed={key:value for key,value in fields.items() if key in {'phase','percent'}}
-                if 'percent' in allowed:
-                    n=allowed['percent'];allowed['percent']=max(0,min(99,float(n))) if type(n) in (int,float) and math.isfinite(n) else 0
-                self._update(identifier,**allowed)
+                allowed={}
+                if 'phase' in fields and isinstance(fields['phase'],str):
+                    allowed['phase']=fields['phase'][:100]
+                if 'percent' in fields:
+                    n=fields['percent'];allowed['percent']=max(0,min(99,float(n))) if type(n) in (int,float) and math.isfinite(n) else 0
+                if 'step' in fields and fields['step'] in UPLOAD_STEPS:
+                    allowed['step']=fields['step'];last_step[0]=fields['step']
+                if 'status' in fields and fields['status'] in {'running','awaiting_user_submit'}:
+                    allowed['status']=fields['status']
+                if 'awaiting_deadline' in fields:
+                    deadline=fields['awaiting_deadline']
+                    if deadline is None or (type(deadline) in (int,float) and math.isfinite(deadline)):
+                        allowed['awaiting_deadline']=deadline
+                if allowed:
+                    self._update(identifier,**allowed)
             task_input=copy.deepcopy(job);task_input['video']=str(snapshot)
             result=self.executor(task_input,cancel,progress,checkpoint) or {}
             if result.get('status') not in {'success','draft'}:raise RuntimeError('Không có xác nhận upload/draft từ nền tảng.')
             if not committed:raise RuntimeError('Adapter thiếu checkpoint trước khi đăng; không công bố thành công.')
-            self._update(identifier,status='success',phase='done',percent=100,result_url=result.get('url',''),message=redaction.redact_text(result.get('message','')),finished_at=self.clock())
+            self._update(identifier,status='success',phase='done',step='confirm',failed_step='',percent=100,
+                         awaiting_deadline=None,trace_path='',result_url=result.get('url',''),
+                         message=redaction.redact_text(result.get('message','')),finished_at=self.clock())
         except Exception as error:
             from .adapters import VerificationRequired
-            state='uncertain' if committed else 'error' if persistence_failed else 'needs_verification' if isinstance(error,VerificationRequired) else 'cancelled' if cancel.is_set() or self.stop.is_set() else 'error'
-            self._update(identifier,status=state,phase=state,error=('Lỗi lưu checkpoint; uploader đã dừng để tránh đăng thiếu xác nhận.' if persistence_failed else redaction.redact_error(error)[:3000]),
+            uncertain=committed or bool(getattr(error,'uncertain',False))
+            state=('uncertain' if uncertain else 'error' if persistence_failed
+                   else 'needs_verification' if isinstance(error,VerificationRequired)
+                   else 'cancelled' if cancel.is_set() or self.stop.is_set() else 'error')
+            failed_step=getattr(error,'failed_step','') or last_step[0] or ''
+            if failed_step not in UPLOAD_STEPS:
+                failed_step=''
+            trace_path=getattr(error,'trace_path','') or ''
+            if not isinstance(trace_path,str):
+                trace_path=''
+            self._update(identifier,status=state,phase=state,failed_step=failed_step,trace_path=trace_path,
+                         awaiting_deadline=None,commit_attempted=bool(committed or uncertain),
+                         error=('Lỗi lưu checkpoint; uploader đã dừng để tránh đăng thiếu xác nhận.' if persistence_failed
+                                else redaction.redact_error(error)[:3000]),
                          screenshot_path=getattr(error,'screenshot_path',''),finished_at=self.clock())
         finally:
             if snapshot_dir is not None:

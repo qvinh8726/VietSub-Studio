@@ -695,6 +695,7 @@ textarea.invalid, [aria-invalid="true"] { border-color: var(--coral); }
 .uploader-publish-jobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr)); gap: 10px; margin-top: 10px; }
 .uploader-job { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--input-bg); }
 .uploader-job[data-status="success"] { border-color: var(--mint); }
+.uploader-job[data-status="awaiting_user_submit"] { border-color: var(--sun); }
 .uploader-job[data-status="error"], .uploader-job[data-status="uncertain"], .uploader-job[data-status="needs_verification"] { border-color: var(--coral); }
 .uploader-job-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; }
 .uploader-job-head span { color: var(--sun); font-size: 12px; }
@@ -703,10 +704,20 @@ textarea.invalid, [aria-invalid="true"] { border-color: var(--coral); }
 .uploader-job[data-status="success"] .uploader-job-progress i { background: var(--mint); }
 .uploader-job p { margin-top: 6px; color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .uploader-job .uploader-job-error { color: var(--coral); }
+.uploader-job .uploader-job-assisted { color: var(--sun); }
+.uploader-job .uploader-job-step-failed { color: var(--coral); font-weight: 600; }
+.uploader-trace-box { margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: var(--radius); background: rgba(255, 255, 255, 0.02); }
+.uploader-trace-warning { margin-top: 4px; color: var(--sun); font-size: 11px; }
+.uploader-yt-api-panel { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.uploader-yt-api-panel summary { cursor: pointer; font-size: 12px; color: var(--mint); font-weight: 600; }
+.uploader-yt-api-panel .text-input, .uploader-yt-api-panel .select-input, .uploader-yt-json-input { width: 100%; margin-top: 6px; }
+.uploader-yt-json-input { padding: 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); color: var(--ink); font-size: 12px; resize: vertical; }
+.uploader-yt-method-row { margin-top: 8px; }
+.uploader-yt-status { margin-top: 6px; font-size: 12px; color: var(--ink); }
 .uploader-job a { display: inline-block; padding-block: 8px; color: var(--mint); overflow-wrap: anywhere; }
 .uploader-job-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .uploader-footer { flex: 0 0 auto; max-height: 90px; padding: 9px 16px; overflow-y: auto; border-top: 1px solid var(--line); color: var(--mint); font-size: 12px; overflow-wrap: anywhere; }
-html[data-motion="on"] .uploader-job[data-status="running"] { box-shadow: inset 3px 0 var(--sun); }
+html[data-motion="on"] .uploader-job[data-status="running"], html[data-motion="on"] .uploader-job[data-status="awaiting_user_submit"] { box-shadow: inset 3px 0 var(--sun); }
 @media (max-width: 1120px) {
     .uploader-grid { grid-template-columns: minmax(250px, 1fr) minmax(300px, 1.2fr); }
     .uploader-profiles { grid-column: 1 / -1; }

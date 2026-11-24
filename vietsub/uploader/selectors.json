@@ -1,0 +1,543 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-11-24",
+  "common": {
+    "auth": [
+      "input[type=\"password\"]",
+      "input[name=\"email\"]",
+      "div[class*=\"login-box\"]",
+      ".login-panel",
+      ".passport-login-container",
+      ":text-is(\"扫码登录\")",
+      ":text-is(\"手机号登录\")"
+    ],
+    "challenge": [
+      "iframe[src*=\"captcha\"]",
+      "[id*=\"captcha\" i]",
+      "[class*=\"captcha\" i]",
+      "[class*=\"uc_verification\"]",
+      "input[autocomplete=\"one-time-code\"]",
+      "input[placeholder*=\"验证码\"]",
+      ":text-is(\"Verify you are human\")",
+      ":text-is(\"Security verification\")",
+      ":text-is(\"安全验证\")",
+      ":text-is(\"身份验证\")",
+      ":text-is(\"Confirm your identity\")",
+      ":text-is(\"Payment required\")",
+      ":text-is(\"Subscribe to continue\")",
+      ":text-is(\"Xác minh bảo mật\")",
+      ":text-is(\"Xác minh danh tính\")",
+      ":text-is(\"Xác minh bạn là con người\")"
+    ],
+    "error": [
+      "[role=\"alert\"]:text-matches(\"upload failed|processing failed|上传失败|处理失败|投稿失败\", \"i\")",
+      ".error-message:text-matches(\"upload failed|processing failed|上传失败|处理失败\", \"i\")",
+      "[role=\"alert\"]:text-matches(\"tải lên thất bại|xử lý thất bại|không thể tải lên\", \"i\")"
+    ],
+    "processing": [
+      "[role=\"status\"]:text-matches(\"^(Processing(?! (complete|completed|finished))|Uploading(?! (complete|completed))|正在处理|处理中|正在上传)([.。… 0-9%]|$)\", \"i\")",
+      "ytcp-video-upload-progress:text-matches(\"(^|[—•]) *Processing(?! (complete|completed|finished))([. …0-9%]|$)|正在处理|处理中\", \"i\")",
+      ".processing-status:text-matches(\"^Processing(?! (complete|completed|finished))([. …0-9%]|$)|正在处理|处理中\", \"i\")",
+      "[role=\"status\"]:text-matches(\"^(Đang xử lý|Đang tải lên)([.… 0-9%]|$)\", \"i\")"
+    ],
+    "schedule_active": [
+      "[role=\"switch\"][aria-label=\"Schedule\"][aria-checked=\"true\"]",
+      "input[aria-label=\"Schedule\"]:checked",
+      "[role=\"switch\"][aria-label=\"Lên lịch\"][aria-checked=\"true\"]",
+      "input[aria-label=\"Lên lịch\"]:checked",
+      "label.semi-radio-checked:text-is(\"定时发布\")",
+      "[role=\"radio\"][aria-checked=\"true\"]:text-is(\"定时发布\")",
+      ".custom-switch-card:has-text(\"定时发布\") [aria-checked=\"true\"]",
+      ".custom-switch-card:has-text(\"定时发布\") input:checked",
+      ".custom-switch-card:has-text(\"定时发布\") .d-switch-checked",
+      ".schedule-switch input:checked"
+    ]
+  },
+  "platforms": {
+    "tiktok": {
+      "iframe": [
+        "iframe[data-tt=\"Upload_index_iframe\"]"
+      ],
+      "file": [
+        "input[type=\"file\"][accept*=\"video\"]",
+        "input[type=\"file\"]",
+        "div[class*=\"upload\"] input[type=\"file\"]"
+      ],
+      "body": [
+        "div.public-DraftEditor-content[contenteditable=\"true\"]",
+        "div[contenteditable=\"true\"][role=\"textbox\"]",
+        "[contenteditable=\"true\"][data-e2e=\"caption-editor\"]",
+        "div.notranslate.public-DraftEditor-content[contenteditable=\"true\"]",
+        "div[data-lexical-editor=\"true\"][contenteditable=\"true\"]",
+        ".TUXTextArea [contenteditable=\"true\"]",
+        ".caption-editor [contenteditable=\"true\"]"
+      ],
+      "media_ready": [
+        ":text-is(\"Uploaded\")",
+        ":text-is(\"Upload complete\")",
+        "[data-e2e=\"upload-success\"]",
+        "video[src^=\"blob:\"]",
+        ":text-is(\"Đã tải lên\")",
+        ":text-is(\"Tải lên hoàn tất\")",
+        ":text-is(\"已上传\")",
+        "[data-e2e=\"upload-card-uploaded\"]"
+      ],
+      "privacy_triggers": [
+        "[data-e2e=\"post-visibility\"]",
+        "[data-e2e=\"privacy-selector\"]",
+        "div.privacy-container [role=\"combobox\"]",
+        "[role=\"combobox\"][aria-label=\"Who can watch this video\"]",
+        "[role=\"combobox\"][aria-label=\"Ai có thể xem video này\"]",
+        "[data-e2e=\"privacy_setting\"] [role=\"combobox\"]",
+        ".select-container [role=\"combobox\"]"
+      ],
+      "privacy_options": {
+        "public": [
+          "[role=\"option\"]:text-is(\"Everyone\")",
+          "[role=\"menuitemradio\"]:text-is(\"Everyone\")",
+          "[role=\"option\"]:text-is(\"Mọi người\")",
+          "[role=\"menuitemradio\"]:text-is(\"Mọi người\")",
+          "[role=\"option\"]:text-is(\"所有人\")",
+          "[role=\"menuitemradio\"]:text-is(\"所有人\")",
+          ".TUXSelectOption:text-is(\"Everyone\")",
+          ".TUXSelectOption:text-is(\"Mọi người\")"
+        ],
+        "private": [
+          "[role=\"option\"]:text-is(\"Only you\")",
+          "[role=\"menuitemradio\"]:text-is(\"Only you\")",
+          "[role=\"option\"]:text-is(\"Chỉ mình tôi\")",
+          "[role=\"menuitemradio\"]:text-is(\"Chỉ mình tôi\")",
+          "[role=\"option\"]:text-is(\"仅自己可见\")",
+          "[role=\"menuitemradio\"]:text-is(\"仅自己可见\")",
+          ".TUXSelectOption:text-is(\"Only you\")",
+          ".TUXSelectOption:text-is(\"Chỉ mình tôi\")"
+        ]
+      },
+      "privacy_labels": {
+        "public": [
+          "Everyone",
+          "Mọi người",
+          "所有人",
+          "Public"
+        ],
+        "private": [
+          "Only you",
+          "Chỉ mình tôi",
+          "仅自己可见",
+          "Private"
+        ]
+      },
+      "actions": {
+        "public": [
+          "button[data-e2e=\"post_video_button\"]",
+          "div.button-group > button:text-is(\"Post\")",
+          "button:text-is(\"Post\")",
+          "button[data-e2e=\"post-button\"]",
+          "button:text-is(\"Đăng\")",
+          "button:text-is(\"发布\")"
+        ],
+        "private": [
+          "button[data-e2e=\"post_video_button\"]",
+          "div.button-group > button:text-is(\"Post\")",
+          "button:text-is(\"Post\")",
+          "button[data-e2e=\"post-button\"]",
+          "button:text-is(\"Đăng\")",
+          "button:text-is(\"发布\")"
+        ],
+        "draft": [
+          "button[data-e2e=\"save_draft_button\"]",
+          "button:text-is(\"Save draft\")",
+          "button:text-is(\"Save as draft\")",
+          "button[data-e2e=\"draft-button\"]",
+          "button:text-is(\"Lưu bản nháp\")",
+          "button:text-is(\"Lưu nháp\")",
+          "button:text-is(\"存草稿\")"
+        ]
+      },
+      "success": [
+        "[role=\"status\"]:text-matches(\"^(Your video has been (uploaded|posted)|Video (uploaded|posted)|Post uploaded)[.!]?$\", \"i\")",
+        ".common-modal-confirm-modal:text-matches(\"(Your video has been (uploaded|posted)|Video uploaded)\", \"i\")",
+        "[role=\"status\"]:text-matches(\"^(Video của bạn đã được (tải lên|đăng)|Đã đăng video|Đã tải video lên)[.!]?$\", \"i\")",
+        ".common-modal-confirm-modal:text-matches(\"(Video của bạn đã được (tải lên|đăng)|Đã đăng video)\", \"i\")",
+        "[role=\"dialog\"]:text-matches(\"Your video has been (uploaded|posted)|Video của bạn đã được (tải lên|đăng)\", \"i\")"
+      ],
+      "draft_success": [
+        "[role=\"status\"]:text-matches(\"^(Draft saved|Saved to drafts|Your video has been saved as a draft)[.!]?$\", \"i\")",
+        "[role=\"status\"]:text-matches(\"^(Đã lưu bản nháp|Đã lưu vào bản nháp|Video của bạn đã được lưu làm bản nháp)[.!]?$\", \"i\")",
+        "[role=\"dialog\"]:text-matches(\"Draft saved|Saved to drafts|Đã lưu bản nháp|Đã lưu vào bản nháp\", \"i\")"
+      ]
+    },
+    "youtube": {
+      "file": [
+        "ytcp-uploads-dialog input[type=\"file\"]",
+        "input[type=\"file\"][accept*=\"video\"]",
+        "input[type=\"file\"]",
+        "#select-files-button input[type=\"file\"]"
+      ],
+      "title": [
+        "#title-textarea #textbox",
+        "ytcp-social-suggestions-textbox#title-textarea [contenteditable=\"true\"]",
+        "ytcp-video-title #textbox[contenteditable=\"true\"]",
+        "ytcp-social-suggestions-textbox[id=\"title-textarea\"] div[contenteditable=\"true\"]",
+        "div#textbox[aria-label*=\"Add a title\" i]",
+        "div#textbox[aria-label*=\"Thêm tiêu đề\" i]"
+      ],
+      "body": [
+        "#description-textarea #textbox",
+        "ytcp-social-suggestions-textbox#description-textarea [contenteditable=\"true\"]",
+        "ytcp-video-description #textbox[contenteditable=\"true\"]",
+        "ytcp-social-suggestions-textbox[id=\"description-textarea\"] div[contenteditable=\"true\"]",
+        "div#textbox[aria-label*=\"Tell viewers about your video\" i]",
+        "div#textbox[aria-label*=\"Giới thiệu về video của bạn\" i]"
+      ],
+      "audience_controls": [
+        "tp-yt-paper-radio-button[name=\"VIDEO_MADE_FOR_KIDS_MFK\"]",
+        "tp-yt-paper-radio-button[name=\"VIDEO_MADE_FOR_KIDS_NOT_MFK\"]"
+      ],
+      "audience_group": "tp-yt-paper-radio-button[name^=\"VIDEO_MADE_FOR_KIDS_\"]",
+      "wizard_dialog": [
+        "ytcp-uploads-dialog"
+      ],
+      "wizard_next": [
+        "#next-button",
+        "ytcp-button#next-button"
+      ],
+      "wizard_step_headings": [
+        "ytcp-uploads-dialog #step-title",
+        "ytcp-uploads-dialog .step-title"
+      ],
+      "upload_ready": [
+        "ytcp-video-upload-progress:text-matches(\"Upload complete|Checks complete|Finished processing|上传完成|检查完毕\", \"i\")",
+        ".progress-label:text-matches(\"Upload complete|Checks complete|Finished processing|上传完成|检查完毕\", \"i\")",
+        "ytcp-video-upload-progress:text-matches(\"Đã tải lên xong|Đã hoàn tất quy trình kiểm tra|Không phát hiện vấn đề nào|Quá trình xử lý đã hoàn tất|Đã xử lý xong|Hoàn tất tải lên\", \"i\")",
+        ".progress-label:text-matches(\"Đã tải lên xong|Đã hoàn tất quy trình kiểm tra|Không phát hiện vấn đề nào|Quá trình xử lý đã hoàn tất|Đã xử lý xong|Hoàn tất tải lên\", \"i\")",
+        "ytcp-video-upload-progress .progress-label:text-matches(\"Upload complete|Checks complete|Finished processing|Đã tải lên xong|Đã hoàn tất|Không phát hiện vấn đề nào|上传完成|检查完毕\", \"i\")"
+      ],
+      "actions": {
+        "public": [
+          "#done-button",
+          "ytcp-button#done-button"
+        ],
+        "private": [
+          "#done-button",
+          "ytcp-button#done-button"
+        ]
+      },
+      "success": [
+        "ytcp-video-share-dialog",
+        "ytcp-uploads-still-processing-dialog"
+      ],
+      "confirm_headings": [
+        ":text-is(\"Video published\")",
+        ":text-is(\"Video uploaded\")",
+        ":text-is(\"Video scheduled\")",
+        ":text-is(\"Video saved\")",
+        ":text-is(\"视频已发布\")",
+        ":text-is(\"视频已上传\")",
+        ":text-is(\"视频已设为定时发布\")",
+        ":text-is(\"Video đã được xuất bản\")",
+        ":text-is(\"Đã xuất bản video\")",
+        ":text-is(\"Video đã tải lên\")",
+        ":text-is(\"Đã tải video lên\")",
+        ":text-is(\"Video đã được lên lịch\")",
+        ":text-is(\"Video đã được đăng\")",
+        ":text-is(\"Đã lưu video\")"
+      ],
+      "confirm_phrases": [
+        "video published",
+        "video uploaded",
+        "video scheduled",
+        "video saved",
+        "视频已发布",
+        "视频已上传",
+        "视频已设为定时发布",
+        "video đã được xuất bản",
+        "đã xuất bản video",
+        "video đã tải lên",
+        "đã tải video lên",
+        "video đã được lên lịch",
+        "video đã được đăng",
+        "đã lưu video"
+      ]
+    },
+    "facebook": {
+      "session_anchor": [
+        "a[href*=\"/latest/home\"]",
+        "a[href*=\"/latest/self_view\"]"
+      ],
+      "identity_combo": [
+        "[data-surface$=\"bizweb_create_post:left_panel\"] [role=\"combobox\"][aria-haspopup=\"listbox\"]:has(img[alt=\"Facebook\"])",
+        "[data-surface*=\"bizweb_create_post:left_panel\"] [role=\"combobox\"][aria-haspopup=\"listbox\"]:has(img[alt=\"Facebook\"])"
+      ],
+      "disallowed_destinations": [
+        "[data-surface$=\"bizweb_create_post:left_panel\"] [aria-checked=\"true\"]:has(img[alt=\"Instagram\"])",
+        "[data-surface$=\"bizweb_create_post:left_panel\"] [aria-checked=\"true\"]:has(img[alt=\"WhatsApp\"])",
+        "[data-surface*=\"bizweb_create_post:left_panel\"] [aria-checked=\"true\"]:has(img[alt=\"Instagram\"])",
+        "[data-surface*=\"bizweb_create_post:left_panel\"] [aria-checked=\"true\"]:has(img[alt=\"WhatsApp\"])"
+      ],
+      "media_surface": [
+        "[data-surface$=\"lib:bizweb_create_post:media\"]",
+        "[data-surface*=\"bizweb_create_post:media\"]"
+      ],
+      "file": [
+        "[data-surface$=\"lib:bizweb_create_post:media\"] input[type=\"file\"][accept*=\"video\"]",
+        "[data-surface$=\"lib:bizweb_create_post:media\"] input[type=\"file\"]",
+        "[data-surface*=\"bizweb_create_post:media\"] input[type=\"file\"][accept*=\"video\"]",
+        "[data-surface*=\"bizweb_create_reel\"] input[type=\"file\"][accept*=\"video\"]"
+      ],
+      "reel_wizard": [
+        "[data-surface$=\"lib:bizweb_create_reel\"]",
+        "[data-surface*=\"bizweb_create_reel\"]"
+      ],
+      "upload_ready": [
+        ":text-is(\"100%\")",
+        ":text-matches(\"100%\\\\s*(uploaded|complete)|Đã tải lên\\\\s*100%|100%\\\\s*đã tải lên|上传\\\\s*100%\", \"i\")"
+      ],
+      "title": [
+        "[data-surface$=\"bizweb_create_reel:left_panel\"] input[type=\"text\"]:not([role]):visible",
+        "[data-surface*=\"bizweb_create_reel:left_panel\"] input[type=\"text\"]:not([role]):visible",
+        "[data-surface*=\"bizweb_create_reel\"] input[placeholder*=\"tiêu đề\" i]"
+      ],
+      "body": [
+        "[data-surface$=\"lib:bizweb_create_reel\"] [contenteditable=\"true\"]:visible",
+        "[data-surface*=\"bizweb_create_reel\"] [contenteditable=\"true\"]:visible",
+        "[data-surface*=\"bizweb_create_reel\"] div[role=\"textbox\"][contenteditable=\"true\"]"
+      ],
+      "wizard_steps": "[role=\"button\"][aria-labelledby]:not([aria-haspopup])",
+      "footer_actions": "[data-surface$=\"bizweb_create_reel:footer\"] [role=\"button\"]:not([aria-label])",
+      "footer_next_fallback": [
+        "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Next\")",
+        "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Tiếp\")",
+        "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"下一步\")"
+      ],
+      "footer_submit_fallback": {
+        "public": [
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Share\")",
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Publish\")",
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Chia sẻ\")",
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Đăng\")",
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"发布\")"
+        ],
+        "draft": [
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Save draft\")",
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"Lưu bản nháp\")",
+          "[data-surface*=\"bizweb_create_reel:footer\"] [role=\"button\"]:text-is(\"保存草稿\")"
+        ]
+      },
+      "story_switch": [
+        "[data-surface$=\"bizweb_create_reel:left_panel\"] input[role=\"switch\"][aria-label=\"Share to story\"]",
+        "[data-surface$=\"bizweb_create_reel:left_panel\"] input[role=\"switch\"]:is([aria-label=\"分享到快拍\"], [data-testid=\"share-to-story\"])",
+        "[data-surface$=\"bizweb_create_reel:left_panel\"] input[role=\"switch\"] >> xpath=self::input[ancestor::div[.//img[@alt=\"Facebook\"] and count(.//input[@role=\"switch\"])=1]]",
+        "[data-surface$=\"bizweb_create_reel:left_panel\"] input[role=\"switch\"][aria-label=\"Chia sẻ lên tin\"]",
+        "[data-surface*=\"bizweb_create_reel:left_panel\"] input[role=\"switch\"][aria-label=\"Share to story\"]",
+        "[data-surface*=\"bizweb_create_reel:left_panel\"] input[role=\"switch\"][aria-label=\"Chia sẻ lên tin\"]"
+      ],
+      "publish_modes": "[data-surface$=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:not([aria-haspopup])",
+      "publish_modes_fallback": {
+        "public": [
+          "[data-surface*=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:text-is(\"Share now\")",
+          "[data-surface*=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:text-is(\"Chia sẻ ngay\")",
+          "[data-surface*=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:text-is(\"Publish now\")",
+          "[data-surface*=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:text-is(\"Đăng ngay\")"
+        ],
+        "draft": [
+          "[data-surface*=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:text-is(\"Save as draft\")",
+          "[data-surface*=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:text-is(\"Lưu làm bản nháp\")",
+          "[data-surface*=\"bizweb_create_reel:left_panel\"] [role=\"button\"][aria-pressed]:text-is(\"Lưu bản nháp\")"
+        ]
+      },
+      "graphql_mutations": [
+        "BusinessComposerStoryCreationMutation",
+        "BusinessComposerReelCreationMutation"
+      ],
+      "success": [
+        "[role=\"dialog\"]:text-matches(\"Your reel (has been|was) published|Reel published|Reel 已发布|Reels 已发布|你的 Reels 已发布\", \"i\")",
+        "[role=\"status\"]:text-matches(\"^(Your reel (has been|was) published|Reel published)[.!]?$\", \"i\")",
+        "[role=\"dialog\"]:text-matches(\"Đã đăng thước phim|Thước phim của bạn đã được đăng|Đã chia sẻ thước phim\", \"i\")",
+        "[role=\"status\"]:text-matches(\"^(Đã đăng thước phim|Thước phim của bạn đã được đăng|Đã chia sẻ thước phim)[.!]?$\", \"i\")"
+      ],
+      "draft_success": [
+        "[role=\"dialog\"]:text-matches(\"Reel saved as (a )?draft|Your reel was saved as (a )?draft|已保存为草稿\", \"i\")",
+        "[role=\"status\"]:text-matches(\"^(Reel saved as (a )?draft|Draft saved)[.!]?$\", \"i\")",
+        "[role=\"dialog\"]:text-matches(\"Đã lưu thước phim làm bản nháp|Đã lưu vào bản nháp\", \"i\")",
+        "[role=\"status\"]:text-matches(\"^(Đã lưu thước phim làm bản nháp|Đã lưu bản nháp)[.!]?$\", \"i\")"
+      ]
+    },
+    "douyin": {
+      "file": [
+        "input[type=\"file\"][class*=\"upload-btn-input\"]",
+        "input[type=\"file\"][accept*=\"video\"]"
+      ],
+      "title": [
+        "input[placeholder*=\"填写作品标题\"]",
+        "input[placeholder*=\"作品标题\"]"
+      ],
+      "body": [
+        "div.zone-container[contenteditable=\"true\"]",
+        "div[contenteditable=\"true\"][data-placeholder*=\"描述\"]"
+      ],
+      "media_ready": [
+        "[class^=\"long-card\"] :text-is(\"重新上传\")",
+        ":text-is(\"上传成功\")",
+        "[class*=\"upload-success\"]"
+      ],
+      "privacy_options": {
+        "public": [
+          "label.semi-radio:text-is(\"公开\")",
+          "[role=\"radio\"]:text-is(\"公开\")"
+        ],
+        "private": [
+          "label.semi-radio:text-is(\"仅自己可见\")",
+          "label.semi-radio:text-is(\"私密\")",
+          "[role=\"radio\"]:text-is(\"仅自己可见\")"
+        ]
+      },
+      "actions": {
+        "public": [
+          "button:text-is(\"发布\")"
+        ],
+        "private": [
+          "button:text-is(\"发布\")"
+        ],
+        "draft": [
+          "button:text-is(\"暂存草稿\")",
+          "button:text-is(\"存草稿\")",
+          "button:text-is(\"保存草稿\")"
+        ]
+      },
+      "success": [
+        "[role=\"status\"]:text-is(\"发布成功\")",
+        ".semi-toast-content:text-is(\"发布成功\")",
+        ":text-is(\"视频发布成功\")"
+      ],
+      "draft_success": [
+        ":text-is(\"草稿保存成功\")",
+        ":text-is(\"已保存至草稿\")",
+        ":text-is(\"暂存成功\")"
+      ]
+    },
+    "bilibili": {
+      "file": [
+        "input[type=\"file\"][accept*=\"video\"]",
+        ".upload-wrp input[type=\"file\"]"
+      ],
+      "title": [
+        ".video-title input.input-val",
+        "input[placeholder=\"请输入稿件标题\"]",
+        "input[placeholder*=\"标题\"]"
+      ],
+      "body": [
+        ".video-desc .ql-editor[contenteditable=\"true\"]",
+        ".video-desc [contenteditable=\"true\"]",
+        "textarea[placeholder*=\"简介\"]"
+      ],
+      "media_ready": [
+        ".upload-status:text-is(\"上传完成\")",
+        ":text-is(\"上传完成\")",
+        ".file-item .success"
+      ],
+      "tag_input": [
+        ".tag-container input",
+        ".tag-wrp input",
+        "input[placeholder=\"请输入标签\"]"
+      ],
+      "tag_container": [
+        ".tag-container",
+        ".tag-wrp"
+      ],
+      "category_selected": [
+        ".select-item-cont .select-item.selected",
+        ".video-type .selected",
+        "[data-testid=\"selected-category\"]"
+      ],
+      "copyright_checked": [
+        ".copyright [role=\"radio\"][aria-checked=\"true\"]",
+        ".copyright input[type=\"radio\"]:checked",
+        ".copyright .check-radio-v2-checked"
+      ],
+      "actions": {
+        "public": [
+          ".submit-add",
+          "button:text-is(\"立即投稿\")",
+          "button:text-is(\"投稿\")"
+        ],
+        "draft": [
+          "button:text-is(\"存草稿\")",
+          "button:text-is(\"保存草稿\")",
+          ".submit-draft"
+        ]
+      },
+      "success": [
+        ".upload-success",
+        ":text-is(\"投稿成功\")",
+        ":text-is(\"稿件已提交\")"
+      ],
+      "success_tokens": [
+        "投稿成功",
+        "稿件已提交"
+      ],
+      "draft_success": [
+        ":text-is(\"草稿保存成功\")",
+        ":text-is(\"已保存草稿\")",
+        ":text-is(\"存稿成功\")"
+      ]
+    },
+    "xiaohongshu": {
+      "file": [
+        "div[class^=\"upload-content\"] input[type=\"file\"].upload-input",
+        "input[type=\"file\"][accept*=\"video\"]"
+      ],
+      "title": [
+        "input[placeholder*=\"填写标题\"]",
+        "input[placeholder*=\"输入标题\"]"
+      ],
+      "body": [
+        ".tiptap[contenteditable=\"true\"]",
+        ".ql-editor[contenteditable=\"true\"]",
+        "[contenteditable=\"true\"]:has(p[data-placeholder*=\"输入正文描述\"])"
+      ],
+      "media_ready": [
+        ".preview-new:text-matches(\"上传成功|重新上传|100%\")",
+        ":text-is(\"上传成功\")"
+      ],
+      "privacy_triggers": [
+        "[data-testid=\"visibility-select\"]",
+        ".permission-setting [role=\"combobox\"]",
+        ".permission-dropdown",
+        ".publish-permission .d-select"
+      ],
+      "privacy_options": {
+        "public": [
+          "[role=\"option\"]:text-is(\"公开可见\")",
+          ".d-options :text-is(\"公开可见\")"
+        ],
+        "private": [
+          "[role=\"option\"]:text-is(\"仅自己可见\")",
+          ".d-options :text-is(\"仅自己可见\")"
+        ]
+      },
+      "privacy_labels": {
+        "public": [
+          "公开可见"
+        ],
+        "private": [
+          "仅自己可见"
+        ]
+      },
+      "actions": {
+        "public": [
+          "button.publishBtn",
+          "button:text-is(\"发布\")"
+        ],
+        "private": [
+          "button.publishBtn",
+          "button:text-is(\"发布\")"
+        ]
+      },
+      "success": [
+        ":text-is(\"发布成功\")",
+        ":text-is(\"笔记发布成功\")"
+      ]
+    }
+  }
+}

@@ -343,3 +343,91 @@ test('queue polling performs GET only, preserves form edits, and suppresses an o
     const mutationCount = h.calls.filter(call => call.options.method !== 'GET').length; await h.poll();
     assert.equal(h.calls.filter(call => call.options.method !== 'GET').length, mutationCount); assert.equal(h.elements['uploader-title-input'].value, 'Giữ qua poll');
 });
+
+test('UI defaults to assisted upload mode, toggles auto/debug_mode, and validates signed trace URLs with privacy warning', async () => {
+    assert.equal(helpers.safeTraceUrl('/api/uploader/queue/t1/trace?signature=sig', 't1'), '/api/uploader/queue/t1/trace?signature=sig');
+    for (const bad of ['/api/uploader/queue/t2/trace?signature=sig', '/api/uploader/queue/t1/trace', 'https://evil.invalid/api/uploader/queue/t1/trace?signature=sig', '/api/uploader/queue/t1/trace?signature=sig&extra=1']) {
+        assert.equal(helpers.safeTraceUrl(bad, 't1'), '');
+    }
+    const awaiting = queueTask({id: 'upload-assisted', status: 'awaiting_user_submit', phase: 'awaiting_user_submit', step: 'submit', percent: 88, upload_mode: 'assisted', awaiting_deadline: Date.now() / 1000 + 300});
+    const failed = queueTask({id: 'upload-trace', status: 'error', phase: 'error', failed_step: 'fill_metadata', percent: 50, debug_mode: true, error: 'Selector changed', trace_url: '/api/uploader/queue/upload-trace/trace?signature=tracesig'});
+    const h = harness({initialJobs: [awaiting, failed], handler: (url, options) => {
+        if (url === '/api/uploader/queue' && options.method === 'POST') return {jobs: [queueTask({id: 'q-new', upload_mode: JSON.parse(options.body).upload_mode, debug_mode: JSON.parse(options.body).debug_mode})]};
+        if (url.endsWith('/confirm-submitted')) return queueTask({id: 'upload-assisted', status: 'success', phase: 'done', percent: 100});
+    }});
+    await h.init(); await h.receive();
+    assert.equal(h.uploader.state().upload_mode, 'assisted');
+    assert.equal(h.uploader.state().debug_mode, false);
+    assert.equal(h.elements['uploader-upload-mode'].value, 'assisted');
+    assert.equal(h.elements['uploader-debug-mode'].checked, false);
+
+    // Assisted job renders guidance + Xác nhận đã đăng button
+    assert.ok(h.find('uploader-publish-jobs', el => el.className === 'uploader-job-assisted'));
+    await h.action('uploader-publish-jobs', 'Xác nhận đã đăng');
+    const confirmCall = h.calls.find(call => call.url === '/api/uploader/queue/upload-assisted/confirm-submitted');
+    assert.ok(confirmCall);
+    assert.equal(confirmCall.options.headers.get('X-VietSub-Token'), 'csrf-uploader-token');
+
+    // Trace download link + privacy warning + failed_step indicator
+    const traceLink = h.find('uploader-publish-jobs', el => el.tagName === 'A' && el.textContent.includes('Playwright Trace'));
+    assert.equal(traceLink.href, '/api/uploader/queue/upload-trace/trace?signature=tracesig');
+    const traceWarn = h.find('uploader-publish-jobs', el => el.className === 'uploader-trace-warning');
+    assert.match(traceWarn.textContent, /không chia sẻ công khai/i);
+    const failedStepNode = h.find('uploader-publish-jobs', el => el.className === 'uploader-job-step-failed');
+    assert.match(failedStepNode.textContent, /4\/7/);
+
+    // Switch to auto + debug_mode=true and verify payload
+    await h.change('uploader-upload-mode', 'auto', 'change').done;
+    await h.change('uploader-debug-mode', true, 'change').done;
+    await h.select();
+    await h.elements['uploader-publish-form'].emit('submit').done; await settle();
+    const post = h.calls.find(call => call.url === '/api/uploader/queue' && call.options.method === 'POST');
+    const body = JSON.parse(post.options.body);
+    assert.equal(body.upload_mode, 'auto');
+    assert.equal(body.debug_mode, true);
+});
+
+test('YouTube Data API v3 JSON parser, OAuth setup, and queueing without local browser runtime', async () => {
+    const okJson = JSON.stringify({installed: {client_id: '123456-abc.apps.googleusercontent.com', client_secret: 'GOCSPX-secret-12345'}});
+    const parsed = helpers.parseYoutubeClientSecretJson(okJson);
+    assert.equal(parsed.error, '');
+    assert.equal(parsed.client_id, '123456-abc.apps.googleusercontent.com');
+    assert.equal(parsed.client_secret, 'GOCSPX-secret-12345');
+    assert.match(helpers.parseYoutubeClientSecretJson(JSON.stringify({web: {client_id: 'x', client_secret: 'y'}})).error, /Desktop app/);
+
+    const ytApiProfile = profile({
+        upload_method: 'youtube_api',
+        session_status: 'ready',
+        youtube_api: {configured: true, connected: true, channel_title: 'Kênh API', token_expires_at: 9999999999, scopes: []},
+    });
+    const ytApiProfile2 = profile({
+        id: ids[1],
+        name: 'Kênh API 2',
+        upload_method: 'youtube_api',
+        session_status: 'unknown',
+        youtube_api: {configured: true, connected: false, channel_title: '', token_expires_at: null, scopes: []},
+    });
+    const h = harness({
+        caps: capabilities({browser_available: false}),
+        initialProfiles: [ytApiProfile, ytApiProfile2],
+        handler: (url, options) => {
+            if (url === '/api/uploader/queue' && options.method === 'POST') return {jobs: [queueTask({visibility: 'private'})]};
+            if (url.endsWith('/youtube-oauth/start')) return {id: 'oauth-1', profile_id: ids[1], action: 'youtube_oauth', status: 'running', error: ''};
+        },
+    });
+    await h.init(); await h.receive(); await h.select();
+    await h.change('uploader-visibility', 'private', 'change').done;
+    // Even with browser_available: false, connected YouTube API profile can submit!
+    assert.equal(h.elements['uploader-queue-submit'].disabled, false);
+    await h.elements['uploader-publish-form'].emit('submit').done; await settle();
+    const qCall = h.calls.find(call => call.url === '/api/uploader/queue' && call.options.method === 'POST');
+    assert.ok(qCall);
+    assert.equal(JSON.parse(qCall.options.body).upload_mode, 'assisted');
+    // OAuth connect button on idle configured profile triggers /youtube-oauth/start with CSRF token
+    const connectBtn = h.find('uploader-profile-list', el => el.dataset.uploaderFocus === `yt-connect-${ids[1]}`);
+    assert.ok(connectBtn && !connectBtn.disabled);
+    await connectBtn.emit('click').done; await settle();
+    const oauthCall = h.calls.find(call => call.url === `/api/uploader/profiles/${ids[1]}/youtube-oauth/start`);
+    assert.ok(oauthCall);
+    assert.equal(oauthCall.options.headers.get('X-VietSub-Token'), 'csrf-uploader-token');
+});
