@@ -4,6 +4,35 @@ All notable changes to VietSub Studio are documented here.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-25
+
+### Bảo mật & Cập nhật 1-click
+
+- Áp dụng xác thực chữ ký số **Ed25519 fail-closed** cho trình cập nhật (`vietsub/updater.py`): nhúng sẵn khóa công khai release chính thức (`47fad5684b02ccba`), kiểm tra nghiêm ngặt `key_id == sha256(public_key)[:16]`, yêu cầu đủ 3 tệp `.zip`, `.zip.sha256.txt` và `.zip.sig`, và bổ sung tự kiểm tra RFC 8032 (`--self-check-crypto`) khi đóng gói EXE. Kèm công cụ ký ngoại tuyến `tools/sign_release.py` (không lưu private key trong repo hay CI).
+- Siết biên bảo vệ chế độ thực (`TESTING=False`): bắt buộc CSRF token `X-VietSub-Token`, kiểm tra `Host`/`Origin`/Fetch-Metadata và strict JSON trên toàn bộ API mới/cũ; khóa cửa sổ bàn giao giữa hàng đợi VietSub, Auto Edit và Publish Hub khi đang cài cập nhật.
+- Mở rộng mã hóa Windows DPAPI cho API key, cookie và OAuth2 token YouTube; bổ sung bộ lọc log/lỗi tập trung `vietsub/redaction.py` để ẩn bí mật, token và đường dẫn cá nhân khỏi log đĩa, `/api/progress` và phản hồi lỗi.
+
+### Publish Hub v2
+
+- Mặc định bật chế độ **Bán tự động (`Assisted Upload`)**: điền sẵn video, tiêu đề, mô tả, hashtag và dừng tại bước rà soát cuối để người dùng tự xác nhận đăng, giảm rủi ro đăng nhầm hoặc bị nền tảng chặn tự động hóa.
+- Bổ sung **Debug Mode + Playwright Trace** có ký HMAC để chẩn đoán lỗi giao diện nền tảng cục bộ; tách bộ selector ra `vietsub/uploader/selectors.json` hỗ trợ ghi đè nóng qua `selectors.override.json` mà không cần build lại ứng dụng.
+- Thêm nút **Dọn đã xong** (`DELETE /api/uploader/queue/finished`) chỉ xóa các job đã hoàn tất/lỗi/hủy và luôn bảo toàn job đang chạy hoặc `uncertain`.
+- Bổ sung tùy chọn **YouTube Data API v3** (OAuth2 PKCE + Resumable Upload bằng `requests` sẵn có, không thêm thư viện nặng làm phình kích thước EXE).
+
+### Biên tập & Tự động hóa
+
+- **Từ điển thuật ngữ & xưng hô (Glossary):** Quản lý nhiều bộ từ điển lưu nguyên tử tại `glossaries.json`, tự chèn vào prompt dịch và hỗ trợ áp dụng 1-click trực tiếp lên bản SRT hiện hành.
+- **Trình sửa SRT trực tiếp & Live Preview:** Chỉnh sửa nội dung/timecode ngay trong Workspace Auto Edit đồng bộ 2 chiều với Video Player, hiển thị phụ đề/banner trực tiếp trên khung preview, tự sao lưu `.bak` để hoàn tác và hiển thị cảnh báo `srt_stale_assets` khi bản render/TTS cũ hơn SRT.
+- **Phụ đề động ASS (`static`, `karaoke_highlight`, `word_pop`):** Hỗ trợ hiệu ứng làm nổi bật theo từ kiểu TikTok/CapCut ngay trong bộ render FFmpeg/libass.
+- **Hồ sơ Kênh (Channel Presets), Chạy 1 mạch (Auto Pipeline) & AI gợi ý Hook:** Gom trọn bộ từ điển, cấu hình Auto Edit và danh sách tài khoản Publish Hub vào từng Hồ sơ kênh (tự động đồng bộ Glossary khi đổi kênh); bật chuỗi tự động `VietSub → Auto Edit → Publish Hub` ngay trên thẻ Hàng đợi; dùng AI gợi ý các câu Hook ngắn để áp 1-click lên Top Banner.
+
+### Giao diện Neutral Studio Dark & Ổn định
+
+- Thiết kế lại toàn bộ giao diện desktop sang thang màu **Neutral Studio Dark** (`#111214 → #16181c → #1d2026 → #262a32`) với một màu nhấn chủ đạo Studio Blue (`#4c8bf5`), viền siêu mảnh `1px` và thanh cuộn gọn.
+- Giải quyết triệt để lỗi nghẽn/tràn bố cục ở `1280×720` trên cả 3 Workspace: Hàng đợi VietSub luôn hiển thị thoáng kể cả khi mở Crop OCR; Auto Edit hiển thị đồng thời Video + Trình sửa SRT với thứ tự lớp overlay chặt chẽ; Hàng đợi Publish Hub bỏ giới hạn chiều cao `32%` và hết tràn nút.
+- Tổ chức lại Ngăn Thiết lập thành 3 tab độc lập (**Chung · Dịch & Từ điển · Hồ sơ kênh**), giữ nguyên 115 legacy DOM IDs, sửa lỗi mất biểu tượng nút thu gọn Console và tiết chế mật độ hiệu ứng Sakuga VFX.
+- Gộp toàn bộ bản vá ổn định đồng thời (concurrency, queue lock, async race DOM/IME) và kiểm chứng mở rộng qua 218 bài test JS, 868 bài test Python/Playwright cùng 5 kịch bản QA đa độ phân giải.
+
 ## [2.0.2] - 2026-11-20
 
 ### TTS song song, cache và độ ổn định

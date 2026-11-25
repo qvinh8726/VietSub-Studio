@@ -43,7 +43,7 @@ export function SiteHeader() {
           <span>
             VietSub<span className="brand-light"> Studio</span>
           </span>
-          <span className="brand-ver">2.0</span>
+          <span className="brand-ver">2.1</span>
         </a>
         <nav className="nav-desktop" aria-label="Điều hướng chính">
           {NAV.map((item) => (

@@ -4,6 +4,10 @@ These steps publish a release that every portable build since v1.3.0 can install
 
 Các bước dưới đây phát hành một bản mà mọi bản portable từ v1.3.0 trở lên tự cài được. Ví dụ dùng `1.5.4`; hãy thay bằng phiên bản bạn phát hành.
 
+## v2.1.0 release gate — 25/11/2026
+
+Nhúng khóa công khai Ed25519 chính thức (`47fad5684b02ccba`) vào `RELEASE_PUBLIC_KEYS` trong `vietsub/updater.py`, nâng `APP_VERSION = "2.1.0"`, đồng bộ `CHANGELOG.md`, `README.md`, `HUONG_DAN_SU_DUNG.txt` và `landing-page/`. Sau khi commit `chore(release): prepare v2.1.0` lên `main` và toàn bộ 4 job của **Tests and package smoke** xanh trên đúng SHA, tải artifact `VietSub-Studio-Portable-v2.1.0-release-assets`, ký ngoại tuyến bằng `tools/sign_release.py sign` để tạo file thứ 3 (`VietSub-Studio-Portable-v2.1.0.zip.sig`), kiểm chứng cả 3 tệp với `REQUIRE_RELEASE_SIGNATURE=1` rồi mới gắn tag `v2.1.0` và phát hành GitHub Release.
+
 ## v2.0.2 release gate — 20/11/2026
 
 Người dùng đã duyệt README và toàn bộ thay đổi v2.0.2. Chốt `APP_VERSION`/changelog/landing ở 2.0.2, commit source đã rà soát, push `main` và chỉ gắn tag/phát hành sau khi workflow **Tests and package smoke** của đúng SHA xanh toàn bộ. Lấy artifact `VietSub-Studio-Portable-v2.0.2-release-assets`, kiểm chứng ZIP + `.zip.sha256.txt` bằng release contract rồi xuất bản release thường, đánh dấu Latest và kiểm tra `releases/latest`. Giữ nguyên tag/assets v2.0.1 đã phát hành.

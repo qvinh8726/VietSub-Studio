@@ -16,6 +16,7 @@ import {
 import { motion } from "motion/react";
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { VERSION } from "./data";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
 
 function Card({
@@ -166,15 +167,15 @@ export function BentoGrid() {
         <h3>
           Không chỉ dịch lời.
           <br />
-          Trao một giọng kể.
+          Sửa SRT, phụ đề động &amp; giọng kể.
         </h3>
         <p>
-          Che chữ theo vùng OCR, đóng phụ đề đẹp, lồng tiếng CapCut và đổi tốc
-          độ / cao độ. Tách giọng là tùy chọn cần model ngoài; chất lượng nhạc
-          nền tùy model.
+          Từ điển đồng bộ thuật ngữ (Glossary), trình sửa SRT đồng bộ 2 chiều
+          với Live Preview, phụ đề động ASS (karaoke, word-pop), AI gợi ý Hook
+          cho Top Banner và lồng tiếng CapCut TTS.
         </p>
         <span className="bento-footnote">
-          CapCut là API không chính thức, có thể thay đổi.
+          Hồ sơ Kênh + Auto Pipeline · CapCut là API không chính thức.
         </span>
       </Card>
       <Card className="bento-storage">
@@ -223,9 +224,10 @@ export function BentoGrid() {
           Mỗi câu chuyện, nhiều điểm đến.
         </h3>
         <p>
-          Chuyển video đã dựng, chỉnh metadata, chọn nhiều profile và xếp lịch
-          đăng cục bộ. Trạng thái từng tài khoản độc lập; cần app và máy tính
-          đang chạy.
+          Chế độ Bán tự động (Assisted Upload) mặc định an toàn, Debug Trace ký
+          HMAC, tách <code>selectors.json</code> ghi đè nóng và tùy chọn YouTube
+          Data API v3 (OAuth2 PKCE). Lịch đăng chạy cục bộ khi app và máy đang
+          mở.
         </p>
         <div className="profile-art" aria-hidden="true">
           {[
@@ -249,9 +251,10 @@ export function BentoGrid() {
       <div className="bento-honesty">
         <ScanText size={17} aria-hidden="true" />
         <p>
-          <strong>Đúng những gì có trong v2.0.2.</strong> Xuất MP4, SRT và gói
-          CapCut Draft thử nghiệm. Cần kiểm tra với phiên bản CapCut đang dùng;
-          không bảo đảm tương thích mọi phiên bản.
+          <strong>Đúng những gì có trong v{VERSION}.</strong> Giao diện Neutral
+          Studio Dark, cập nhật 1-click ký số Ed25519 fail-closed, cùng xuất
+          MP4, SRT và gói CapCut Draft thử nghiệm (cần kiểm tra với phiên bản
+          CapCut đang dùng).
         </p>
         <Sparkles size={17} aria-hidden="true" />
       </div>

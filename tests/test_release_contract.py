@@ -241,6 +241,18 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(versions, sorted(versions, reverse=True), "newest release must come first")
         self.assertEqual(len(versions), len(set(versions)), "a version is listed twice")
 
+    def test_embedded_release_public_keys_match_key_id_contract(self):
+        self.assertTrue(
+            app.app_updater.RELEASE_PUBLIC_KEYS,
+            "RELEASE_PUBLIC_KEYS must contain at least one embedded Ed25519 release key",
+        )
+        loaded = app.app_updater.load_trusted_public_keys()
+        self.assertIn("47fad5684b02ccba", loaded)
+        for key_id, pub_hex in app.app_updater.RELEASE_PUBLIC_KEYS.items():
+            raw_pub = bytes.fromhex(pub_hex)
+            self.assertEqual(len(raw_pub), 32)
+            self.assertEqual(app.app_updater.public_key_id(raw_pub), key_id)
+
 
 class PublishedReleaseDirectoryTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("RELEASE_DIR"), "RELEASE_DIR is not set")

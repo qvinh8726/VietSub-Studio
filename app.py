@@ -223,7 +223,7 @@ JS_RUNTIME_CACHE_SECONDS = 10 * 60
 ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024
 MAX_LOCAL_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-APP_VERSION = "2.0.2"
+APP_VERSION = "2.1.0"
 GITHUB_REPOSITORY = "qvinh8726/VietSub-Studio"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
@@ -9292,7 +9292,8 @@ def main():
         try:
             from vietsub import updater as _release_updater
             _release_updater.self_check_ed25519()
-            message = "Ed25519 RFC 8032 OK"
+            trusted_keys = _release_updater.load_trusted_public_keys()
+            message = f"Ed25519 RFC 8032 OK (keys={','.join(sorted(trusted_keys))})"
             if out_path:
                 with open(out_path, "w", encoding="utf-8") as handle:
                     handle.write(message + "\n")

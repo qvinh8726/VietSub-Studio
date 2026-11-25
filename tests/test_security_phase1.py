@@ -101,6 +101,63 @@ class Ed25519UpdaterSecurityTests(unittest.TestCase):
         self.assertTrue(body["update_available"])
         self.assertFalse(body["automatic_update_supported"])
 
+    def test_embedded_production_public_key_is_valid_and_rejects_untrusted_keys(self):
+        self.assertTrue(updater.has_valid_public_keys())
+        loaded = updater.load_trusted_public_keys()
+        self.assertIn("47fad5684b02ccba", loaded)
+        for key_id, pub_hex in updater.RELEASE_PUBLIC_KEYS.items():
+            raw = bytes.fromhex(pub_hex)
+            self.assertEqual(updater.public_key_id(raw), key_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe = root / "VietSub Studio.exe"
+            exe.write_bytes(b"MZold")
+            _, _, _, zip_bytes, chk_bytes, sig_bytes, payload = _build_signed_update_fixture(root)
+
+            # Signed release payload with real embedded key -> automatic_update_supported is True.
+            with (
+                patch.object(app, "is_packaged_app", return_value=True),
+                patch.object(app, "supports_in_place_update", return_value=True),
+                patch.object(app, "fetch_latest_release_payload", return_value=payload),
+                patch.dict(app.app.config, TESTING=False),
+            ):
+                client = app.app.test_client()
+                res = client.get("/api/update", headers={app.API_TOKEN_HEADER: app.API_TOKEN})
+            self.assertEqual(res.status_code, 200)
+            body = res.get_json()
+            self.assertEqual(body["current_version"], app.APP_VERSION)
+            self.assertTrue(body["update_available"])
+            self.assertTrue(body["automatic_update_supported"])
+
+            # Missing .zip.sig still fails closed -> automatic_update_supported is False.
+            with app.update_cache_lock:
+                app.update_cache.update({"checked_at": 0.0, "status": None})
+            unsigned_payload = {**payload, "assets": payload["assets"][:2]}
+            with (
+                patch.object(app, "is_packaged_app", return_value=True),
+                patch.object(app, "supports_in_place_update", return_value=True),
+                patch.object(app, "fetch_latest_release_payload", return_value=unsigned_payload),
+                patch.dict(app.app.config, TESTING=False),
+            ):
+                res_unsigned = client.get("/api/update", headers={app.API_TOKEN_HEADER: app.API_TOKEN})
+            self.assertEqual(res_unsigned.status_code, 200)
+            self.assertFalse(res_unsigned.get_json()["automatic_update_supported"])
+
+            # Signature from an unknown/ephemeral key must be rejected by real embedded RELEASE_PUBLIC_KEYS.
+            def fake_dl(url, dest, _limit):
+                data = chk_bytes if url.endswith(".sha256.txt") else sig_bytes if url.endswith(".sig") else zip_bytes
+                Path(dest).write_bytes(data)
+                return hashlib.sha256(data).hexdigest(), len(data)
+
+            with (
+                patch.object(app, "is_packaged_app", return_value=True),
+                patch.object(app.sys, "executable", str(exe)),
+                patch.object(app, "download_release_asset", side_effect=fake_dl),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "không nằm trong danh sách tin cậy"):
+                    app.prepare_update_executable(payload)
+
     def test_fail_closed_rejects_empty_placeholder_corrupt_key_and_env_bypass(self):
         for bad_keys in (
             {},
@@ -240,8 +297,17 @@ class OfflineSignReleaseToolTests(unittest.TestCase):
             pem_text = key_path.read_text(encoding="ascii")
             self.assertIn("BEGIN ENCRYPTED PRIVATE KEY", pem_text)
 
+            # Signing with an untrusted ephemeral key must fail closed against embedded RELEASE_PUBLIC_KEYS.
+            with self.assertRaisesRegex(RuntimeError, "không nằm trong danh sách tin cậy"):
+                sign_release.sign_release_zip(
+                    zip_path, key_path=key_path, passphrase="my strong pass phrase 2026"
+                )
+
             sig_path, signed_kid, pub_hex = sign_release.sign_release_zip(
-                zip_path, key_path=key_path, passphrase="my strong pass phrase 2026"
+                zip_path,
+                key_path=key_path,
+                passphrase="my strong pass phrase 2026",
+                expected_public_keys={info["key_id"]: info["public_key_hex"]},
             )
             self.assertEqual(signed_kid, info["key_id"])
             self.assertTrue(sig_path.is_file())

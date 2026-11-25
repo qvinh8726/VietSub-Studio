@@ -27,9 +27,10 @@ SIGNATURE_DOMAIN = "vietsub-studio-release-v1"
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 
 # Fail-closed embedded Ed25519 public keys: {key_id_16_hex: raw_32_byte_pubkey_64_hex}.
-# Generate an offline signing key outside the repo via `python tools/sign_release.py keygen`,
-# then paste only the printed key_id -> public_key_hex mapping here before tagging v2.1.0+.
-RELEASE_PUBLIC_KEYS: dict[str, str] = {}
+# Private signing keys are kept strictly offline outside the repository (see RELEASING.md).
+RELEASE_PUBLIC_KEYS: dict[str, str] = {
+    "47fad5684b02ccba": "ca51ad92d04672005001134d046af2769ba505b0a811b7e36b408aae01ff1017",
+}
 
 
 def _prerelease_tokens(prerelease):

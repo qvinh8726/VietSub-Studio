@@ -59,7 +59,7 @@ export default function VietSubSite() {
                 rel="noreferrer"
               >
                 <span className="release-tag">MỚI · v{VERSION}</span>
-                <span>Không gian sáng tạo 3-trong-1</span>
+                <span>Neutral Studio Dark · Auto Pipeline · Ed25519</span>
                 <ArrowUpRight size={14} aria-hidden="true" />
               </a>
               <h1 id="hero-title">
@@ -277,7 +277,8 @@ export default function VietSubSite() {
                 Tải ZIP từ GitHub Releases → giải nén → mở app.
                 <br />
                 <a href={CHECKSUM_URL} target="_blank" rel="noreferrer">
-                  Kiểm tra SHA256 <ArrowUpRight size={11} aria-hidden="true" />
+                  Kiểm tra SHA256 &amp; Ed25519{" "}
+                  <ArrowUpRight size={11} aria-hidden="true" />
                 </a>
                 <span>
                   VideOCR, FFmpeg và trình duyệt cài riêng theo nhu cầu.

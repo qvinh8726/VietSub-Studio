@@ -165,7 +165,7 @@ jobs:
             throw "Packaged Ed25519 self-check timed out after 60 seconds."
           }
           $cryptoText = if (Test-Path $cryptoOutFile) { (Get-Content -Raw -Path $cryptoOutFile).Trim() } else { "" }
-          if ($cryptoProc.ExitCode -ne 0 -or $cryptoText -notmatch "Ed25519 RFC 8032 OK") {
+          if ($cryptoProc.ExitCode -ne 0 -or $cryptoText -notmatch "Ed25519 RFC 8032 OK" -or $cryptoText -notmatch "47fad5684b02ccba") {
             throw "Packaged Ed25519 self-check failed (exit $($cryptoProc.ExitCode)): $cryptoText"
           }
           Remove-Item -Force $cryptoOutFile -ErrorAction SilentlyContinue
@@ -228,9 +228,10 @@ jobs:
             if ($null -eq $presets.presets) { throw "Packaged /api/channel-presets failed." }
             $edCaps = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/editor/capabilities" -Headers $authHeaders -TimeoutSec 15
             if ($edCaps.subtitle_animations -notcontains "word_pop") { throw "Packaged /api/editor/capabilities missing word_pop." }
+            $expectedVersion = (python -c "import app; print(app.APP_VERSION)").Trim()
             $upd = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/update" -Headers $authHeaders -TimeoutSec 20
-            if ($null -eq $upd.current_version) { throw "Packaged /api/update failed." }
-            Write-Host "PASS [4/6] /api/glossaries + /api/channel-presets + /api/editor/capabilities + /api/update (v$($upd.current_version), auto=$($upd.automatic_update_supported)) OK"
+            if ($upd.current_version -ne $expectedVersion) { throw "Packaged /api/update version mismatch: expected $expectedVersion, got $($upd.current_version)" }
+            Write-Host "PASS [4/6] /api/glossaries + /api/channel-presets + /api/editor/capabilities + /api/update (v$($upd.current_version), auto=$($upd.automatic_update_supported), failed=$($upd.check_failed)) OK"
 
             # 5. Negative security boundary checks (TESTING=False): missing token -> 403, foreign Origin -> 403, non-JSON -> 415.
             foreach ($neg in @(

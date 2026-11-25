@@ -1,5 +1,5 @@
 // One source of truth for every download surface, including the legacy relay entry.
-export const VERSION = "2.0.2";
+export const VERSION = "2.1.0";
 export const REPO_URL = "https://github.com/qvinh8726/VietSub-Studio";
 export const BUILD_URL = `${REPO_URL}/actions`;
 export const RELEASE_URL = `${REPO_URL}/releases/tag/v${VERSION}`;
@@ -183,36 +183,38 @@ export const PLATFORM_ITEMS: MarqueeItem[] = [
 ];
 
 export const TECH_ITEMS: MarqueeItem[] = [
-  { label: "VietSub" },
-  { label: "Auto Edit" },
-  { label: "Publish Hub" },
+  { label: "Neutral Studio Dark" },
+  { label: "Glossary & SRT Editor" },
+  { label: "Dynamic ASS" },
+  { label: "Auto Pipeline" },
+  { label: "Assisted Upload" },
+  { label: "YouTube API v3" },
   { label: "CapCut TTS" },
   { label: "NVIDIA NVENC" },
-  { label: ".vi.srt" },
-  { label: "HTTP Range × 6" },
+  { label: "Ed25519 Signed" },
   { label: "FFmpeg" },
 ];
 
 export const PIPELINE_STEPS = [
   {
     title: "Hiểu từng lời kể.",
-    label: "VIETSUB THÔNG MINH",
-    body: "Dán link hoặc nhập MP4/MKV. Tải 6 luồng khi nguồn hỗ trợ HTTP Range, chọn vùng OCR và dịch ra .vi.srt giữ timecode.",
-    note: "Trình duyệt chạy ẩn · Hiện khi cần xác minh",
+    label: "VIETSUB & GLOSSARY",
+    body: "Dán link hoặc nhập MP4/MKV. Tải 6 luồng khi nguồn hỗ trợ HTTP Range, dịch giữ chuẩn thuật ngữ bằng Từ điển (Glossary) và bật Hồ sơ Kênh chạy 1 mạch.",
+    note: "Channel Presets · Auto Pipeline · Trình duyệt chạy ẩn",
     icon: "scan",
   },
   {
     title: "Thêm dấu ấn riêng.",
-    label: "AUTO EDIT",
-    body: "Che chữ gốc theo vùng OCR, đóng phụ đề, lồng tiếng CapCut và chỉnh tốc độ / cao độ. Render với NVENC nếu GPU hỗ trợ.",
-    note: "CapCut TTS · FFmpeg · CPU fallback",
+    label: "AUTO EDIT & LIVE SRT",
+    body: "Sửa SRT trực tiếp đồng bộ 2 chiều với Video Player, chọn phụ đề động kiểu TikTok/CapCut (karaoke, word-pop), AI gợi ý Hook lên Top Banner và lồng tiếng CapCut TTS.",
+    note: "Live Preview · Dynamic ASS · NVENC / CPU fallback",
     icon: "edit",
   },
   {
     title: "Đưa câu chuyện đi xa.",
-    label: "ĐĂNG ĐA NỀN TẢNG",
-    body: "Chuyển video đã dựng sang Publish Hub, duyệt nội dung, chọn các profile độc lập và xếp lịch đăng theo từng tài khoản.",
-    note: "Lịch cục bộ · Cần app và máy đang chạy",
+    label: "PUBLISH HUB V2",
+    body: "Chế độ Bán tự động (Assisted Upload) mặc định an toàn, Debug Trace ký HMAC, ghi đè nóng selectors.json và tùy chọn YouTube Data API v3 (OAuth2 PKCE) không phình EXE.",
+    note: "Assisted Upload · YouTube API v3 · Lịch cục bộ",
     icon: "publish",
   },
 ] as const;
@@ -220,26 +222,26 @@ export const PIPELINE_STEPS = [
 export const FAQS = [
   {
     q: "Tôi cần chuẩn bị gì để bắt đầu?",
-    a: "Bản portable chạy trên Windows 10/11 x64. Tải ZIP từ GitHub Releases v2.0.2 và giải nén. Cài riêng VideOCR CLI cho OCR, FFmpeg + FFprobe cho xử lý video, và Chrome/Edge cho tác vụ cần trình duyệt. Chọn API dịch hoặc phiên Gemini Notebook của bạn; Deno/Node 22+ cần cho nguồn YouTube. App không tự cài các model AI nặng.",
+    a: "Bản portable chạy trên Windows 10/11 x64. Tải ZIP từ GitHub Releases v2.1.0 cùng tệp SHA256 và chữ ký Ed25519 (.zip.sig), sau đó giải nén. Cài riêng VideOCR CLI cho OCR, FFmpeg + FFprobe cho xử lý video, và Chrome/Edge cho tác vụ cần trình duyệt. Chọn API dịch hoặc phiên Gemini Notebook của bạn; Deno/Node 22+ cần cho nguồn YouTube. App không tự cài các model AI nặng.",
   },
   {
-    q: "Chạy ẩn 100% có nghĩa là không cần đăng nhập?",
-    a: "Không. Các tác vụ tự động bình thường dùng Chromium --headless=new với profile riêng. Khi gặp CAPTCHA hoặc cần đăng nhập, app hiện trình duyệt để bạn xác minh thủ công. Phiên đăng nhập hợp lệ được tái sử dụng; profile cá nhân hằng ngày của bạn không bị sửa. OCR và render chạy trên máy.",
+    q: "Chạy ẩn 100% và cập nhật 1-click có an toàn không?",
+    a: "Các tác vụ tự động bình thường dùng Chromium --headless=new với profile riêng và tự hiện cửa sổ khi gặp CAPTCHA hoặc cần đăng nhập; profile cá nhân hằng ngày của bạn không bị đụng tới. Từ v2.1.0, cập nhật 1-click xác thực chữ ký số Ed25519 fail-closed kết hợp SHA-256, API nội bộ được bảo vệ CSRF/Origin, còn API key, cookie và OAuth2 token YouTube đều mã hóa bằng Windows DPAPI.",
   },
   {
-    q: "CapCut TTS, tách giọng và CapCut Draft có sẵn không?",
-    a: "v2.0.2 có lồng tiếng qua API CapCut, khớp giọng theo cue SRT, thay đổi tốc độ/cao độ và trộn nền. Đây là dịch vụ nội bộ không chính thức, giọng và khả năng truy cập có thể đổi. Tách giọng giữ nền cần runtime/model ngoài (audio-separator/ONNX), không kèm portable và có thể ảnh hưởng nhạc/hiệu ứng. v2.0.2 hỗ trợ xuất gói CapCut Draft thử nghiệm bên cạnh MP4 và SRT. Cần kiểm tra gói với phiên bản CapCut đang dùng; không bảo đảm tương thích mọi phiên bản.",
+    q: "Từ điển (Glossary), sửa SRT trực tiếp, phụ đề động và CapCut TTS hoạt động thế nào?",
+    a: "v2.1.0 cho phép lưu nhiều bộ Từ điển thuật ngữ/xưng hô, chỉnh sửa SRT ngay cạnh Video Player có Live Preview và hoàn tác .bak, gắn phụ đề động ASS (karaoke_highlight, word_pop), nhờ AI gợi ý câu Hook cho Top Banner, và gom thành Hồ sơ Kênh chạy 1 mạch. CapCut TTS và gói CapCut Draft vẫn có sẵn (CapCut là dịch vụ nội bộ không chính thức, còn tách giọng giữ nền cần runtime/model audio-separator ngoài).",
   },
   {
-    q: "Hẹn giờ đăng có chạy khi tôi tắt máy không?",
-    a: "Không. Lịch nằm cục bộ và cần app cùng máy tính đang chạy. Bạn đăng nhập thủ công cho từng profile, chọn tài khoản, duyệt metadata rồi xếp lịch. Khả năng đăng và chế độ riêng tư khác nhau theo nền tảng; Facebook hỗ trợ Page / Meta Business Suite, không phải mọi profile cá nhân. UI nền tảng thay đổi, CAPTCHA hay phiên hết hạn có thể cần bạn can thiệp. Không cam kết mọi lần tải lên đều thành công.",
+    q: "Publish Hub v2 (Assisted Upload & YouTube Data API v3) khác gì trước đây?",
+    a: "v2.1.0 đặt chế độ Bán tự động (Assisted Upload) làm mặc định: app tự tải video và điền sẵn metadata rồi dừng để bạn kiểm tra và bấm Đăng thủ công. Ngoài đăng qua trình duyệt có Debug Trace và selectors.json ghi đè nóng, kênh YouTube còn có tùy chọn dùng YouTube Data API v3 (OAuth2 PKCE + Resumable Upload). Lịch đăng vẫn chạy cục bộ khi app và máy tính đang mở.",
   },
   {
     q: "Dọn video có làm mất phụ đề hay file gốc?",
-    a: "Xóa bản ghi mặc định không xóa media. Nếu bạn bật xóa file, app xem trước dung lượng, giữ .vi.srt mặc định và bảo vệ file đang được job khác sử dụng. Video nguồn, kể cả file gốc trên máy nếu bạn chọn, có thể bị xóa: hãy xem kỹ trước khi xác nhận. Tự dọn sau khi dịch là tùy chọn mặc định tắt, chỉ chạy sau khi SRT được kiểm tra thành công.",
+    a: "Xóa bản ghi mặc định không xóa media. Nếu bạn bật xóa file, app xem trước dung lượng, giữ .vi.srt mặc định và bảo vệ file đang được job khác sử dụng. Ở Publish Hub v2, nút Dọn đã xong chỉ xóa lịch sử hoàn tất/lỗi/hủy và luôn giữ nguyên các job đang chạy hoặc uncertain. Video nguồn, kể cả file gốc trên máy nếu bạn chọn, có thể bị xóa: hãy xem kỹ trước khi xác nhận.",
   },
   {
     q: "Tôi có cần card NVIDIA? Dữ liệu có ở trên máy không?",
-    a: "Không bắt buộc: app kiểm tra NVENC thực tế và chuyển sang CPU nếu không dùng được. Video được OCR/render trên máy; văn bản phụ đề gửi đến AI dịch bạn cấu hình, văn bản TTS đến dịch vụ giọng nói, và video gửi đến nền tảng khi bạn yêu cầu đăng. Tài khoản và cookie thuộc các profile độc lập, không đi trong manifest project. Chỉ dùng nội dung bạn có quyền sử dụng.",
+    a: "Không bắt buộc: app kiểm tra NVENC thực tế và chuyển sang CPU nếu không dùng được. Video được OCR/render trên máy; văn bản phụ đề gửi đến AI dịch bạn cấu hình, văn bản TTS đến dịch vụ giọng nói, và video gửi đến nền tảng khi bạn yêu cầu đăng. Log đĩa và thông báo lỗi đi qua bộ lọc redaction để ẩn bí mật và đường dẫn cá nhân. Chỉ dùng nội dung bạn có quyền sử dụng.",
   },
 ];

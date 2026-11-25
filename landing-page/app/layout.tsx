@@ -28,7 +28,7 @@ const monoFont = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: `VietSub Studio v${VERSION} — Một Studio, muôn cách tỏa sáng`,
-  description: `VietSub Studio v${VERSION}: Creator Workbench 3-trong-1 cho VietSub thông minh, Auto Edit và đăng đa nền tảng. OCR, CapCut TTS, NVENC và profile độc lập trong một Studio trên Windows.`,
+  description: `VietSub Studio v${VERSION}: Creator Workbench 3-trong-1 với giao diện Neutral Studio Dark, Từ điển Glossary, Trình sửa SRT trực tiếp, phụ đề động ASS, Hồ sơ Kênh + Auto Pipeline, Publish Hub v2 (Assisted Upload + YouTube API v3) và cập nhật ký số Ed25519 trên Windows.`,
   openGraph: {
     title: `VietSub Studio v${VERSION} — 3-in-1 Creator Workbench`,
     description:

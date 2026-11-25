@@ -1,30 +1,29 @@
-VIETSUB STUDIO v2.0.2 - 3-IN-1 CREATOR WORKBENCH
+VIETSUB STUDIO v2.1.0 - 3-IN-1 CREATOR WORKBENCH
 ================================================
 
-0. BA WORKSPACE
+0. BA WORKSPACE & NANG CAP v2.1.0
+- Giao dien Neutral Studio Dark (xam than trung tinh, mau nhan Studio Blue), Ngan Thiet lap 3 tab
+  (Chung / Dich & Tu dien / Ho so kenh), bo cuc thoang tai 1280x720 tren ca 3 Workspace.
 - Thanh ben trai: VietSub / Auto Edit / Dang da nen tang. Chuyen ngay, khong reload.
-- VietSub giu luong OCR/dich cu. Ket qua/hang doi co nut chuyen sang Auto Edit hoac Publish Hub.
-- Auto Edit can FFmpeg va FFprobe trong PATH: che chu boxblur/delogo/thanh mau, burn ASS,
-  font local, banner/logoPNG, khung doc nen mo, tach MP3/WAV/mute, CapCut TTS va render co %/fps/huy.
-  Preview nguon khong hien effect; ket qua render nam rieng, khong ghi de video/SRT goc.
-  Toc do video 0.5-2x giu tong nhac nen; cao do +/-12 semitone chi ap dung TTS trong UI moi. Nghe mau 3 giay dung cau dau/cache.
-  Xuat goi CapCut Draft la THU NGHIEM: ZIP kem video va draft JSON, co the can relink media.
-  Cao do TTS da bake truoc mix; toc do timeline chinh tiep duoc, giu tong nhac nen. Can kiem tra tren ban CapCut dang dung.
+- VietSub: giu luong OCR/dich cu, bo sung Tu dien thuat ngu/xung ho (Glossary), Ho so Kenh (Channel Presets)
+  va cong tac Chay 1 mach (Auto Pipeline: VietSub -> Auto Edit -> Publish Hub) ngay tren the Hang doi.
+- Auto Edit: bo sung Trinh sua SRT truc tiep dong bo 2 chieu voi Video Player + Live Preview + hoan tac .bak
+  + canh bao srt_stale_assets, Phu de dong ASS (static / karaoke_highlight / word_pop), va AI goi y Hook
+  de gan nhanh len Top Banner. Can FFmpeg va FFprobe trong PATH.
 - CapCut TTS mac dinh 3 worker / Edge 5 worker; raw cache theo du an, FFmpeg theo lo 25 cau.
   Doi pitch/nghe thu/xuat Draft co the dung lai audio. CapCut giam tai khi HTTP 429, deadline 20s/cau.
-  Manifest/API cu thieu tts_change_pitch giu hanh vi cu; luu/chay UI moi chuyen sang pitch rieng TTS.
-- CapCut TTS la HTTP noi bo, chi gui text khi ban yeu cau. Edge/audio-separator la runtime
-  Python ngoai tuy chon; app khong tu cai pip/model va khong dong goi ONNX/Demucs/torch.
-- Publish Hub: tao profile rieng tung tai khoan, dang nhap thu cong va bam da xong,
-  kiem tra phien, chon video da edit hoac MP4, duyet metadata, chon nhieu account va visibility.
+  CapCut TTS la HTTP noi bo, chi gui text khi ban yeu cau. Edge/audio-separator la runtime Python ngoai
+  tuy chon; app khong tu cai pip/model va khong dong goi ONNX/Demucs/torch.
+- Publish Hub v2: mac dinh che do Ban tu dong (Assisted Upload) dung tai buoc ra soat de ban tu bam Dang,
+  ho tro Debug Mode + Playwright Trace ky HMAC, tach selectors.json ghi de nong, nut Don da xong
+  (giu nguyen job uncertain/dang chay), va tuy chon YouTube Data API v3 (OAuth2 PKCE + Resumable Upload).
   Public can xac nhan. Lich la CUC BO Asia/Saigon UTC+07; app/may/mang phai dang hoat dong.
 - Neu sau submit chua ro ket qua (uncertain), kiem tra nen tang truoc retry de tranh dang trung.
   Huy khong dam bao go video da dang. Khong giai/bypass CAPTCHA.
 - TikTok/Douyin: public/private/draft. YouTube/Xiaohongshu: public/private, khong explicit draft.
   Facebook Page/Meta Business va Bilibili: public/draft, khong private. Facebook can Page da chon;
   YouTube can audience, Bilibili can category/copyright da duoc nguoi dung chon truoc.
-- Browser UI co the thay doi; khi khong xac dinh duoc privacy/identity/confirmation app dung
-  de xac minh, khong tu chuyen sang public. QA release khong dang video tai khoan production.
+- Cap nhat 1-click tu v2.1.0 bat buoc xac thuc SHA256 + chu ky so Ed25519 (.zip.sig) fail-closed.
 
 1. CHAY APP
 - Giai nen file ZIP vao mot thu muc rieng. ZIP co san thu muc "VietSub Studio"

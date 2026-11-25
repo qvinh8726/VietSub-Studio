@@ -25,7 +25,7 @@
   <a href="https://github.com/qvinh8726/VietSub-Studio/issues">Báo lỗi / Đề xuất</a>
 </p>
 
-> **VietSub Studio v2.0.2 · 20/11/2026.** Tối ưu TTS song song/cache, cao độ riêng track giọng đọc và tài liệu ba workspace. Xem [thay đổi v2.0.2](#v202), [changelog](<CHANGELOG.md>) và [trang phát hành](<https://github.com/qvinh8726/VietSub-Studio/releases/tag/v2.0.2>). Badge phía trên lấy trạng thái release/CI trực tiếp từ GitHub.
+> **VietSub Studio v2.1.0 · 25/11/2026.** Cập nhật ký số Ed25519 fail-closed, Publish Hub v2 (Assisted Upload + YouTube Data API v3 + `selectors.json`), Glossary, Trình sửa SRT trực tiếp + phụ đề động ASS, Hồ sơ Kênh + Auto Pipeline, AI gợi ý Hook và giao diện **Neutral Studio Dark**. Xem [thay đổi v2.1.0](#v210), [changelog](<CHANGELOG.md>) và [trang phát hành](<https://github.com/qvinh8726/VietSub-Studio/releases/tag/v2.1.0>). Badge phía trên lấy trạng thái release/CI trực tiếp từ GitHub.
 
 VietSub Studio kết nối các công cụ tải video, OCR, dịch, FFmpeg và trình duyệt thành một quy trình có preview, hàng đợi, lưu dự án và chạy lại theo giai đoạn. Bạn giữ video, phụ đề và kết quả dựng trên máy; dịch văn bản, TTS và đăng video sử dụng dịch vụ bên ngoài khi chọn các chức năng đó.
 
@@ -36,7 +36,8 @@ VietSub Studio kết nối các công cụ tải video, OCR, dịch, FFmpeg và 
 
 - [Ba workspace, một dự án](#workspaces)
 - [Tính năng và giới hạn thực tế](#features)
-- [Thay đổi trong v2.0.2](#v202)
+- [Thay đổi trong v2.1.0](#v210)
+- [Thay đổi trong v2.0.2 (TTS song song & cache)](#v202)
 - [Yêu cầu hệ thống](#requirements)
 - [Cài portable, kiểm tra SHA256 và cập nhật](#portable)
 - [Thiết lập lần đầu](#setup)
@@ -67,9 +68,9 @@ flowchart LR
 
 | Workspace | Công việc chính | Kết quả |
 |---|---|---|
-| **VietSub** | Nhập video, xem vùng chữ, OCR bằng VideOCR, dịch qua Gemini Notebook hoặc API | Video và phụ đề gốc/Việt, thumbnail khi có, metadata dự án |
-| **Auto Edit** | Che chữ cũ, ghép phụ đề, banner/logo, đổi khung hình, xử lý audio/TTS, render | MP4 mới, track giọng đọc hoặc audio tách riêng; gói CapCut Draft thử nghiệm |
-| **Publish Hub** | Quản lý profile tài khoản, chuẩn bị metadata, chọn chế độ đăng, xếp hàng/lên lịch | Trạng thái riêng cho từng tài khoản và kết quả xác nhận từ nền tảng |
+| **VietSub** | Nhập video, xem vùng chữ, OCR bằng VideOCR, dịch kèm Glossary qua Gemini Notebook/API, chọn Hồ sơ Kênh & Chạy 1 mạch | Video và phụ đề gốc/Việt, thumbnail khi có, metadata dự án |
+| **Auto Edit** | Sửa SRT trực tiếp + Live Preview, che chữ cũ, phụ đề động ASS, AI gợi ý Hook/banner/logo, đổi khung hình, xử lý audio/TTS, render | MP4 mới, track giọng đọc hoặc audio tách riêng; gói CapCut Draft thử nghiệm |
+| **Publish Hub** | Quản lý profile/YouTube Data API v3, chế độ Bán tự động (`Assisted Upload`), Debug Trace, chuẩn bị metadata, xếp hàng/lên lịch | Trạng thái riêng cho từng tài khoản và kết quả xác nhận từ nền tảng |
 
 Hướng dẫn sâu hơn: [Auto Edit và TTS](<docs/AUTO_EDIT_GUIDE.md>), [Publish Hub và giới hạn từng nền tảng](<docs/PUBLISH_HUB_GUIDE.md>). Các hướng dẫn này có mốc phiên bản riêng; phần TTS v2.0.2 đang được đối chiếu sau tích hợp.
 
@@ -118,6 +119,18 @@ Mỗi tài khoản có profile trình duyệt độc lập; đăng nhập, QR, C
 Đây là capability của adapter, **không phải bảo đảm đăng thành công trên mọi tài khoản/region**. Khi form hoặc quyền không nhận diện được, job dừng để xác minh. Tests mock không chứng minh nền tảng đã chấp nhận video thật.
 
 Lịch đăng là **lịch cục bộ theo Asia/Saigon (UTC+07)**: app, máy và mạng phải đang hoạt động; đây không phải lịch native chạy trên server nền tảng. Public cần xác nhận. Nếu submit xong nhưng kết quả chưa rõ (`uncertain`), hãy kiểm tra tài khoản trước khi retry để tránh đăng trùng. Hủy job không thu hồi nội dung đã được nền tảng nhận.
+
+<a id="v210"></a>
+## Thay đổi trong v2.1.0
+
+Bản **v2.1.0** nâng cấp đồng bộ toàn diện trên cả bốn trụ cột: bảo mật cập nhật, độ bền Publish Hub, quy trình biên tập–tự động hóa và giao diện desktop.
+
+| Trụ cột | Điểm mới chính |
+|---|---|
+| **Bảo mật & Cập nhật 1-click** | Xác thực chữ ký số **Ed25519 fail-closed** (khóa công khai nhúng sẵn `47fad5684b02ccba`, bắt buộc `.zip.sig` bên cạnh `.zip` và `.zip.sha256.txt`); bảo vệ `TESTING=False` (CSRF token, Host/Origin, strict JSON); mã hóa DPAPI cho bí mật/OAuth2; bộ lọc log/lỗi tập trung `vietsub/redaction.py` |
+| **Publish Hub v2** | Chế độ **Bán tự động (`Assisted Upload`)** mặc định an toàn; **Debug Mode + Playwright Trace** ký HMAC; tách `selectors.json` hỗ trợ ghi đè nóng `selectors.override.json`; nút **Dọn đã xong** (`DELETE /api/uploader/queue/finished`); tùy chọn **YouTube Data API v3** (OAuth2 PKCE + Resumable Upload không phình EXE) |
+| **Biên tập & Tự động hóa** | **Từ điển thuật ngữ (Glossary)** lưu theo hồ sơ; **Trình sửa SRT trực tiếp** đồng bộ 2 chiều với Video Player + Live Preview + hoàn tác `.bak` + cảnh báo `srt_stale_assets`; **Phụ đề động ASS** (`karaoke_highlight`, `word_pop`); **Hồ sơ Kênh (Channel Presets)** + **Chạy 1 mạch (Auto Pipeline)**; **AI gợi ý Hook** cho Top Banner |
+| **Giao diện Neutral Studio Dark** | Tông xám than trung tính (`#111214 → #262a32`) với một màu nhấn Studio Blue (`#4c8bf5`); mở thoáng layout `1280×720` trên cả 3 Workspace (Hàng đợi VietSub, Split-view Video + SRT, Hàng đợi Publish Hub); Ngăn Thiết lập 3 tab gọn nhẹ và tinh giản hiệu ứng Sakuga VFX |
 
 <a id="v202"></a>
 ## Thay đổi trong v2.0.2
@@ -170,10 +183,10 @@ GPU NVIDIA không bắt buộc: renderer có CPU fallback. Chưa có benchmark �
 ## Cài portable, kiểm tra SHA256 và cập nhật
 
 1. Mở [GitHub Releases chính thức](<https://github.com/qvinh8726/VietSub-Studio/releases/latest>), đọc ghi chú của phiên bản thực tế được phát hành.
-2. Tải `VietSub-Studio-Portable-v<version>.zip` và file cùng tên kết thúc bằng `.zip.sha256.txt`.
-3. Kiểm tra SHA256 của ZIP, so với giá trị trong file checksum. Trong ví dụ PowerShell dưới đây, thay `<version>` bằng phiên bản bạn tải.
+2. Tải `VietSub-Studio-Portable-v<version>.zip`, file checksum `.zip.sha256.txt` và (từ v2.1.0+) file chữ ký Ed25519 `.zip.sig`.
+3. Kiểm tra SHA256 của ZIP (và có thể xác minh chữ ký Ed25519 bằng `python tools/sign_release.py verify --zip .\VietSub-Studio-Portable-v<version>.zip`), so với giá trị trong file checksum. Trong ví dụ PowerShell dưới đây, thay `<version>` bằng phiên bản bạn tải.
 4. Giải nén vào thư mục có quyền ghi, rồi chạy `VietSub Studio\VietSub Studio.exe`. Không chạy từ bên trong cửa sổ xem ZIP.
-5. Mở **Thiết lập** và kiểm tra các phụ thuộc theo workspace định dùng. Lần đầu EXE one-file có thể cần thời gian giải nén và được Windows quét.
+5. Mở **Thiết lập** (3 tab: Chung · Dịch & Từ điển · Hồ sơ kênh) và kiểm tra các phụ thuộc theo workspace định dùng. Lần đầu EXE one-file có thể cần thời gian giải nén và được Windows quét.
 
 ```powershell
 Get-FileHash -Algorithm SHA256 -LiteralPath ".\VietSub-Studio-Portable-v<version>.zip"
@@ -192,7 +205,7 @@ VietSub Studio/
 
 Checksum bên cạnh ZIP xác minh **ZIP**; `SHA256.txt` bên trong xác minh **EXE**. Bản cộng đồng hiện không có chữ ký Authenticode. Nếu SmartScreen cảnh báo, kiểm tra nguồn và checksum trước khi quyết định mở; không cần tắt phần mềm bảo vệ máy.
 
-App kiểm tra release GitHub và có banner cập nhật. Khi cài cập nhật, updater xác thực URL repo, checksum ZIP, digest/kích thước GitHub khi có và EXE bên trong trước khi thay thế/khởi động lại. Nếu không thể cài tại chỗ, dùng trang release để cập nhật thủ công. SHA256 kiểm tra tính toàn vẹn; nó không thay thế chữ ký từ một nguồn tin cậy độc lập.
+App kiểm tra release GitHub và có banner cập nhật. Từ **v2.1.0**, trình cập nhật xác thực theo cơ chế **fail-closed**: kiểm tra URL repo chính thức, checksum SHA256 của ZIP, digest/kích thước GitHub, **chữ ký số Ed25519 (`.zip.sig`) khớp khóa công khai nhúng sẵn (`47fad5684b02ccba`)** và `SHA256.txt` của EXE bên trong trước khi thay thế/khởi động lại (bản `v2.0.x` lên `v2.1.0` dùng SHA256 cũ, sau đó toàn bộ bản nâng cấp kế tiếp bắt buộc có chữ ký Ed25519 hợp lệ). Nếu không thể cài tại chỗ, dùng trang release để cập nhật thủ công.
 
 Cấu hình bản EXE nằm trong `%APPDATA%\VietSub Studio`, nên có thể di chuyển thư mục portable. Sao lưu dữ liệu cần thiết và đóng tác vụ đang chạy trước khi thay bản. Không chép đè thư mục config hoặc project chỉ để cập nhật EXE.
 
@@ -409,7 +422,7 @@ Audit dọn tài liệu nằm ở [bằng chứng cleanup v2.0.2](<docs/v2.0.2-c
 - Flask chạy trên loopback `127.0.0.1`; API điều khiển có token mỗi phiên và kiểm tra Host/Origin. Đây là ứng dụng cục bộ, không phải dịch vụ web để mở public.
 - OCR và FFmpeg xử lý trên máy. Chức năng **dịch** gửi văn bản SRT đến provider bạn chọn; **TTS** gửi nội dung cần đọc đến provider; **AI metadata** gửi nội dung khi bạn bấm tạo. **Publish Hub** upload video đến nền tảng sau khi bạn gửi hàng đợi/xếp lịch.
 - App kết nối GitHub để kiểm tra cập nhật và tải release khi bạn chọn cài; nguồn video/browser/yt-dlp liên hệ nền tảng/CDN tương ứng. Không có yêu cầu gửi toàn bộ dự án lên máy chủ riêng của VietSub Studio.
-- API key và Cookie header thủ công dùng Windows DPAPI. Profile trình duyệt và storage state vẫn là dữ liệu nhạy cảm trên máy. Publish Hub dùng profile riêng theo tài khoản, tách khỏi profile tải video/Notebook.
+- API key, Cookie header thủ công và OAuth2 token YouTube dùng Windows DPAPI; log đĩa và thông báo lỗi đi qua bộ lọc `vietsub/redaction.py` để ẩn bí mật và đường dẫn tài khoản. Profile trình duyệt và storage state vẫn là dữ liệu nhạy cảm trên máy. Publish Hub dùng profile riêng theo tài khoản, tách khỏi profile tải video/Notebook.
 - Đừng đưa config thật, cookie, key, private Notebook URL, screenshot tài khoản hoặc cache giọng đọc vào issue công khai. Che thông tin cá nhân trong log trước khi chia sẻ.
 - Chỉ tải/dịch/đăng nội dung và dùng tài khoản mà bạn có quyền; giấy phép mã nguồn không cấp quyền sử dụng nội dung, giọng hay model của bên thứ ba.
 

@@ -65,7 +65,7 @@ try {
       assert.equal(response.status(), 200);
       await page.evaluate(() => document.fonts.ready);
       await page.waitForFunction(() => Boolean(window.SakugaFX));
-      assert.match(await page.title(), /v2\.0\.0/);
+      assert.match(await page.title(), /v2\.1\.0/);
       const tabs = page.getByRole("tab");
       assert.equal(await tabs.count(), 3);
       const snapshots = [];
@@ -228,7 +228,7 @@ try {
       );
       await quickVoice.click();
       await tabs.nth(0).click();
-      // All download surfaces share the exact v2.0.2 release target.
+      // All download surfaces share the exact v2.1.0 release target.
       const releaseLinks = await page
         .locator('a[href*="/releases/tag/"]')
         .evaluateAll((links) => links.map((link) => link.getAttribute("href")));
@@ -237,7 +237,7 @@ try {
         releaseLinks.every(
           (link) =>
             link ===
-            "https://github.com/qvinh8726/VietSub-Studio/releases/tag/v2.0.2",
+            "https://github.com/qvinh8726/VietSub-Studio/releases/tag/v2.1.0",
         ),
       );
       if (reduced) {
