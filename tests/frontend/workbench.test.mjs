@@ -631,3 +631,37 @@ test('v2.0.3 M-09 & L-02 frontend fixes preserve empty SVG, clear stage dimensio
     assert.equal(h.elements['res-publish-row'].hidden, true);
     assert.match(appSource, /\/api\/queue\/\$\{encodeURIComponent\(id\)\}\/retry/);
 });
+
+test('Phase 4 settings tabs navigate via click/keyboard and console toggle preserves SVG label span', () => {
+    const h = harness();
+    const toggle = h.elements['console-toggle-btn'];
+    const svg = {tagName: 'SVG', className: 'icon'};
+    const label = {tagName: 'SPAN', className: 'btn-label', textContent: 'Thu gọn'};
+    toggle.children = [svg, label];
+    toggle.querySelector = sel => sel === '.btn-label' ? label : sel === 'svg' ? svg : null;
+    h.init();
+
+    assert.equal(label.textContent, 'Thu gọn');
+    assert.equal(toggle.children.includes(svg), true);
+    toggle.emit('click');
+    assert.equal(label.textContent, 'Mở rộng');
+    assert.equal(toggle.children.includes(svg), true);
+
+    const names = ['general', 'translation', 'presets'];
+    assert.equal(h.elements['settings-general-panel'].hidden, false);
+    assert.equal(h.elements['settings-translation-panel'].hidden, true);
+    assert.equal(h.elements['settings-presets-panel'].hidden, true);
+    h.elements['settings-open-btn'].emit('click');
+    for (const [from, key, to] of [[0, 'ArrowRight', 1], [1, 'End', 2], [2, 'ArrowRight', 0], [0, 'ArrowLeft', 2], [2, 'Home', 0]]) {
+        const event = h.elements[`settings-${names[from]}-tab`].emit('keydown', {key}).event;
+        assert.equal(event.defaultPrevented, true);
+        assert.equal(h.document.activeElement, h.elements[`settings-${names[to]}-tab`]);
+        for (const [index, name] of names.entries()) {
+            assert.equal(h.elements[`settings-${name}-tab`].getAttribute('aria-selected'), String(index === to));
+            assert.equal(h.elements[`settings-${name}-panel`].hidden, index !== to);
+            assert.equal(h.elements[`settings-${name}-panel`].inert, index !== to);
+        }
+    }
+    assert.equal(h.wb.selectSettingsTab('invalid'), false);
+});
+

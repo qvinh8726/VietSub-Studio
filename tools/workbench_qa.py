@@ -205,6 +205,8 @@ def run(output: Path, quick: bool):
                         page.wait_for_timeout(200)
                         check_layout(page, name + " idle", records)
                         if dpr == 1:
+                            idle_queue_h = page.evaluate("() => document.getElementById('queue-list').clientHeight")
+                            assert idle_queue_h >= 220, f"{name} idle #queue-list too short: {idle_queue_h}px"
                             image = output / f"{name}-idle.png"; page.screenshot(path=str(image)); screenshots.append(str(image))
                         page.locator("#source-local-tab").click()
                         page.locator("#local-video-input").set_input_files(str(videos["1280x720"]))
@@ -248,6 +250,8 @@ def run(output: Path, quick: bool):
                         page.wait_for_timeout(250)
                         check_layout(page, name + " running", records)
                         if dpr == 1:
+                            active_queue_h = page.evaluate("() => document.getElementById('queue-list').clientHeight")
+                            assert active_queue_h >= 150, f"{name} active #queue-list crushed with crop-tools open: {active_queue_h}px"
                             page.locator("#console-resizer").evaluate("el => el.blur()")
                             page.wait_for_timeout(3500)
                             image = output / f"{name}-workbench.png"; page.screenshot(path=str(image)); screenshots.append(str(image))
@@ -262,6 +266,32 @@ def run(output: Path, quick: bool):
                         page.wait_for_function("() => !document.querySelector('#setting-sakuga-vfx').disabled && document.documentElement.dataset.motion === 'off'")
                         page.locator("#setting-sakuga-vfx").check()
                         page.wait_for_function("() => !document.querySelector('#setting-sakuga-vfx').disabled && document.documentElement.dataset.motion === 'on'")
+                        # Phase 4: verify 3-tab Settings Drawer mouse & keyboard navigation with zero overflow.
+                        for tab_id, panel_id in (
+                            ("#settings-translation-tab", "#settings-translation-panel"),
+                            ("#settings-presets-tab", "#settings-presets-panel"),
+                            ("#settings-general-tab", "#settings-general-panel"),
+                        ):
+                            page.locator(tab_id).click()
+                            assert page.locator(tab_id).get_attribute("aria-selected") == "true"
+                            assert not page.locator(panel_id).is_hidden()
+                            drawer_overflow = page.evaluate("""() => {
+                                const root = document.documentElement;
+                                const card = document.querySelector('#settings-drawer .control-card');
+                                const tabOverflows = [...document.querySelectorAll('#settings-tabs button')]
+                                    .filter(b => b.scrollWidth > b.clientWidth + 1).map(b => b.id);
+                                return {
+                                    docX: root.scrollWidth > innerWidth + 1,
+                                    cardX: card.scrollWidth > card.clientWidth + 1,
+                                    tabOverflows,
+                                };
+                            }""")
+                            assert not drawer_overflow["docX"] and not drawer_overflow["cardX"] and not drawer_overflow["tabOverflows"], f"{name} {tab_id}: {drawer_overflow}"
+                        page.locator("#settings-general-tab").focus()
+                        page.keyboard.press("ArrowRight")
+                        assert page.locator("#settings-translation-tab").get_attribute("aria-selected") == "true"
+                        page.keyboard.press("Home")
+                        assert page.locator("#settings-general-tab").get_attribute("aria-selected") == "true"
                         if dpr == 1:
                             page.locator(".control-card").evaluate("el => el.scrollTop = 0")
                             page.wait_for_timeout(3500)

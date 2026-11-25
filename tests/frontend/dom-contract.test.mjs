@@ -146,6 +146,7 @@ test('Auto Edit and Publish Hub retain expanded phase1 facts and add real explic
     const uploaderButtons = nodes.filter(node => node.tag === 'button' && node.ancestors.some(parent => parent.attrs.id === 'workspace-uploader'));
     assert.deepEqual(uploaderButtons.map(node => node.attrs.id).sort(), ['uploader-media-upload', 'uploader-use-project',
         'uploader-save-metadata', 'uploader-generate-metadata', 'uploader-queue-submit', 'uploader-profiles-refresh', 'uploader-profile-create', 'uploader-queue-refresh',
+        'uploader-queue-clear-finished',
         'uploader-inspector-accounts-tab', 'uploader-inspector-publish-tab',
         'uploader-back-source', 'uploader-refresh-project'].sort());
     assert.ok(Object.hasOwn(byId('uploader-project-facts')[0].attrs, 'open'), 'old QA can see mounted project facts');
@@ -209,5 +210,5 @@ test('48px activity rail is a grid track inside the fixed-height shell with shar
     assert.match(rule('.activity-rail'), /grid-column:\s*1/);
     assert.doesNotMatch(rule('.activity-rail'), /position:\s*(fixed|absolute)/);
     for (const selector of ['.workbench', '.staging-workspace', '.console-dock']) assert.match(rule(selector), /grid-column:\s*2/, selector);
-    for (const color of ['#07110e', '#111318', '#f5c542', '#7ee0b8', '#ff6b3d']) assert.ok(css.includes(color));
+    for (const color of ['#111214', '#16181c', '#1d2026', '#262a32', '#4c8bf5']) assert.ok(css.includes(color));
 });

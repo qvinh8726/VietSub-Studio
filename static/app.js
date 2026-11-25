@@ -1948,7 +1948,7 @@
                 renderQueue();
                 const labels = {videocr:'VideOCR',ffprobe:'FFprobe',ffmpeg:'FFmpeg',translation:'Bộ máy dịch',notebook:'Gemini Notebook',browser:'Trình duyệt tự động hoá',douyin_source:'Tải Douyin/Kuaishou',ytdlp:'yt-dlp',js_runtime:'JavaScript cho YouTube'};
                 // The browser check carries the name of the browser chosen in Settings.
-                Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; const strong=document.createElement('strong'); strong.textContent=`${item.label||labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
+                Object.entries(data.checks).forEach(([key,item]) => { const row=document.createElement('div'); row.className=`diagnostic-item ${item.ok?'ok':item.required?'error':''}`; row.title=item.detail||''; const strong=document.createElement('strong'); strong.textContent=`${item.label||labels[key]||key}: ${item.ok?'OK':item.required?'Thiếu':'Tuỳ chọn'}`; const small=document.createElement('small'); small.textContent=item.detail||''; row.append(strong,small); list.appendChild(row); });
             } catch (error) { healthReadiness = {local: false, douyin: false, sources: {}}; renderQueue(); list.textContent = error.message; }
         }
 
@@ -2179,6 +2179,14 @@
                             const data = await fetchJson('/api/channel-presets/active', {method: 'POST', body: JSON.stringify({active_id: id})});
                             presetLoadSequence += 1;
                             renderChannelPresetsStore(data);
+                            if (data.glossary_store) {
+                                glossaryLoadSequence += 1;
+                                glossariesLoaded = true;
+                                renderGlossaryStore(data.glossary_store);
+                                const presetObj = (channelPresetsStore.presets || []).find(p => p.id === id);
+                                const activeGloss = (glossaryStore.profiles || []).find(g => g.id === glossaryStore.active_id);
+                                if (presetObj) showToast(`Hồ sơ kênh "${presetObj.name}" · Từ điển: "${activeGloss?.name || glossaryStore.active_id}".`);
+                            }
                         } catch (error) { showToast(error.message, 'error'); }
                     });
                 });

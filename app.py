@@ -8783,7 +8783,18 @@ def set_active_channel_preset_route():
         return api_error("JSON cần chứa đúng trường active_id.", 400)
     try:
         store = channel_presets.set_active_preset(CONFIG_DIR, data["active_id"])
-        return jsonify(_channel_presets_response(store))
+        payload = _channel_presets_response(store)
+        active_id = store.get("active_id") or ""
+        if active_id:
+            preset = channel_presets.get_preset(CONFIG_DIR, active_id)
+            if preset:
+                resolved = channel_presets.resolve_preset(
+                    CONFIG_DIR, preset, uploader_profiles=_uploader_profiles_for_presets()
+                )
+                payload["glossary_store"] = translation_glossary.set_active_glossary(
+                    CONFIG_DIR, resolved["glossary_id"]
+                )
+        return jsonify(payload)
     except KeyError as error:
         return api_error(error.args[0] if error.args else error, 404)
     except ValueError as error:

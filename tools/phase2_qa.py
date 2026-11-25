@@ -105,7 +105,28 @@ def run(output):
                         page.locator('[data-job-id="qa"]').get_by_role('button',name='Chuyển sang Auto Edit →',exact=True).click()
                         page.wait_for_function("() => !document.querySelector('#editor-render-btn').disabled",timeout=30000)
                         page.wait_for_function("() => document.querySelector('#editor-video').readyState >= 1")
+                        page.wait_for_function("() => VietSubEditor.state().srtCount >= 1")
                         assert not page.evaluate(OVERFLOW)
+                        # Phase 4 geometry assertions: split-view video + SRT simultaneously visible, inspector room, z-index layering.
+                        geo = page.evaluate("""() => {
+                            const v = document.getElementById('editor-video').getBoundingClientRect();
+                            const srt = document.getElementById('editor-srt-list');
+                            const insp = document.getElementById('editor-inspector-frame-panel');
+                            return {
+                                videoH: v.height,
+                                videoInView: v.top >= 0 && v.bottom <= innerHeight + 1,
+                                srtH: srt.clientHeight,
+                                srtBottom: srt.getBoundingClientRect().bottom,
+                                inspH: insp.clientHeight,
+                                zCrop: Number(getComputedStyle(document.getElementById('editor-crop-layer')).zIndex),
+                                zBanner: Number(getComputedStyle(document.getElementById('editor-live-banner')).zIndex),
+                                zSub: Number(getComputedStyle(document.getElementById('editor-live-subtitle')).zIndex),
+                            };
+                        }""")
+                        assert geo['videoH'] >= 140 and geo['videoInView'], f'{label}: video geometry {geo}'
+                        assert geo['srtH'] >= 90 and geo['srtBottom'] <= height + 1, f'{label}: srt split-view geometry {geo}'
+                        assert geo['inspH'] >= 280, f'{label}: inspector panel too small {geo}'
+                        assert geo['zCrop'] > geo['zBanner'] > geo['zSub'], f'{label}: z-index order {geo}'
                         page.locator('#editor-crop-y').fill('60')
                         page.locator('#editor-crop-y').dispatch_event('change')
                         page.locator('#editor-mask-mode').select_option('solid_bar')

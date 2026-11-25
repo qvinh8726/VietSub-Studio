@@ -11,7 +11,7 @@
     const rnd = (a, b) => a + Math.random() * (b - a);
     const controls = 'button, [role="button"], [role="tab"], [data-pitch-preset], [data-vfx], summary';
     const excluded = '[data-vfx="off"], [data-editor-handle], .crop-handle, [role="separator"], #settings-backdrop';
-    const palette = {fill: '#fff6dc', shade: '#f5c542', line: '#07110e', accent: '#7ee0b8', coral: '#ff6b3d'};
+    const palette = {fill: '#eceef2', shade: '#4c8bf5', line: '#111214', accent: '#34c785', coral: '#e55b5b'};
     class Spring {
         constructor(x = 1, k = 420, d = 23) { this.x = x; this.to = x; this.v = 0; this.k = k; this.d = d; }
         step(dt) {
@@ -147,7 +147,7 @@
             springs.set(el, spring);
         }
         spring.to = target; spring.age = 0;
-        if (kick) { spring.x = .95; spring.v = 1.2; }
+        if (kick) { spring.x = .98; spring.v = .75; }
         motions.set(el, spring); start();
     }
     function star(x, y, radius, spikes, rotation, inner) {
@@ -159,44 +159,44 @@
         }
         ctx.closePath();
     }
-    function burst(x, y, r = 20) {
+    function burst(x, y, r = 14) {
         if (![x, y, r].every(Number.isFinite)) return;
-        const rotation = rnd(0, TAU); r = clamp(r, 4, 32);
-        add(.32, k => {
-            const radius = r * out(clamp(k / .4));
-            ctx.globalAlpha = .85 * (1 - k);
-            star(x, y, radius * 1.25, 9, rotation + .12, .42);
+        const rotation = rnd(0, TAU); r = clamp(r, 4, 20);
+        add(.28, k => {
+            const radius = r * out(clamp(k / .42));
+            ctx.globalAlpha = .52 * (1 - k);
+            star(x, y, radius * 1.2, 8, rotation + .12, .46);
             ctx.fillStyle = palette.shade; ctx.fill();
-            star(x, y, radius, 9, rotation, .25 + k * .6);
+            star(x, y, radius, 8, rotation, .3 + k * .55);
             ctx.fillStyle = palette.fill; ctx.fill();
-            ctx.strokeStyle = palette.line; ctx.lineWidth = 1; ctx.stroke();
+            ctx.strokeStyle = palette.line; ctx.lineWidth = .8; ctx.stroke();
         });
     }
-    function slash(x, y, length = 60) {
+    function slash(x, y, length = 48) {
         if (![x, y, length].every(Number.isFinite)) return;
-        length = clamp(length, 12, 100);
-        add(.36, k => {
+        length = clamp(length, 12, 76);
+        add(.3, k => {
             const head = out(clamp(k / .42)), tail = clamp((k - .22) / .78) ** 3;
-            ctx.translate(x, y); ctx.rotate(-.22); ctx.globalAlpha = .8 * (1 - k);
+            ctx.translate(x, y); ctx.rotate(-.18); ctx.globalAlpha = .5 * (1 - k);
             ctx.beginPath();
-            ctx.moveTo(-length / 2 + length * tail, 3);
-            ctx.quadraticCurveTo(0, -12, -length / 2 + length * head, -1);
-            ctx.quadraticCurveTo(0, -5, -length / 2 + length * tail, 3);
+            ctx.moveTo(-length / 2 + length * tail, 2.5);
+            ctx.quadraticCurveTo(0, -8, -length / 2 + length * head, -1);
+            ctx.quadraticCurveTo(0, -3.5, -length / 2 + length * tail, 2.5);
             ctx.fillStyle = palette.shade; ctx.fill();
-            ctx.strokeStyle = palette.fill; ctx.lineWidth = 1; ctx.stroke();
+            ctx.strokeStyle = palette.fill; ctx.lineWidth = .8; ctx.stroke();
         });
     }
-    function sparks(target, count = 7) {
+    function sparks(target, count = 4) {
         if (!active()) return;
         const c = point(target); if (!c) return;
-        count = Number.isFinite(count) ? clamp(Math.floor(count), 1, 9) : 7;
+        count = Number.isFinite(count) ? clamp(Math.floor(count), 1, 6) : 4;
         for (let i = 0; i < count; i++) {
-            const a = rnd(-Math.PI + .2, -.2), velocity = rnd(32, 72), size = rnd(1.3, 2.4);
-            add(.6, (k, t) => {
-                ctx.globalAlpha = .85 * (1 - k);
-                ctx.fillStyle = [palette.shade, palette.accent, palette.coral][i % 3];
-                ctx.translate(c.x + Math.cos(a) * velocity * t, c.y + Math.sin(a) * velocity * t + 42 * t * t);
-                ctx.rotate(a + t * 4); ctx.fillRect(-size, -size / 2, size * 2, size);
+            const a = rnd(-Math.PI + .2, -.2), velocity = rnd(26, 56), size = rnd(1.2, 2.1);
+            add(.48, (k, t) => {
+                ctx.globalAlpha = .55 * (1 - k);
+                ctx.fillStyle = [palette.shade, palette.accent, palette.fill][i % 3];
+                ctx.translate(c.x + Math.cos(a) * velocity * t, c.y + Math.sin(a) * velocity * t + 36 * t * t);
+                ctx.rotate(a + t * 3.2); ctx.fillRect(-size, -size / 2, size * 2, size);
             });
         }
     }
@@ -208,28 +208,28 @@
             if (now - (smoked.get(target) ?? -Infinity) < 60) return;
             smoked.set(target, now);
         }
-        const lobes = Array.from({length: 5}, (_, i) => ({a: i / 5 * TAU, r: rnd(3, 6), d: rnd(4, 9)}));
-        add(.48, (k, t) => {
-            ctx.globalAlpha = .4 * (1 - k); ctx.beginPath();
+        const lobes = Array.from({length: 4}, (_, i) => ({a: i / 4 * TAU, r: rnd(2.5, 4.8), d: rnd(3, 7)}));
+        add(.42, (k, t) => {
+            ctx.globalAlpha = .3 * (1 - k); ctx.beginPath();
             for (const l of lobes) {
                 const r = l.r * Math.sin(Math.PI * k) ** .5;
-                const x = c.x + Math.cos(l.a + t) * l.d * (1 + k), y = c.y + Math.sin(l.a + t) * l.d - 15 * k;
+                const x = c.x + Math.cos(l.a + t) * l.d * (1 + k), y = c.y + Math.sin(l.a + t) * l.d - 12 * k;
                 ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU);
             }
-            ctx.fillStyle = palette.accent; ctx.fill();
-            ctx.strokeStyle = palette.shade; ctx.lineWidth = .8; ctx.stroke();
+            ctx.fillStyle = palette.shade; ctx.fill();
+            ctx.strokeStyle = palette.fill; ctx.lineWidth = .7; ctx.stroke();
         });
     }
     function dissolve(target) {
         if (!active()) return;
         const c = point(target); if (!c) return;
-        const fragments = Array.from({length: 12}, () => ({x: rnd(-Math.min(c.w / 2, 70), Math.min(c.w / 2, 70)), y: rnd(-8, 8), v: rnd(12, 28), r: rnd(1.5, 3.5)}));
-        add(.52, k => {
-            ctx.globalAlpha = .65 * (1 - k);
+        const fragments = Array.from({length: 7}, () => ({x: rnd(-Math.min(c.w / 2, 60), Math.min(c.w / 2, 60)), y: rnd(-6, 6), v: rnd(10, 22), r: rnd(1.4, 2.8)}));
+        add(.45, k => {
+            ctx.globalAlpha = .5 * (1 - k);
             for (let i = 0; i < fragments.length; i++) {
                 const f = fragments[i], r = f.r * (1 - k * .65);
-                ctx.fillStyle = i % 3 ? palette.accent : palette.coral;
-                ctx.fillRect(c.x + f.x * (1 + k * .3), c.y + f.y - f.v * out(k), r, r);
+                ctx.fillStyle = i % 3 ? palette.shade : palette.coral;
+                ctx.fillRect(c.x + f.x * (1 + k * .25), c.y + f.y - f.v * out(k), r, r);
             }
         });
     }
@@ -237,11 +237,11 @@
         if (!active() || !usable(el)) return;
         const c = point(el); if (!c) return;
         springTo(el, 1, true);
-        // Emit at the control's edge, keeping labels and focus indicators legible.
+        if (quiet) return;
+        // Emit subtle accent at primary control edges only; secondary controls stay tactile-only.
         const edge = {x: c.x + c.w / 2 - 5, y: c.y - c.h / 2 + 5};
-        if (!quiet) burst(edge.x, edge.y, 16);
-        else sparks(edge, 3);
-        slash(c.x, c.y + c.h / 2 - 2, Math.min(c.w * .65, quiet ? 38 : 72));
+        burst(edge.x, edge.y, 11);
+        slash(c.x, c.y + c.h / 2 - 2, Math.min(c.w * .55, 56));
     }
     function animate(el, keyframes, options) {
         if (!active() || !visible(el) || typeof el.animate !== 'function') return;
@@ -310,7 +310,7 @@
             next.celebrated = true;
             const c = point($('step-done'));
             if (!c || !active()) return;
-            burst(c.x + c.w / 2 - 6, c.y, 24); sparks(c); slash(c.x, c.y, Math.min(c.w, 75));
+            burst(c.x + c.w / 2 - 6, c.y, 15); sparks(c); slash(c.x, c.y, Math.min(c.w, 60));
         }
     }
     // Business owners emit this only after confirmed success, with a stable operation id.
@@ -323,8 +323,8 @@
         remember(completions, key, true);
         if (!active()) return;
         const c = point(target || defaults[kind]); if (!c) return;
-        burst(c.x + Math.min(c.w / 2, 48), c.y, kind === 'save' ? 14 : 23);
-        sparks(c, kind === 'save' ? 4 : 7); slash(c.x, c.y + 4, 64);
+        burst(c.x + Math.min(c.w / 2, 48), c.y, kind === 'save' ? 10 : 15);
+        sparks(c, kind === 'save' ? 2 : 4); slash(c.x, c.y + 4, 52);
     }
     function refresh() {
         const value = active() ? 'on' : 'off';
@@ -360,7 +360,7 @@
             if (!active() || e.button !== 0 || e.isPrimary === false) return;
             const el = e.target.closest?.(controls);
             if (!usable(el)) return;
-            release(); held = el; springTo(el, .96);
+            release(); held = el; springTo(el, .985);
         }, true);
         listen(document, 'pointerup', release);
         listen(document, 'pointercancel', release);
@@ -383,7 +383,7 @@
         listen(document, 'change', e => {
             if (!active() || !usable(e.target) || !e.target.matches?.('select, input[type="checkbox"], input[type="radio"]')) return;
             smoke(e.target);
-            if (e.target.matches?.('input[type="checkbox"], input[type="radio"]')) { springTo(e.target, 1, true); sparks(e.target, 4); }
+            if (e.target.matches?.('input[type="checkbox"], input[type="radio"]')) { springTo(e.target, 1, true); sparks(e.target, 2); }
         });
         listen(document, 'toggle', e => {
             if (e.target.tagName !== 'DETAILS' || !e.target.open || !visible(e.target)) return;

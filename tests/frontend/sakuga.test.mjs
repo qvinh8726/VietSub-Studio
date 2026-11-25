@@ -226,9 +226,9 @@ test('a watched job celebrates exactly once only after its Vietnamese result is 
     assert.equal(h.api.pending, 0);
     const ready = {jobId: 'live', step: 'done', status: 'success', resultReady: true, translatedSrt: 'live.vi.srt'};
     h.api.pipeline(ready);
-    assert.equal(h.api.pending, 9, 'one burst, one slash and seven small celebratory particles');
+    assert.equal(h.api.pending, 6, 'one burst, one slash and four restrained celebratory particles');
     for (let i = 0; i < 20; i++) h.api.pipeline(ready);
-    assert.equal(h.api.pending, 9);
+    assert.equal(h.api.pending, 6);
     h.drain(); h.api.pipeline(ready);
     assert.equal(h.api.pending, 0); assert.equal(h.frames.size, 0);
 });
@@ -311,11 +311,11 @@ test('toggles pop with four sparks and one deduplicated puff; text and sliders s
     const checkbox = h.element('pitch-toggle', {tag: 'input', attrs: {type: 'checkbox'}});
     h.api.smoke(checkbox); // Existing settings adapter may also emit this effect.
     h.document.emit('change', {target: checkbox});
-    assert.equal(h.api.pending, 6); // one puff, four sparks, one spring
+    assert.equal(h.api.pending, 4); // one puff, two sparks, one spring
     h.document.emit('change', {target: h.element('voice-select', {tag: 'select'})});
     h.document.emit('change', {target: h.element('text', {tag: 'input', attrs: {type: 'text'}})});
     h.document.emit('change', {target: h.element('slider', {tag: 'input', attrs: {type: 'range'}})});
-    assert.equal(h.api.pending, 7); h.drain();
+    assert.equal(h.api.pending, 5); h.drain();
     assert.equal(checkbox.style.transform, '');
 });
 
@@ -461,8 +461,8 @@ test('semantic completion requires confirmed success and deduplicates by operati
     for (const status of ['running', 'queued', 'cancelled', 'error', undefined]) h.document.emit('vietsub:complete', {detail: {kind: 'render', id: 'task', status}});
     assert.equal(h.api.pending, 0);
     const detail = {kind: 'render', id: 'task', status: 'success'};
-    h.document.emit('vietsub:complete', {detail}); assert.equal(h.api.pending, 9);
-    h.document.emit('vietsub:complete', {detail}); assert.equal(h.api.pending, 9); h.drain();
+    h.document.emit('vietsub:complete', {detail}); assert.equal(h.api.pending, 6);
+    h.document.emit('vietsub:complete', {detail}); assert.equal(h.api.pending, 6); h.drain();
     h.document.emit('vietsub:complete', {detail}); assert.equal(h.api.pending, 0);
     h.api.setEnabled(false); h.api.complete({...detail, id: 'disabled'}); h.api.setEnabled(true);
     h.api.complete({...detail, id: 'disabled'}); assert.equal(h.api.pending, 0);

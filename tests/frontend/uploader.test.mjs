@@ -600,3 +600,26 @@ test('Phase 2 assisted confirm-submitted, failed_step, and debug trace download 
     assert.equal(h.uploader.state().jobs.find(j => j.id === 'up-assisted').status, 'success');
 });
 
+test('Phase 4 clear-finished button calls DELETE /api/uploader/queue/finished with CSRF and preserves uncertain jobs', async () => {
+    const doneJob = queueTask({id: 'up-done', status: 'success', percent: 100});
+    const cancelledJob = queueTask({id: 'up-cancel', status: 'cancelled', percent: 20});
+    const uncertainJob = queueTask({id: 'up-uncertain', status: 'uncertain', percent: 80});
+    const h = harness({
+        initialJobs: [doneJob, cancelledJob, uncertainJob],
+        handler: (url, opts) => {
+            if (url === '/api/uploader/queue/finished' && opts.method === 'DELETE') {
+                return {ok: true, removed: 2, kept: 1, jobs: [uncertainJob]};
+            }
+        },
+    });
+    await h.init();
+    assert.equal(h.elements['uploader-queue-clear-finished'].disabled, false);
+    await h.elements['uploader-queue-clear-finished'].emit('click').done; await settle();
+    const delCall = h.calls.find(c => c.url === '/api/uploader/queue/finished' && c.options.method === 'DELETE');
+    assert.ok(delCall);
+    assert.equal(delCall.options.headers.get('X-VietSub-Token'), 'csrf-uploader-token');
+    assert.deepEqual(plain(h.uploader.state().jobs.map(j => j.id)), ['up-uncertain']);
+    assert.equal(h.elements['uploader-queue-clear-finished'].disabled, true, 'disabled when only uncertain jobs remain');
+});
+
+

@@ -1126,4 +1126,38 @@ test('H-15 & M-15 & L-01: px live subtitle padding, scrollTop without scrollInto
     assert.match(css, /\.channel-presets-settings\s*\{[^}]*display:\s*grid/);
 });
 
+test('Phase 4 srt_stale_assets alert shows after SRT save and clears after render completes', async () => {
+    let pollStage = 'running';
+    const h = harness({handler: (url, opts) => {
+        if (url === '/api/editor/projects/job-a/srt' && (!opts?.method || opts.method === 'GET')) {
+            return {job_id: 'job-a', cues: [{index: 1, start_ms: 0, end_ms: 2000, text: 'Câu 1', raw_text: ''}], has_raw: false, has_backup: false, locked: false};
+        }
+        if (url === '/api/editor/projects/job-a/srt' && opts.method === 'PUT') {
+            return {job_id: 'job-a', cues: JSON.parse(opts.body).cues, has_raw: false, has_backup: true, locked: false,
+                srt_stale_assets: {edited_video: true, tts_audio: false}};
+        }
+        if (url === '/api/editor/jobs' && opts.method === 'POST') return task({action: 'render', status: 'running'});
+        if (url === '/api/editor/jobs/task-a' && (!opts?.method || opts.method === 'GET')) {
+            return task({action: 'render', status: pollStage, percent: pollStage === 'success' ? 100 : 50,
+                output_kind: 'video', output_url: '/api/editor/jobs/task-a/output?signature=v', output_path: 'edited.mp4'});
+        }
+    }});
+    await h.init(); await h.receive();
+    assert.equal(h.elements['editor-srt-stale-alert'].hidden, true);
+
+    const ta = h.elements['editor-srt-list'].children[0].children[1];
+    ta.value = 'Câu 1 đã chỉnh sửa';
+    await h.elements['editor-srt-list'].emit('input', {target: ta}).done;
+    await h.elements['editor-srt-save-btn'].emit('click').done;
+    assert.equal(h.editor.state().srtStaleAssets.edited_video, true);
+    assert.equal(h.elements['editor-srt-stale-alert'].hidden, false);
+
+    await h.elements['editor-render-btn'].emit('click').done;
+    pollStage = 'success';
+    await h.runTimer(700);
+    assert.equal(h.editor.state().srtStaleAssets.edited_video, false);
+    assert.equal(h.elements['editor-srt-stale-alert'].hidden, true);
+});
+
+
 

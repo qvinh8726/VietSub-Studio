@@ -2,19 +2,20 @@
  * Canvas/spring/WAAPI ownership stays in sakuga-vfx.js; no ambient animation.
  */
 :root {
-    --motion-press: 120ms;
-    --motion-control: 160ms;
-    --motion-panel: 240ms;
+    --motion-press: 110ms;
+    --motion-control: 150ms;
+    --motion-panel: 200ms;
     --motion-ease: cubic-bezier(.2, .8, .2, 1);
-    --motion-gold: var(--sun, #f5c542);
-    --motion-mint: var(--mint, #7ee0b8);
-    --motion-coral: var(--coral, #ff6b3d);
+    --motion-accent: var(--accent, #4c8bf5);
+    --motion-gold: var(--sun, #e0a83a);
+    --motion-mint: var(--mint, #34c785);
+    --motion-coral: var(--coral, #e55b5b);
 }
 
 /* Override the original infinite decorative beam, including before JS boots. */
 .step.active::before { animation: none; opacity: 0; }
 
-:root[data-motion="on"] :is(.btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .icon-button, .workspace-tab, .source-tab, .console-tab, [role="tab"], [data-pitch-preset]) {
+:root[data-motion="on"] :is(.btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .icon-button, .workspace-tab, .source-tab, .console-tab, .settings-tab, [role="tab"], [data-pitch-preset]) {
     transition: color var(--motion-control) var(--motion-ease),
         background-color var(--motion-control) var(--motion-ease),
         border-color var(--motion-control) var(--motion-ease),
@@ -30,12 +31,12 @@
         transform: translateY(-1px);
     }
     :root[data-motion="on"] [data-pitch-preset]:not(:disabled):hover {
-        border-color: var(--motion-mint);
+        border-color: var(--motion-accent);
     }
 }
 
 :root[data-motion="on"] :is(button, summary):not(:disabled):not([aria-disabled="true"]):active > .icon {
-    transform: scale(.92);
+    transform: scale(.94);
     transition-duration: var(--motion-press);
 }
 
@@ -43,21 +44,21 @@
 :root[data-motion="on"] #workflow-progress[data-status="running"] .step.active[data-vfx-step="active"]::before {
     left: -60%;
     opacity: 0;
-    background: linear-gradient(105deg, transparent, #f5c54224, #fff4bb48, transparent);
+    background: linear-gradient(105deg, transparent, rgba(76, 139, 245, 0.22), rgba(236, 238, 242, 0.28), transparent);
     animation: sakuga-step-beam 1400ms var(--motion-ease) infinite;
 }
 
 :root[data-motion="on"] #workflow-progress .step.completed[data-vfx-step="complete"] {
-    animation: sakuga-step-settle 340ms var(--motion-ease) 1;
+    animation: sakuga-step-settle 300ms var(--motion-ease) 1;
 }
 
 :root[data-motion="on"] :is([data-pitch-preset], .inspector-tab)[aria-pressed="true"] {
-    border-color: var(--motion-mint);
+    border-color: var(--motion-accent);
 }
 
 /* Native disclosure state and focus stay owned by the browser/workbench. */
-:root[data-motion="on"] :is(.source-details, .editor-option-section, .editor-runtime, .uploader-facts) > summary::marker {
-    color: var(--motion-gold);
+:root[data-motion="on"] :is(.source-details, .editor-option-section, .editor-runtime, .editor-tech-details, .uploader-facts) > summary::marker {
+    color: var(--text-3);
 }
 
 :root[data-motion="on"] :is(.text-input, .number-input, .select-input, textarea, input[type="checkbox"], input[type="radio"]) {
@@ -68,8 +69,8 @@
 
 /* Preserve visible keyboard focus: no transforms or clipping on its outline. */
 :root[data-motion="on"] [data-pitch-preset]:focus-visible {
-    outline: 2px solid var(--motion-gold);
-    outline-offset: 3px;
+    outline: 2px solid var(--motion-accent);
+    outline-offset: 2px;
 }
 
 .sakuga-fx { contain: strict; pointer-events: none; }
@@ -78,12 +79,12 @@
 @keyframes sakuga-step-beam {
     0% { opacity: 0; transform: translateX(0) skewX(-20deg); }
     18% { opacity: 1; }
-    80% { opacity: .75; }
+    80% { opacity: .7; }
     100% { opacity: 0; transform: translateX(460%) skewX(-20deg); }
 }
 
 @keyframes sakuga-step-settle {
-    0% { transform: translateY(2px); opacity: .65; }
+    0% { transform: translateY(2px); opacity: .7; }
     65% { transform: translateY(-1px); opacity: 1; }
     100% { transform: translateY(0); opacity: 1; }
 }
@@ -116,16 +117,15 @@
 :root[data-motion="on"] #editor-task-panel[aria-busy="true"] #editor-task-fill::after,
 :root[data-motion="on"] .uploader-job[data-status="running"] .uploader-job-progress > i::after {
     content: ""; position: absolute; inset: 0 auto 0 -60%; width: 40%;
-    background: linear-gradient(90deg, transparent, #ffffffb0, transparent);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
     animation: sakuga-step-beam 1400ms var(--motion-ease) infinite;
 }
 
 :root[data-motion="on"] .workspace-tab[aria-selected="true"]::before {
-    transform-origin: center; animation: sakuga-rail-spring 420ms cubic-bezier(.2,.8,.2,1) 1;
+    transform-origin: center; animation: sakuga-rail-spring 340ms cubic-bezier(.2,.8,.2,1) 1;
 }
 @keyframes sakuga-rail-spring {
-    0% { transform: scale(.5,.35); opacity: .4; }
-    45% { transform: scale(1.4,1.2); opacity: 1; }
-    72% { transform: scale(.9,.92); }
+    0% { transform: scale(.6,.45); opacity: .45; }
+    50% { transform: scale(1.15,1.08); opacity: 1; }
     100% { transform: scale(1); }
 }

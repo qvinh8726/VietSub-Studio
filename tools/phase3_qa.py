@@ -38,7 +38,9 @@ def run(output):
         store,browser,queue=app.uploader_api.services()
         profiles=[store.create('youtube','QA YouTube'),store.create('tiktok','QA TikTok')]
         for profile in profiles:store.update_session(profile['id'],'alive','session_alive')
-        def fake_upload(profile_id,video,metadata,*,visibility,cancel,progress,before_publish,artifact_dir):
+        def fake_upload(profile_id,video,metadata,*,visibility,cancel,progress,before_publish,artifact_dir,
+                        upload_mode='auto',debug_mode=False,confirm_submitted=None,on_awaiting_submit=None,
+                        selectors=None,job_id='',assisted_timeout_ms=None,**kwargs):
             progress({'phase':'fixture-upload','percent':50})
             before_publish()
             return {'status':'success','url':'','message':'QA mock only — no platform post'}
@@ -97,10 +99,19 @@ def run(output):
                         assert len(rows)==2 and all(j['status']=='scheduled' for j in rows)
                         assert all(j['video']==str(edited) for j in rows)
                         image=output/f'{label}-publish.png';page.screenshot(path=str(image));screenshots.append(str(image))
-                        # Explicit cancel through UI per-account. No fixture upload occurs.
+                        # Phase 4 geometry assertions: uncapped publish queue height & zero button horizontal overflow.
+                        queue_h=page.evaluate("() => document.getElementById('uploader-publish-jobs').clientHeight")
+                        assert queue_h>=150, f'{label}: #uploader-publish-jobs crushed to {queue_h}px'
+                        btn_overflow=page.evaluate("""() => [...document.querySelectorAll('#workspace-uploader button')].filter(b=>b.getClientRects().length).filter(b=>b.scrollWidth>b.clientWidth+1).map(b=>b.id||b.textContent)""")
+                        assert not btn_overflow, f'{label}: uploader button overflow {btn_overflow}'
+                        # Explicit cancel through UI per-account, then clear finished via #uploader-queue-clear-finished.
                         for task in rows:queue.cancel(task['id'])
                         page.locator('#uploader-queue-refresh').click()
                         page.wait_for_function("() => document.querySelector('#uploader-publish-jobs').textContent.includes('huỷ')")
+                        page.on('dialog', lambda d: d.accept())
+                        assert not page.locator('#uploader-queue-clear-finished').is_disabled()
+                        page.locator('#uploader-queue-clear-finished').click()
+                        page.wait_for_function("() => document.querySelector('#uploader-queue-count').textContent === '0'")
                         assert video.exists() and edited.exists()
                         assert not errors,errors
                         assert not http,http

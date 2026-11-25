@@ -71,7 +71,10 @@
         toggle.setAttribute('aria-expanded', String(!layout.console_collapsed));
         toggle.setAttribute('aria-label', layout.console_collapsed ? 'Mở rộng bảng nhật ký' : 'Thu gọn bảng nhật ký');
         toggle.title = layout.console_collapsed ? 'Mở rộng nhật ký' : 'Thu gọn nhật ký';
-        toggle.textContent = layout.console_collapsed ? 'Mở rộng' : 'Thu gọn';
+        const toggleLabel = toggle.querySelector?.('.btn-label');
+        const toggleText = layout.console_collapsed ? 'Mở rộng' : 'Thu gọn';
+        if (toggleLabel) toggleLabel.textContent = toggleText;
+        else if (!toggle.querySelector?.('svg')) toggle.textContent = toggleText;
         const side = $('sidebar-resizer'), bottom = $('console-resizer');
         for (const [el, min, max, value] of [[side, px.minSidebar, px.maxSidebar, px.sidebar], [bottom, 36, px.maxConsole, px.console]]) {
             el.setAttribute('aria-valuemin', String(Math.round(min)));
@@ -130,6 +133,23 @@
                 choose(names[next], true); $(`${prefix}-${names[next]}-tab`).focus();
             });
         });
+    }
+    const settingsTabNames = ['general', 'translation', 'presets'];
+    let settingsTab = 'general';
+    function selectSettingsTab(name, focus = false) {
+        if (!settingsTabNames.includes(name) || !$('settings-general-tab')) return false;
+        const previous = settingsTab;
+        const previousPanel = $(`settings-${previous}-panel`);
+        const moveFocus = focus || previousPanel?.contains(document.activeElement);
+        settingsTab = name;
+        for (const item of settingsTabNames) {
+            const selected = item === name, tab = $(`settings-${item}-tab`), panel = $(`settings-${item}-panel`);
+            if (!tab || !panel) continue;
+            tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
+            panel.hidden = !selected; panel.inert = !selected;
+        }
+        if (moveFocus && drawerOpen) $(`settings-${name}-tab`)?.focus({preventScroll: true});
+        return true;
     }
     const inspectorNames = {editor: ['frame', 'audio', 'subtitle', 'export'], uploader: ['accounts', 'publish']};
     const inspectorSelection = {editor: 'frame', uploader: 'accounts'};
@@ -233,7 +253,12 @@
         if (!initialized || !projects.hasOwnProperty(name) || !snapshot?.manifest) return;
         projects[name] = snapshot;
         const manifest = snapshot.manifest, assets = manifest.assets || {}, metadata = manifest.metadata || {}, source = manifest.source || {};
-        const text = (field, value) => { $(`${name}-${field}`).textContent = typeof value === 'string' && value ? value : 'Chưa có'; };
+        const text = (field, value) => {
+            const node = $(`${name}-${field}`);
+            const formatted = typeof value === 'string' && value ? value : 'Chưa có';
+            node.textContent = formatted;
+            if (['video-path', 'srt', 'manifest', 'source'].includes(field)) node.title = formatted;
+        };
         text('project-name', manifest.project_name || manifest.project_id);
         text('project-id', `${snapshot.job_id} / ${manifest.project_id || '—'}`);
         text('source', [source.url, source.video_id, source.original_video].filter(value => typeof value === 'string' && value).join(' · '));
@@ -480,6 +505,10 @@
         window.VietSubVFX?.init();
         bindTabs(['link', 'local'], 'source', selectSource);
         bindTabs(['log', 'result'], 'console', selectConsole);
+        if ($('settings-general-tab')) {
+            bindTabs(settingsTabNames, 'settings', selectSettingsTab);
+            selectSettingsTab('general');
+        }
         bindWorkspaces(); selectWorkspace('vietsub'); bindInspectors();
         selectSource('link'); selectConsole('log');
         $('preview-form').addEventListener('submit', event => {
@@ -519,7 +548,7 @@
         applyLayout(); refreshTransport(); refreshMetrics(); motionHelp();
     }
     window.VietSubWorkbench = {init, applySettings, previewChanged, downloadChanged, progressChanged,
-        resultShown, resultHidden, focusSource, refreshTransport, selectWorkspace, selectInspector, projectReceived, projectStatus,
+        resultShown, resultHidden, focusSource, refreshTransport, selectWorkspace, selectInspector, selectSettingsTab, projectReceived, projectStatus,
         workspaceState: () => ({name: workspace, revision: workspaceRevision}),
         helpers: {validLayout, layoutPixels, fitRect, formatTime, frameTime, cropText, projectVideoUrl}};
 })();

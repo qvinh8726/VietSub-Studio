@@ -570,14 +570,29 @@ class WaveA2RealDomPlaywrightTests(unittest.TestCase):
                 page.evaluate("() => { window.__holds.glossaries.release(); window.__holds.glossaries = null; }")
                 page.wait_for_function("() => document.getElementById('setting-preset-glossary').value === 'g-tien-hiep'")
 
-                # Verify L-01 display: grid on .glossary-settings and .channel-presets-settings.
+                # Verify L-01 display: grid on .glossary-settings and .channel-presets-settings,
+                # and Phase 4 tabbed Settings Drawer navigation + console toggle SVG preservation.
+                page.locator("#settings-translation-tab").click()
+                self.assertEqual(page.locator("#settings-translation-tab").get_attribute("aria-selected"), "true")
+                self.assertFalse(page.locator("#settings-translation-panel").is_hidden())
+                page.locator("#settings-presets-tab").click()
+                self.assertEqual(page.locator("#settings-presets-tab").get_attribute("aria-selected"), "true")
+                self.assertFalse(page.locator("#settings-presets-panel").is_hidden())
                 grid_displays = page.evaluate(
                     """() => ({
                         glossary: getComputedStyle(document.querySelector('.glossary-settings')).display,
                         presets: getComputedStyle(document.querySelector('.channel-presets-settings')).display,
+                        consoleHasSvg: Boolean(document.querySelector('#console-toggle-btn svg.icon')),
+                        zCrop: Number(getComputedStyle(document.getElementById('editor-crop-layer')).zIndex),
+                        zBanner: Number(getComputedStyle(document.getElementById('editor-live-banner')).zIndex),
+                        zSub: Number(getComputedStyle(document.getElementById('editor-live-subtitle')).zIndex),
                     })"""
                 )
-                self.assertEqual(grid_displays, {"glossary": "grid", "presets": "grid"})
+                self.assertEqual(grid_displays["glossary"], "grid")
+                self.assertEqual(grid_displays["presets"], "grid")
+                self.assertTrue(grid_displays["consoleHasSvg"])
+                self.assertGreater(grid_displays["zCrop"], grid_displays["zBanner"])
+                self.assertGreater(grid_displays["zBanner"], grid_displays["zSub"])
 
                 # Apply preset on job-a -> reframe becomes 'vertical' AND user's dragged crop (0.2, 0.5) is PRESERVED!
                 page.locator("#setting-preset-apply-btn").click()

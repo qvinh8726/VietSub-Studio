@@ -32,7 +32,7 @@
     const draftStorageKey = 'vietsub.uploader.drafts.v1', maxStoredDrafts = 10, maxDraftBytes = 262144;
     const records = new Map(), storedDrafts = new Map(), sessions = new Map(), profileBusy = new Set(), queueBusy = new Set(), ytDrafts = new Map(), profileCardCache = new Map();
     let initialized = false, pendingSnapshot = null, current = null, lastProject = null, capabilities = null, profiles = [], jobs = [];
-    let profilesLoading = false, profilesLoaded = false, queueLoading = false, mediaBusy = false, createBusy = false, capabilitySequence = 0, profileSequence = 0, queueSequence = 0;
+    let profilesLoading = false, profilesLoaded = false, queueLoading = false, clearFinishedBusy = false, mediaBusy = false, createBusy = false, capabilitySequence = 0, profileSequence = 0, queueSequence = 0;
     let navigation = 0, mediaSequence = 0, pollTimer = 0, pollFailures = 0, queueMutation = 0, profilesError = '', queueError = '', lastPresetSequence = 0, paintedProfilesEmpty = null;
     const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u0020\u007f/\\?#]/.test(value) && value !== '.' && value !== '..';
     const uuid = value => typeof value === 'string' && /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value);
@@ -263,6 +263,12 @@
         $('uploader-profile-platform').disabled = !capabilities || createBusy;
         $('uploader-profile-create').disabled = !capabilities || createBusy;
         $('uploader-profiles-refresh').disabled = profilesLoading; $('uploader-queue-refresh').disabled = queueLoading;
+        const clearBtn = $('uploader-queue-clear-finished');
+        if (clearBtn) {
+            const clearable = jobs.some(task => ['success', 'error', 'cancelled'].includes(task.status));
+            clearBtn.disabled = queueLoading || clearFinishedBusy || !clearable;
+            clearBtn.textContent = clearFinishedBusy ? 'Đang dọn…' : 'Dọn đã xong';
+        }
         $('uploader-queue-submit').disabled = !ready || busy || (!pending && validation(current).issues.length > 0);
         $('uploader-queue-submit').textContent = pending ? 'Kiểm tra / gửi lại đúng request đã mất phản hồi' : current?.busy === 'queue' ? 'Đang gửi hàng đợi…' : 'Thêm vào hàng đợi đăng →';
         const blockers = current && !pending ? validation(current, false).issues : [];
@@ -555,7 +561,7 @@
             panel.appendChild(node('p', `${task.id} · ${statuses[task.status] || task.status}${task.error ? ' · ' + task.error : ''}`, 'uploader-session-detail'));
             if (activeSessions.has(task.status)) {
                 const bar = node('div', '', 'uploader-profile-actions');
-                if (task.action === 'login') bar.appendChild(button('Tôi đã đăng nhập xong · kiểm tra', () => sessionAction(task, 'finish'), profileBusy.has(profile.id), 'btn-secondary'));
+                if (task.action === 'login') bar.appendChild(button('Tôi đã đăng nhập xong', () => sessionAction(task, 'finish'), profileBusy.has(profile.id), 'btn-secondary'));
                 bar.appendChild(button('Huỷ phiên thao tác', () => sessionAction(task, 'cancel'), profileBusy.has(profile.id), 'btn-danger')); panel.appendChild(bar);
             }
             row.appendChild(panel);
@@ -902,6 +908,33 @@
         } catch (error) { notify(error.message + ' Đọc lại tiến độ trước khi thử lại lần nữa.', 'error'); }
         finally { queueBusy.delete(task.id); paintQueue(); paintProfiles(); refreshControls(); }
     }
+    async function clearFinishedQueue() {
+        if (clearFinishedBusy || queueLoading) return;
+        const clearableCount = jobs.filter(task => ['success', 'error', 'cancelled'].includes(task.status)).length;
+        if (!clearableCount) return;
+        if (!window.confirm(`Xoá ${clearableCount} tác vụ đăng đã kết thúc (thành công, lỗi, đã huỷ) khỏi danh sách? Tác vụ đang chạy hoặc chưa rõ kết quả sẽ được giữ nguyên.`)) return;
+        clearFinishedBusy = true; queueMutation++; refreshControls();
+        try {
+            const before = jobs.length;
+            const data = await request('/api/uploader/queue/finished', { method: 'DELETE' });
+            if (Array.isArray(data.jobs) && data.jobs.every(validQueueTask)) {
+                jobs = data.jobs;
+            } else {
+                jobs = jobs.filter(task => !['success', 'error', 'cancelled'].includes(task.status));
+            }
+            const removed = Number.isInteger(data.removed) ? data.removed : Math.max(0, before - jobs.length);
+            paintedQueueSignature = '';
+            paintQueue();
+            $('uploader-queue-status').textContent = removed > 0
+                ? `Đã dọn ${removed} tác vụ đã kết thúc khỏi hàng đợi đăng.`
+                : 'Không có tác vụ nào cần dọn (tác vụ đang chạy / chưa rõ kết quả được giữ lại).';
+            notify($('uploader-queue-status').textContent);
+        } catch (error) {
+            notify(error.message, 'error');
+        } finally {
+            clearFinishedBusy = false; paintQueue(); paintProfiles(); refreshControls();
+        }
+    }
     function needsPolling() { return jobs.some(task => activeQueue.has(task.status)) || [...sessions.values()].some(task => activeSessions.has(task.status)) || [...records.values()].some(record => record.aiTask && ['queued', 'running'].includes(record.aiTask.status)); }
     function schedulePoll() { if (!pollTimer && needsPolling() && pollFailures < 3) pollTimer = setTimeout(poll, 1800); }
     async function poll() {
@@ -952,6 +985,7 @@
         $('uploader-profile-form').addEventListener('submit', createProfile);
         $('uploader-profiles-refresh').addEventListener('click', async () => { pollFailures = 0; await loadProfiles(); await loadCapabilities(); schedulePoll(); });
         $('uploader-queue-refresh').addEventListener('click', async () => { pollFailures = 0; await loadQueue(); schedulePoll(); });
+        $('uploader-queue-clear-finished')?.addEventListener('click', clearFinishedQueue);
         $('uploader-publish-form').addEventListener('submit', submitQueue);
         $('uploader-media-form').addEventListener('submit', uploadMedia);
         $('uploader-media-file').addEventListener('change', refreshControls);

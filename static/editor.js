@@ -363,7 +363,26 @@
             $('editor-suggest-hooks-btn').disabled = !editable || busy || Boolean(current?.hooksBusy) || current?.snapshot?.availability?.translated_srt !== true;
             $('editor-suggest-hooks-btn').textContent = current?.hooksBusy ? 'Đang gợi ý Hook…' : 'AI gợi ý Hook';
         }
+        paintSrtStaleAlert();
         refreshSrtControls();
+    }
+    function paintSrtStaleAlert(record = current) {
+        const alertBox = $('editor-srt-stale-alert');
+        if (!alertBox) return;
+        const stale = record?.srtStaleAssets || record?.snapshot?.srt_stale_assets || null;
+        const videoStale = Boolean(stale?.edited_video);
+        const ttsStale = Boolean(stale?.tts_audio);
+        alertBox.hidden = !(videoStale || ttsStale);
+        if (alertBox.hidden) return;
+        const title = document.createElement('strong');
+        title.textContent = 'SRT vừa được chỉnh sửa';
+        const copy = document.createElement('span');
+        copy.textContent = videoStale && ttsStale
+            ? 'Video đã render và giọng đọc TTS cũ hơn bản SRT hiện tại — hãy Tạo TTS và Render lại trước khi đăng.'
+            : videoStale
+                ? 'Video đã render cũ hơn bản SRT hiện tại — hãy Render lại trước khi đăng.'
+                : 'Giọng đọc TTS cũ hơn bản SRT hiện tại — hãy Tạo TTS lại trước khi render.';
+        alertBox.replaceChildren(title, copy);
     }
     function writeForm() {
         if (!current) return;
@@ -686,6 +705,7 @@
                 record.srtSaving ? 'Đang lưu SRT…' : record.srtDirty ? 'SRT chưa lưu' : 'Đã đồng bộ SRT';
             dirtyEl.dataset.dirty = String(Boolean(record?.srtDirty));
         }
+        paintSrtStaleAlert(record);
         $('editor-srt-add-btn').disabled = !editable;
         $('editor-srt-save-btn').disabled = !editable || !record.srtDirty || record.srtInvalidCount > 0;
         $('editor-srt-restore-btn').disabled = !editable || !record.srtHasBackup;
@@ -882,6 +902,9 @@
             record.srtDirty = false;
             record.srtInvalidCount = 0;
             record.srtRevision = (record.srtRevision || 0) + 1;
+            if (data.srt_stale_assets && typeof data.srt_stale_assets === 'object') {
+                record.srtStaleAssets = {edited_video: Boolean(data.srt_stale_assets.edited_video), tts_audio: Boolean(data.srt_stale_assets.tts_audio)};
+            }
             record.activeCueIndex = -1;
             record.lastLiveSubtitleKey = '';
             setSrtStatus(record.srtLocked ? record.srtLockReason : `Đã nạp ${record.srtCues.length} câu phụ đề.`, '', record);
@@ -1023,6 +1046,9 @@
                 method: 'PUT', body: JSON.stringify({cues: payload}),
             });
             record.srtHasBackup = Boolean(data.has_backup);
+            if (data.srt_stale_assets && typeof data.srt_stale_assets === 'object') {
+                record.srtStaleAssets = {edited_video: Boolean(data.srt_stale_assets.edited_video), tts_audio: Boolean(data.srt_stale_assets.tts_audio)};
+            }
             if ((record.srtRevision || 0) !== revision) {
                 setSrtStatus('Đã lưu bản SRT trước đó; các chỉnh sửa mới hơn vẫn chưa lưu.', '', record);
                 return false;
@@ -1084,6 +1110,9 @@
                 record.srtDirty = true;
                 record.srtRevision = (record.srtRevision || 0) + 1;
             }
+            if (data.saved && data.srt_stale_assets && typeof data.srt_stale_assets === 'object') {
+                record.srtStaleAssets = {edited_video: Boolean(data.srt_stale_assets.edited_video), tts_audio: Boolean(data.srt_stale_assets.tts_audio)};
+            }
             record.lastLiveSubtitleKey = '';
             setSrtStatus(changed > 0
                 ? `Đã áp dụng "${data.glossary_name || glossaryId}": sửa ${reps} thuật ngữ ở ${changed} câu. Bấm “Lưu SRT” để ghi xuống đĩa.`
@@ -1120,6 +1149,9 @@
             record.srtDirty = false;
             record.srtInvalidCount = 0;
             record.srtRevision = (record.srtRevision || 0) + 1;
+            if (data.srt_stale_assets && typeof data.srt_stale_assets === 'object') {
+                record.srtStaleAssets = {edited_video: Boolean(data.srt_stale_assets.edited_video), tts_audio: Boolean(data.srt_stale_assets.tts_audio)};
+            }
             record.activeCueIndex = -1;
             record.lastLiveSubtitleKey = '';
             setSrtStatus('Đã khôi phục phụ đề SRT từ bản sao lưu .bak.', '', record);
@@ -1305,11 +1337,15 @@
                 srtCues: [], srtDirty: false, srtLoaded: false, srtLoading: false, srtLoadFailed: false, srtSaving: false, srtRevision: 0,
                 srtHasRaw: false, srtHasBackup: false, srtLocked: false, srtLockReason: '', srtSearch: '', srtInvalidCount: 0,
                 srtStatusMessage: '', srtStatusState: '',
+                srtStaleAssets: snapshot.srt_stale_assets ? {edited_video: Boolean(snapshot.srt_stale_assets.edited_video), tts_audio: Boolean(snapshot.srt_stale_assets.tts_audio)} : {edited_video: false, tts_audio: false},
                 activeCueIndex: -1, selectedCueIndex: -1, srtRowByIndex: [], lastLiveSubtitleKey: '',
                 hooks: [], hooksBusy: false};
             restoreDraft(record); records.set(record.jobId, record);
         }
         record.snapshot = snapshot;
+        if (snapshot.srt_stale_assets && typeof snapshot.srt_stale_assets === 'object') {
+            record.srtStaleAssets = {edited_video: Boolean(snapshot.srt_stale_assets.edited_video), tts_audio: Boolean(snapshot.srt_stale_assets.tts_audio)};
+        }
         if (current !== record) {
             endDrag(); stopPolling(); voiceSequence++; hookSequence++; current = record; renderedOutputKey = null;
             if ($('editor-srt-search')) $('editor-srt-search').value = record.srtSearch || '';
@@ -1355,6 +1391,9 @@
             if (lastRender && (!validTask(lastRender, record.jobId) || lastRender.action !== 'render' ||
                 lastRender.status !== 'success' || lastRender.output_kind !== 'video')) throw new Error('Video đã render không đúng project.');
             record.snapshot = data.snapshot;
+            if (data.snapshot.srt_stale_assets && typeof data.snapshot.srt_stale_assets === 'object') {
+                record.srtStaleAssets = {edited_video: Boolean(data.snapshot.srt_stale_assets.edited_video), tts_audio: Boolean(data.snapshot.srt_stale_assets.tts_audio)};
+            }
             if (record.revision === revision && !record.dirty) {
                 record.options = validation.options; record.lastCrop = validation.options.crop_box;
                 record.cropError = ''; record.cropDraft = null; record.numericDraft = {};
@@ -1506,6 +1545,11 @@
             if (task.status === 'error') notify(task.error || 'Tác vụ Auto Edit thất bại.', 'error');
             else if (task.status === 'cancelled') notify('Đã huỷ tác vụ. Bản chỉnh sửa vẫn được giữ.');
             else if (task.status === 'success') {
+                if (record.srtStaleAssets) {
+                    if (task.action === 'render') record.srtStaleAssets.edited_video = false;
+                    if (task.action === 'tts') record.srtStaleAssets.tts_audio = false;
+                }
+                paintSrtStaleAlert(record);
                 notify('Tác vụ Auto Edit hoàn tất. Kết quả nằm riêng, không thay video nguồn.');
                 window.VietSubVFX?.complete?.({kind: task.action === 'render' || task.action === 'capcut_draft' ? 'render' : 'audio',
                     id: task.id, status: 'success', target: $('editor-output')});
@@ -1761,7 +1805,8 @@
             numericDraft: current ? {...current.numericDraft} : {}, draftPersisted: Boolean(current?.draftPersisted),
             output: current?.output ? clone(current.output) : null, videoOutput: current?.videoOutput ? clone(current.videoOutput) : null,
             srtDirty: Boolean(current?.srtDirty), srtCount: current?.srtCues?.length || 0, srtInvalidCount: current?.srtInvalidCount || 0,
-            activeCueIndex: current ? current.activeCueIndex : -1, srtHasBackup: Boolean(current?.srtHasBackup)}),
+            activeCueIndex: current ? current.activeCueIndex : -1, srtHasBackup: Boolean(current?.srtHasBackup),
+            srtStaleAssets: current?.srtStaleAssets ? {...current.srtStaleAssets} : {edited_video: false, tts_audio: false}}),
         helpers: {actionableWarnings, estimatedDuration, defaults, validateOptions, validCrop, containRect, adjustCrop, safeOutputUrl, validTask, draftStorageKey, validatedDraft,
             formatSrtTimestamp, parseSrtTimestamp, findActiveCueIndex, sliceWordsBalanced}};
     window.addEventListener('load', init);

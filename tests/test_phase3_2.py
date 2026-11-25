@@ -646,6 +646,45 @@ class Phase32SecurityControlPlaneTests(unittest.TestCase):
         )
         self.assertEqual(r_wm_ok.status_code, 200)
 
+    def test_m02_set_active_preset_syncs_glossary_and_empty_preserves_user_glossary(self):
+        from vietsub import channel_presets, glossary as translation_glossary
+
+        g_custom = translation_glossary.create_glossary(
+            vietsub_app.CONFIG_DIR,
+            name="Tiên Hiệp M02",
+            style_note="ta-ngươi",
+            entries=[{"source": "剑", "target": "Kiếm"}],
+        )
+        # Keep active glossary as default initially
+        translation_glossary.set_active_glossary(vietsub_app.CONFIG_DIR, "default")
+        preset, _ = channel_presets.create_preset(
+            vietsub_app.CONFIG_DIR,
+            name="Kênh Đồng Bộ Từ Điển",
+            glossary_id=g_custom["id"],
+        )
+        r_active = self.client.post(
+            "/api/channel-presets/active",
+            headers=self._headers(token=self.token),
+            data=json.dumps({"active_id": preset["id"]}),
+        )
+        self.assertEqual(r_active.status_code, 200)
+        body = r_active.get_json()
+        self.assertEqual(body["active_id"], preset["id"])
+        self.assertIn("glossary_store", body)
+        self.assertEqual(body["glossary_store"]["active_id"], g_custom["id"])
+        self.assertEqual(translation_glossary.list_glossaries(vietsub_app.CONFIG_DIR)["active_id"], g_custom["id"])
+
+        # Clearing active preset ("") keeps user's currently active glossary untouched
+        r_clear = self.client.post(
+            "/api/channel-presets/active",
+            headers=self._headers(token=self.token),
+            data=json.dumps({"active_id": ""}),
+        )
+        self.assertEqual(r_clear.status_code, 200)
+        self.assertEqual(r_clear.get_json()["active_id"], "")
+        self.assertNotIn("glossary_store", r_clear.get_json())
+        self.assertEqual(translation_glossary.list_glossaries(vietsub_app.CONFIG_DIR)["active_id"], g_custom["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

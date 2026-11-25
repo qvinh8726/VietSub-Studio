@@ -889,3 +889,40 @@ test('H-14 & M-15: applyChannelPreset attaches target_job_id, preset_crop_box, a
     assert.equal(applyEvents[0].detail.apply_sequence, 2);
     assert.equal(applyEvents[0].detail.preset_crop_box, null);
 });
+
+test('M-02: switching #queue-channel-preset syncs glossary_store and notifies user', async () => {
+    const jsonResponse = body => ({ ok: true, status: 200, json: async () => body });
+    const app = loadApp({
+        fetch: async (url, opts) => {
+            if (url === '/api/channel-presets/active' && opts?.method === 'POST') {
+                return jsonResponse({
+                    active_id: 'p1',
+                    presets: [{id: 'p1', name: 'Kênh Review 9:16', glossary_id: 'g-review', editor_options: {}, publish_defaults: {}}],
+                    resolved_warnings: {},
+                    glossary_store: {
+                        active_id: 'g-review',
+                        profiles: [
+                            {id: 'default', name: 'Mặc định', style_note: '', entries: []},
+                            {id: 'g-review', name: 'Review Phim', style_note: 'ngắn gọn', entries: []},
+                        ],
+                    },
+                });
+            }
+            if (url === '/api/health') return jsonResponse({ready_local: true, ready_douyin: true, checks: {ffmpeg: {ok: true, required: true, detail: 'FFmpeg 7.1'}}});
+            if (url === '/api/queue?revision=-1') return jsonResponse({jobs: [], revision: 1});
+            if (url === '/api/channel-presets') return jsonResponse({active_id: '', presets: [], resolved_warnings: {}});
+            if (url === '/api/glossaries') return jsonResponse({active_id: 'default', profiles: [{id: 'default', name: 'Mặc định', entries: []}]});
+            return jsonResponse({});
+        },
+    });
+    await app.window.emit('load');
+    app.elements['queue-channel-preset'].value = 'p1';
+    await app.elements['queue-channel-preset'].dispatch('change');
+    assert.equal(app.run('glossaryStore.active_id'), 'g-review');
+    assert.equal(app.elements['setting-glossary-select'].value, 'g-review');
+    assert.match(app.elements['toast'].textContent, /Review Phim/);
+    // Also verify compact diagnostics chip sets hover title from item.detail
+    await app.run('loadHealth()');
+    assert.equal(app.elements['diagnostics-list'].children[0].title, 'FFmpeg 7.1');
+});
+
