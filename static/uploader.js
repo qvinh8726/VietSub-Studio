@@ -313,7 +313,7 @@
             if (data.selector_override?.override_active) runtimeNote += ' Đang áp dụng selectors.override.json cục bộ.';
             else if (typeof data.selector_override?.warning === 'string' && data.selector_override.warning) runtimeNote += ' ' + data.selector_override.warning;
             $('uploader-runtime-status').textContent = runtimeNote;
-            $('uploader-runtime-status').dataset.state = data.browser_available ? '' : 'error';
+            $('uploader-runtime-status').dataset.state = data.browser_available ? '' : 'warn';
             const rows = [];
             for (const [key, label] of Object.entries(platformLabels)) {
                 const row = node('tr'); row.appendChild(node('th', label));

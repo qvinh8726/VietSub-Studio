@@ -63,7 +63,7 @@
                         <div id="source-pane" class="source-tabs" role="tablist" aria-label="Chọn nguồn video">
                             <button id="source-link-tab" class="source-tab" type="button" role="tab" data-source-tab="link" aria-selected="true" aria-controls="source-link-panel" tabindex="0">
                                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m10 13 4-4m-6 6-1 1a4.2 4.2 0 0 1-6-6l4-4a4.2 4.2 0 0 1 6 0m2 2 1-1a4.2 4.2 0 0 1 6 6l-4 4a4.2 4.2 0 0 1-6 0" transform="translate(2 2) scale(.85)"/></svg>
-                                Link Share
+                                Dán link
                             </button>
                             <button id="source-local-tab" class="source-tab" type="button" role="tab" data-source-tab="local" aria-selected="false" aria-controls="source-local-panel" tabindex="-1">
                                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7h7l2 2h9v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h6l2 3h8"/></svg>
@@ -206,7 +206,7 @@
                         </div>
                         <div class="queue-pipeline-toggles">
                             <label class="queue-pipeline-check" for="queue-auto-edit" title="Tự động chạy Auto Edit sau khi dịch xong"><input id="queue-auto-edit" type="checkbox" aria-label="Tự động Auto Edit sau khi dịch"><span>Tự Auto Edit</span></label>
-                            <label class="queue-pipeline-check" for="queue-auto-publish" title="Tự động xếp hàng Publish Hub sau khi Auto Edit xong"><input id="queue-auto-publish" type="checkbox" aria-label="Tự động xếp hàng Publish" disabled><span>Tự Publish</span></label>
+                            <label class="queue-pipeline-check" for="queue-auto-publish" title="Tự động xếp hàng Publish Hub sau khi Auto Edit xong"><input id="queue-auto-publish" type="checkbox" aria-label="Tự động xếp hàng Publish" disabled><span>Tự đăng</span></label>
                         </div>
                     </div>
                     <div class="queue-bulk-tools" aria-label="Chọn và dọn hàng đợi, lịch sử">
@@ -233,7 +233,7 @@
 
  <section aria-labelledby="workspace-editor-tab" class="staging-workspace editor-workspace" hidden id="workspace-editor" inert role="tabpanel">
 <header class="staging-header editor-header">
-<div class="staging-header-title"><span class="staging-eyebrow">WORKSPACE 02</span><h2 id="editor-heading" tabindex="-1">Auto Edit</h2><p>Che phụ đề gốc, sửa SRT, tạo giọng đọc và xuất video từ project VietSub.</p></div>
+<div class="staging-header-title"><h2 id="editor-heading" tabindex="-1">Auto Edit</h2><p>Che phụ đề gốc, sửa SRT, tạo giọng đọc và xuất video từ project VietSub.</p></div>
 <div class="editor-header-actions"><span class="editor-save-state" id="editor-dirty">Chưa có project</span><button class="btn-secondary" disabled id="editor-save-btn" type="button">Lưu cấu hình</button><button class="btn-primary" disabled id="editor-render-btn" type="button">Render video →</button></div>
 </header>
 <div class="staging-scroll editor-scroll">
@@ -279,7 +279,7 @@
 <div class="editor-inline-actions"><button class="btn-ghost" disabled id="editor-crop-reset" type="button">Vùng OCR gốc</button><button class="btn-ghost" disabled id="editor-crop-lower" type="button">1/3 phía dưới</button></div>
 <p class="field-error" id="editor-crop-error" role="alert"></p>
 </div><details class="editor-option-section" open><summary><span>Che phụ đề gốc</span><small>Mask</small></summary><div class="editor-fields">
-<label for="editor-mask-mode">Cách che<select class="select-input" data-editor-option="mask_mode" id="editor-mask-mode"><option value="none">Không che</option><option selected="" value="boxblur">Làm mờ (Box blur)</option><option value="delogo">Xoá logo (Delogo)</option><option value="solid_bar">Thanh màu</option></select></label><div class="pitch-presets editor-wide" role="group" aria-label="Chọn nhanh"><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="none" aria-pressed="false">Không che</button><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="boxblur" aria-pressed="false">Làm mờ</button><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="delogo" aria-pressed="false">Xóa chữ</button><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="solid_bar" aria-pressed="false">Dải màu</button></div>
+<label for="editor-mask-mode">Cách che<select class="select-input" data-editor-option="mask_mode" id="editor-mask-mode"><option value="none">Không che</option><option selected="" value="boxblur">Làm mờ (Box blur)</option><option value="delogo">Xoá logo</option><option value="solid_bar">Thanh màu</option></select></label><div class="pitch-presets editor-wide" role="group" aria-label="Chọn nhanh"><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="none" aria-pressed="false">Không che</button><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="boxblur" aria-pressed="false">Làm mờ</button><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="delogo" aria-pressed="false">Xóa chữ</button><button class="pitch-chip" type="button" data-editor-preset="mask_mode" data-preset-value="solid_bar" aria-pressed="false">Dải màu</button></div>
 <label for="editor-blur-strength">Độ mờ<input class="number-input" data-editor-option="blur_strength" id="editor-blur-strength" max="40" min="1" step="1" type="number" value="8"/></label>
 <label for="editor-padding-px">Đệm vùng che (px)<input class="number-input" data-editor-option="padding_px" id="editor-padding-px" max="100" min="0" step="1" type="number" value="8"/></label>
 <label for="editor-solid-color">Màu thanh<input class="editor-color" data-editor-option="solid_color" id="editor-solid-color" type="color" value="#111318"/></label>
@@ -293,11 +293,11 @@
 <button class="btn-secondary editor-wide" disabled id="editor-audio-preview" type="button">Nghe thử 3 giây</button>
 </div></details><details class="editor-option-section" open><summary><span>Âm thanh &amp; giọng đọc</span><small>Audio / TTS</small></summary><div class="editor-fields">
 <label for="editor-audio-mode">Âm thanh nền<select class="select-input" data-editor-option="audio_mode" id="editor-audio-mode"><option value="original">Giữ âm thanh gốc</option><option value="mute">Tắt âm thanh gốc</option><option value="instrumental">Tách giọng, giữ nhạc / hiệu ứng</option></select></label>
-<label class="editor-check editor-wide"><input id="editor-isolate-vocals" role="switch" type="checkbox"/> Tách vocal, giữ nhạc nền</label><label class="editor-check editor-wide"><input id="editor-ducking-enabled" data-editor-option="ducking_enabled" role="switch" type="checkbox" checked/> Ducking · hạ nhạc khi có lời đọc</label><label for="editor-bgm-volume">Âm lượng nền (0–2)<input class="number-input" data-editor-option="bgm_volume" id="editor-bgm-volume" max="2" min="0" step="0.05" type="number" value="0.35"/></label>
+<label class="editor-check editor-wide"><input id="editor-isolate-vocals" role="switch" type="checkbox"/> Tách vocal, giữ nhạc nền</label><label class="editor-check editor-wide"><input id="editor-ducking-enabled" data-editor-option="ducking_enabled" role="switch" type="checkbox" checked/> Tự hạ nhạc nền khi có lời đọc</label><label for="editor-bgm-volume">Âm lượng nền (0–2)<input class="number-input" data-editor-option="bgm_volume" id="editor-bgm-volume" max="2" min="0" step="0.05" type="number" value="0.35"/></label>
 <label for="editor-audio-format">Định dạng tách audio<select class="select-input" data-editor-option="audio_format" id="editor-audio-format"><option value="wav">WAV</option><option value="mp3">MP3</option></select></label>
 <div class="editor-field-action"><button class="btn-secondary" disabled id="editor-extract-btn" type="button">Tách audio</button></div>
 <label class="editor-check editor-wide"><input data-editor-option="tts_enabled" id="editor-tts-enabled" type="checkbox"/> Dùng TTS đọc phụ đề khi render</label>
-<label for="editor-tts-provider">Nhà cung cấp giọng<select aria-describedby="editor-capcut-voice-help" class="select-input" data-editor-option="tts_provider" id="editor-tts-provider"><option value="capcut_internal">CapCut (HTTP nội bộ)</option><option value="edge_tts">Edge TTS (tuỳ chọn)</option></select></label><p hidden class="editor-sr-only capcut-voice-tip" id="editor-capcut-voice-help" role="note" title="Giọng CapCut cần kết nối dịch vụ; danh sách có thể thay đổi.">Giọng CapCut cần kết nối dịch vụ. Bấm “Nạp danh sách giọng” để chọn giọng hiện có.</p>
+<label for="editor-tts-provider">Nhà cung cấp giọng<select aria-describedby="editor-capcut-voice-help" class="select-input" data-editor-option="tts_provider" id="editor-tts-provider"><option value="capcut_internal">CapCut</option><option value="edge_tts">Edge TTS (tuỳ chọn)</option></select></label><p hidden class="editor-sr-only capcut-voice-tip" id="editor-capcut-voice-help" role="note" title="Giọng CapCut cần kết nối dịch vụ; danh sách có thể thay đổi.">Giọng CapCut cần kết nối dịch vụ. Bấm “Nạp danh sách giọng” để chọn giọng hiện có.</p>
 <label for="editor-tts-language">Ngôn ngữ giọng<select class="select-input" id="editor-tts-language"><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="zh">中文</option><option value="ja">日本語</option><option value="*">Tất cả ngôn ngữ</option></select></label>
 <label for="editor-tts-voice">Giọng đọc <span tabindex="0" role="note" aria-label="Giọng CapCut dùng dịch vụ nội bộ; khả dụng tùy tài khoản và kết nối." title="Giọng CapCut dùng dịch vụ nội bộ; khả dụng tùy tài khoản và kết nối.">ⓘ</span><select class="select-input" data-editor-option="tts_voice" id="editor-tts-voice"><option value="">Bấm nạp danh sách giọng</option></select></label>
 <div class="editor-inline-actions editor-wide"><button class="btn-ghost" disabled id="editor-load-voices-btn" type="button">Nạp danh sách giọng</button><span aria-live="polite" class="field-help" id="editor-voices-status" role="status">Chỉ kết nối dịch vụ khi bạn bấm nạp hoặc tạo giọng.</span></div>
@@ -347,8 +347,7 @@
 </section>
 <section aria-labelledby="workspace-uploader-tab" class="staging-workspace uploader-workspace" hidden id="workspace-uploader" inert role="tabpanel">
 <header class="staging-header uploader-header">
-<div class="staging-header-title"><span class="staging-eyebrow">WORKSPACE 03</span><h2 id="uploader-heading" tabindex="-1">Đăng đa nền tảng</h2><p>Chọn video, kiểm tra tài khoản, duyệt nội dung. Chỉ đăng khi bạn xác nhận.</p></div>
-<span class="phase-badge">Upload · Phase 3</span>
+<div class="staging-header-title"><h2 id="uploader-heading" tabindex="-1">Đăng đa nền tảng</h2><p>Chọn video, kiểm tra tài khoản, duyệt nội dung. Chỉ đăng khi bạn xác nhận.</p></div>
 </header>
 <div class="staging-scroll uploader-scroll">
 <div class="uploader-grid desktop-workspace-grid">
