@@ -196,7 +196,7 @@ test('Auto Edit and Publish Hub retain expanded phase1 facts and add real explic
     assert.equal(byId('editor-status')[0].attrs['aria-live'], 'polite');
     assert.equal(byId('editor-watermark-file')[0].attrs.accept, 'image/png,.png');
     assert.notEqual(byId('editor-output-video')[0], byId('editor-video')[0], 'render output must not replace source media');
-    assert.match(html, /Upload · Phase 3/);
+    assert.doesNotMatch(html, /Upload · Phase 3|WORKSPACE 0\d/, 'internal phase labels stay out of the UI');
     assert.match(html, /Chuyển sang Auto Edit →/); assert.match(html, /Đẩy sang Đăng đa nền tảng →/);
     assert.match(html, /ngăn bàn giao sang Auto Edit \/ Đăng đa nền tảng/);
     assert.match(html, /Chạy headless, không có cửa sổ/);
